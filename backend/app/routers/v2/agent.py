@@ -9,6 +9,7 @@ from app.deps import get_db, get_current_user, require_editor
 from app.models.ontology import OntologyProject
 from app.models.v2.agent import AgentRun
 from app.models.v2.decision import DecisionRecord
+from app.services.v2.authorization_service import AuthorizationContext, resolve_projection
 from app.services.v2.agent_decision import AgentToolbox, run_agno
 from app.services.v2.agent_context import context_for
 
@@ -37,13 +38,18 @@ def scope(db: Session, oid: str, user):
     item = db.get(OntologyProject, oid)
     if not item or (user.role != "admin" and item.created_by != user.id):
         raise HTTPException(404, "本体不存在或无访问权限")
+    projection = resolve_projection(db, AuthorizationContext(
+        ontology_id=oid, principal_id=str(user.id), principal_role=user.role,
+        metadata_revision_id=item.current_revision_id), records=[])
+    if not projection.unrestricted:
+        raise HTTPException(403, "当前对象或字段权限策略不支持旧版 Agent 读取；请使用受权对象查询")
     return item
 
 
 @router.post("/{oid}/agent/runs")
 def create_agent_run(oid: str, body: AgentRunInput, db: Session = Depends(get_db), user=Depends(get_current_user)):
     ontology = scope(db, oid, user)
-    toolbox = AgentToolbox(oid, db)
+    toolbox = AgentToolbox(oid, db, user)
     try:
         proposal = (run_agno(toolbox, body.task, body.object_id, body.reasoning_run_id, body.conclusion)
                     if body.mode == "agno" else toolbox.propose(body.task, body.object_id, body.reasoning_run_id, body.conclusion))
@@ -68,7 +74,7 @@ def create_agent_run(oid: str, body: AgentRunInput, db: Session = Depends(get_db
 @router.post("/{oid}/agent/context-drafts")
 def create_context_draft(oid: str, body: ContextDraftInput, db: Session = Depends(get_db), user=Depends(get_current_user)):
     ontology = scope(db, oid, user)
-    toolbox = AgentToolbox(oid, db)
+    toolbox = AgentToolbox(oid, db, user)
     try:
         context = toolbox.discover_context(body.task)
     except (ValueError, RuntimeError) as exc:
@@ -84,7 +90,7 @@ def create_context_draft(oid: str, body: ContextDraftInput, db: Session = Depend
 def preview_context(oid: str, body: ContextUpdateInput, db: Session = Depends(get_db), user=Depends(get_current_user)):
     scope(db, oid, user)
     try:
-        return context_for(AgentToolbox(oid, db), "", body.reasoning_run_id, body.object_ids)
+        return context_for(AgentToolbox(oid, db, user), "", body.reasoning_run_id, body.object_ids)
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(422, str(exc)) from exc
 
@@ -97,7 +103,7 @@ def update_agent_context(oid: str, run_id: str, body: ContextUpdateInput, db: Se
         raise HTTPException(404, "Agent run not found")
     if run.status != "context_review":
         raise HTTPException(409, "Only a context-review run can be edited")
-    toolbox = AgentToolbox(oid, db)
+    toolbox = AgentToolbox(oid, db, user)
     try:
         context = context_for(toolbox, run.payload["task"], body.reasoning_run_id, body.object_ids)
         available = {p["conclusion"] for p in context["conclusions"]}
@@ -126,7 +132,7 @@ def generate_agent_proposal(oid: str, run_id: str, db: Session = Depends(get_db)
     conclusion = conclusions[0].get("conclusion") if conclusions else None
     if not reasoning_run.get("id") or not conclusion:
         raise HTTPException(422, "Please approve at least one reasoning conclusion")
-    toolbox = AgentToolbox(oid, db)
+    toolbox = AgentToolbox(oid, db, user)
     try:
         verified = context_for(toolbox, run.payload["task"], reasoning_run["id"], [o["id"] for o in objects])
         selected_values = {p["conclusion"] for p in conclusions}

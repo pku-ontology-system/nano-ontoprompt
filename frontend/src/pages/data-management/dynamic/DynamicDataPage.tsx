@@ -295,7 +295,7 @@ export default function DynamicDataPage() {
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
   const [selectedEdge, setSelectedEdge] = useState<GraphEdge | null>(null);
   const [incidents, setIncidents] = useState<DynamicIncident[]>([]);
-  const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(null);
+  const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(params.get("incident_id"));
   const [showHistory, setShowHistory] = useState(false);
   const [historyAt, setHistoryAt] = useState<number | null>(null);
   const [historyMode, setHistoryMode] = useState<"valid" | "all">("valid");
@@ -308,8 +308,16 @@ export default function DynamicDataPage() {
   useEffect(() => {
     incidentCursorRef.current = "";
     setIncidents([]);
-    setSelectedIncidentId(null);
+    setSelectedIncidentId(params.get("incident_id"));
   }, [runId]);
+
+  useEffect(() => {
+    const incident = incidents.find(item => item.object_id === selectedIncidentId);
+    if (incident) {
+      setShowHistory(true);
+      setHistoryAt(Number(incident.properties.ordinal));
+    }
+  }, [incidents, selectedIncidentId]);
 
   const loadReadiness = useCallback(async () => {
     try {

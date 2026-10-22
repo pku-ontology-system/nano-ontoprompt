@@ -10,6 +10,7 @@ export type ObjectPanelRecord = {
 
 const TimeSeriesChart = lazy(() => import('./TimeSeriesChart'));
 const ObjectActionRunner = lazy(() => import('./ObjectActionRunner'));
+const DecisionCaseHistory = lazy(() => import('./DecisionCaseHistory'));
 type ViewSection = { id: string; title: string; properties: string[]; layout: 'list' | 'grid'; show_in_panel: boolean; visible_when?: { property: string; equals: unknown } | null };
 type ViewConfig = { tabs: ViewSection[] };
 type ViewResponse = { configured: ViewConfig | null; configured_version: number | null };
@@ -98,6 +99,7 @@ export default function ObjectPanel({
         {configured && <div className="mt-3 flex items-center gap-2"><button type="button" aria-pressed={!useConfigured} onClick={() => setUseConfigured(false)}>Standard</button><button type="button" aria-pressed={useConfigured} onClick={() => setUseConfigured(true)}>Configured v{viewVersion}</button></div>}
         {useConfigured && selectedTab ? <><nav aria-label="对象视图标签" className="mt-3 flex gap-2">{fullTabs.map(tab => <button type="button" key={tab.id} aria-current={selectedTab.id === tab.id ? 'page' : undefined} onClick={() => setActiveTab(tab.id)}>{tab.title}</button>)}</nav><Properties object={object} names={selectedTab.properties} grid={selectedTab.layout === 'grid'} /></> : <Properties object={object} names={Object.keys(object.properties)} />}
         {children}
+        {ontologyId && !dataViewId && <Suspense fallback={null}><DecisionCaseHistory ontologyId={ontologyId} objectId={object.object_id} /></Suspense>}
       </dialog>
     </aside>
   );

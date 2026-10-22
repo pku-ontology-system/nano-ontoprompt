@@ -59,7 +59,7 @@ export default function DecisionLabPage() {
   const domain = active?.id
   const [runId, setRunId] = useState<string | null>(null)
   const [draft, setDraft] = useState<Params>({})
-  const [selectedObject, setSelectedObject] = useState<string | null>(null)
+  const [selectedObject, setSelectedObject] = useState<string | null>(searchParams.get('object'))
   const [windowStart, setWindowStart] = useState<number>(0)
   const [windowEnd, setWindowEnd] = useState<number>(0)
   const runs = useQuery({ queryKey: ['decision-lab-runs', domain], queryFn: () => apiClientV2.get<{ runs: RunSummary[] }>(`/decision-lab/${domain}/runs`), enabled: !!domain })
