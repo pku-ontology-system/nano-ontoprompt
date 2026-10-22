@@ -572,6 +572,14 @@ class DecisionCaseService:
             raise CaseError("unsupported_run", "此运行不属于可撤销的审核写入路径", 422)
         if self.user.role != "admin" and original.executed_by != self.user.id:
             raise CaseError("forbidden", "只有执行人或管理员可撤销此写回", 403)
+        if original.status == "reverted":
+            self._target(original.target_object_id)
+            prior_reversal = self.db.query(OntologyActionRun).filter_by(
+                ontology_id=self.ontology_id,
+                client_request_id=f"revert:{original.id}",
+                decision_case_id=original.decision_case_id).first()
+            if prior_reversal:
+                return prior_reversal
         if original.status != "completed":
             raise CaseError("invalid_state", "此运行已撤销或未完成", 409)
         effects = original.side_effect_results or []

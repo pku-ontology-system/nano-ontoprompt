@@ -493,6 +493,10 @@ def revert_action_run(ontology_id: str, run_id: str, db: Session = Depends(get_d
             raise HTTPException(exc.status, detail={"code": exc.code, "message": str(exc)}) from exc
     if current_user.role != "admin" and original.executed_by != current_user.id:
         raise HTTPException(403, "Only the executor or an administrator can revert this Action")
+    from app.models.ontology import OntologyProject
+    if db.get(OntologyProject, ontology_id):
+        raise HTTPException(409, detail={"code": "legacy_run_requires_manual_compensation",
+                                         "message": "历史未审核运行不能直接自动撤销，请人工复核补偿方案"})
     if original.status != "completed" or (original.execution_context or {}).get("scenario_id"):
         raise HTTPException(409, "Only a completed live Action can be reverted")
     effects = original.side_effect_results or []

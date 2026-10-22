@@ -15,7 +15,7 @@ type CaseSummary = {
   evidence_refs?: EvidenceSelection[];
   reviewed_preview?: { diff?: Array<{ property: string; before: unknown; after: unknown }> }
 }
-type CaseEvent = { sequence: number; event_type: string; created_at?: string; trace_id?: string }
+type CaseEvent = { sequence: number; event_type: string; created_at?: string; trace_id?: string; payload?: Record<string, unknown> }
 
 const statusLabel: Record<string, string> = {
   draft: '草稿', ready_for_review: '待审核', approved: '已批准', rejected: '已驳回',
@@ -68,7 +68,7 @@ export default function DecisionCaseHistory({ ontologyId, objectId }: {
       {sourceLink && <Link className="mt-2 inline-block text-blue-700 hover:underline" to={sourceLink}>打开原始演示与证据</Link>}
       {events.isLoading && <p className="mt-2 text-slate-500">正在读取生命周期…</p>}
       {events.isError && <p className="mt-2 text-red-700">{formatApiError(events.error, '生命周期暂不可用')}</p>}
-      {!!events.data?.events.length && <ol className="mt-2 border-t pt-2">{events.data.events.map(event => <li key={event.sequence}>{event.sequence}. {event.event_type} · {event.created_at ? new Date(event.created_at).toLocaleString('zh-CN') : '—'}</li>)}</ol>}
+      {!!events.data?.events.length && <ol className="mt-2 border-t pt-2">{events.data.events.map(event => <li key={event.sequence}>{event.sequence}. {event.event_type} · {event.created_at ? new Date(event.created_at).toLocaleString('zh-CN') : '—'}{typeof event.payload?.revert_run_id === 'string' && <span className="block break-all font-mono text-[10px]">撤销 Run {event.payload.revert_run_id}</span>}</li>)}</ol>}
     </div>}
   </section>
 }

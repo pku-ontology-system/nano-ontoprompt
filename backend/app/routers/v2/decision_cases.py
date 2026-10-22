@@ -65,7 +65,15 @@ def _call(operation):
 
 def _payload(db: Session, case: DecisionCase) -> dict:
     run = db.get(OntologyActionRun, case.action_run_id) if case.action_run_id else None
-    return case_payload(case, run)
+    payload = case_payload(case, run)
+    if case.status == "reverted":
+        event = db.query(DecisionCaseEvent).filter_by(case_id=case.id,
+            event_type="reverted").order_by(DecisionCaseEvent.sequence.desc()).first()
+        reversal_id = (event.payload or {}).get("revert_run_id") if event else None
+        reversal = db.get(OntologyActionRun, reversal_id) if reversal_id else None
+        payload["revert_action_run_id"] = reversal_id
+        payload["projection_status"] = reversal.projection_status if reversal else None
+    return payload
 
 
 @router.get("/{ontology_id}/decision-cases/target-state/{object_id}")
