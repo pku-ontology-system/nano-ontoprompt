@@ -56,6 +56,7 @@ from app.routers.v2 import object_sets as object_sets_v2
 from app.routers.v2 import scenarios as scenarios_v2
 from app.routers.v2 import scenario_workbench as scenario_workbench_v2
 from app.routers.v2 import what_if_demo as what_if_demo_v2
+from app.routers.v2 import decision_lab as decision_lab_v2
 from app.routers.v2 import supplier_studies as supplier_studies_v2
 from app.routers.v2 import dynamic_ontology as dynamic_ontology_v2
 from app.routers.v2 import temporal_replays as temporal_replays_v2
@@ -441,6 +442,7 @@ app.include_router(object_sets_v2.router, prefix="/api/v2/ontologies", tags=["v2
 app.include_router(scenarios_v2.router, prefix="/api/v2/ontologies", tags=["v2-scenarios"])
 app.include_router(scenario_workbench_v2.router, prefix="/api/v2/ontologies", tags=["v2-scenario-workbench"])
 app.include_router(what_if_demo_v2.router, prefix="/api/v2/what-if", tags=["v2-what-if-demo"])
+app.include_router(decision_lab_v2.router, prefix="/api/v2/decision-lab", tags=["v2-decision-lab"])
 app.include_router(supplier_studies_v2.router, prefix="/api/v2/ontologies", tags=["v2-supplier-studies"])
 app.include_router(dynamic_ontology_v2.router, prefix="/api/v2/ontologies", tags=["v2-ontology-editor"])
 app.include_router(what_if_v2.router, prefix="/api/v2/ontologies", tags=["v2-what-if"])

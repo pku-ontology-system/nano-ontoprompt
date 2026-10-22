@@ -69,6 +69,7 @@ export default function OntologyDetailPage() {
     enabled: !!id,
   });
   const temporal = ontology?.data_class === "temporal";
+  const decisionLabDomain = id?.match(/^decision-lab-(ai4i|factorynet|ibadas)-v1$/)?.[1];
   const commonTabs = ["graph", "data_model", "entities", "objects", "logic", "audit", "reasoning", "decisions", "agent", "manufacturing", "logic-assets"];
   const validTabs = temporal ? [...commonTabs, "dynamic", "what_if"] : commonTabs;
   const activeTab: Tab = validTabs.includes(requested) ? (requested as Tab) : "graph";
@@ -129,7 +130,7 @@ export default function OntologyDetailPage() {
           {ontology.name}
         </h1>
         {ontology.status && <StatusBadge status={ontology.status} />}
-        <div className="ml-auto flex items-center gap-2">{canEdit && <button onClick={() => setEditing((value) => !value)} className={`rounded-md border px-3 py-2 text-xs ${editing ? "border-slate-800 bg-slate-800 text-white" : "border-slate-300 text-slate-700 hover:border-slate-600"}`}>{editing ? "关闭编辑" : "编辑本体"}</button>}<button onClick={() => setShowHistory(true)} className="rounded-md border border-slate-300 px-3 py-2 text-xs text-slate-700 hover:border-slate-600">修改记录</button></div>
+        <div className="ml-auto flex items-center gap-2">{decisionLabDomain && <button onClick={() => navigate(`/decision-lab?demo=${decisionLabDomain}`)} className="wb-button-primary">打开决策分析</button>}{canEdit && <button onClick={() => setEditing((value) => !value)} className={`rounded-md border px-3 py-2 text-xs ${editing ? "border-slate-800 bg-slate-800 text-white" : "border-slate-300 text-slate-700 hover:border-slate-600"}`}>{editing ? "关闭编辑" : "编辑本体"}</button>}<button onClick={() => setShowHistory(true)} className="rounded-md border border-slate-300 px-3 py-2 text-xs text-slate-700 hover:border-slate-600">修改记录</button></div>
       </div>
       {editing && canEdit && <OntologyEditorPanel ontologyId={id!} onChanged={() => setRefreshKey((value) => value + 1)} />}
       {editing && canEdit && <SemanticControlPanel ontologyId={id!} />}

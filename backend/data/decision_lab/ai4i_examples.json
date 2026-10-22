@@ -1,0 +1,382 @@
+[
+  {
+    "air_temp_k": 298.1,
+    "failure_modes": [],
+    "machine_failure": 0,
+    "process_temp_k": 308.6,
+    "product_id": "M14860",
+    "product_type": "M",
+    "source_row_id": "1",
+    "speed_rpm": 1551,
+    "tool_wear_min": 0,
+    "torque_nm": 42.8
+  },
+  {
+    "air_temp_k": 298.9,
+    "failure_modes": [
+      "PWF"
+    ],
+    "machine_failure": 1,
+    "process_temp_k": 309.1,
+    "product_id": "L47230",
+    "product_type": "L",
+    "source_row_id": "51",
+    "speed_rpm": 2861,
+    "tool_wear_min": 143,
+    "torque_nm": 4.6
+  },
+  {
+    "air_temp_k": 298.9,
+    "failure_modes": [
+      "PWF",
+      "OSF"
+    ],
+    "machine_failure": 1,
+    "process_temp_k": 309.0,
+    "product_id": "L47249",
+    "product_type": "L",
+    "source_row_id": "70",
+    "speed_rpm": 1410,
+    "tool_wear_min": 191,
+    "torque_nm": 65.7
+  },
+  {
+    "air_temp_k": 298.8,
+    "failure_modes": [
+      "TWF"
+    ],
+    "machine_failure": 1,
+    "process_temp_k": 308.9,
+    "product_id": "L47257",
+    "product_type": "L",
+    "source_row_id": "78",
+    "speed_rpm": 1455,
+    "tool_wear_min": 208,
+    "torque_nm": 41.3
+  },
+  {
+    "air_temp_k": 298.8,
+    "failure_modes": [],
+    "machine_failure": 0,
+    "process_temp_k": 308.9,
+    "product_id": "L47258",
+    "product_type": "L",
+    "source_row_id": "79",
+    "speed_rpm": 1398,
+    "tool_wear_min": 0,
+    "torque_nm": 51.5
+  },
+  {
+    "air_temp_k": 297.7,
+    "failure_modes": [],
+    "machine_failure": 0,
+    "process_temp_k": 309.7,
+    "product_id": "H29979",
+    "product_type": "H",
+    "source_row_id": "566",
+    "speed_rpm": 1570,
+    "tool_wear_min": 160,
+    "torque_nm": 35.8
+  },
+  {
+    "air_temp_k": 297.5,
+    "failure_modes": [],
+    "machine_failure": 0,
+    "process_temp_k": 309.5,
+    "product_id": "H30006",
+    "product_type": "H",
+    "source_row_id": "593",
+    "speed_rpm": 1668,
+    "tool_wear_min": 240,
+    "torque_nm": 27.9
+  },
+  {
+    "air_temp_k": 296.4,
+    "failure_modes": [],
+    "machine_failure": 0,
+    "process_temp_k": 307.4,
+    "product_id": "H30263",
+    "product_type": "H",
+    "source_row_id": "850",
+    "speed_rpm": 1586,
+    "tool_wear_min": 0,
+    "torque_nm": 35.5
+  },
+  {
+    "air_temp_k": 297.0,
+    "failure_modes": [
+      "RNF"
+    ],
+    "machine_failure": 0,
+    "process_temp_k": 308.3,
+    "product_id": "M16081",
+    "product_type": "M",
+    "source_row_id": "1222",
+    "speed_rpm": 1399,
+    "tool_wear_min": 132,
+    "torque_nm": 46.4
+  },
+  {
+    "air_temp_k": 298.0,
+    "failure_modes": [],
+    "machine_failure": 0,
+    "process_temp_k": 309.4,
+    "product_id": "H30685",
+    "product_type": "H",
+    "source_row_id": "1272",
+    "speed_rpm": 1490,
+    "tool_wear_min": 53,
+    "torque_nm": 40.5
+  },
+  {
+    "air_temp_k": 300.8,
+    "failure_modes": [
+      "HDF"
+    ],
+    "machine_failure": 1,
+    "process_temp_k": 309.4,
+    "product_id": "M18096",
+    "product_type": "M",
+    "source_row_id": "3237",
+    "speed_rpm": 1342,
+    "tool_wear_min": 113,
+    "torque_nm": 62.4
+  },
+  {
+    "air_temp_k": 301.8,
+    "failure_modes": [
+      "PWF"
+    ],
+    "machine_failure": 1,
+    "process_temp_k": 310.1,
+    "product_id": "M19152",
+    "product_type": "M",
+    "source_row_id": "4293",
+    "speed_rpm": 2372,
+    "tool_wear_min": 205,
+    "torque_nm": 13.9
+  },
+  {
+    "air_temp_k": 302.6,
+    "failure_modes": [
+      "HDF",
+      "PWF"
+    ],
+    "machine_failure": 1,
+    "process_temp_k": 310.4,
+    "product_id": "L51597",
+    "product_type": "L",
+    "source_row_id": "4418",
+    "speed_rpm": 1365,
+    "tool_wear_min": 80,
+    "torque_nm": 66.8
+  },
+  {
+    "air_temp_k": 303.7,
+    "failure_modes": [
+      "HDF"
+    ],
+    "machine_failure": 1,
+    "process_temp_k": 312.1,
+    "product_id": "L52031",
+    "product_type": "L",
+    "source_row_id": "4852",
+    "speed_rpm": 1363,
+    "tool_wear_min": 90,
+    "torque_nm": 51.8
+  },
+  {
+    "air_temp_k": 303.7,
+    "failure_modes": [
+      "OSF"
+    ],
+    "machine_failure": 1,
+    "process_temp_k": 312.7,
+    "product_id": "L52156",
+    "product_type": "L",
+    "source_row_id": "4977",
+    "speed_rpm": 1359,
+    "tool_wear_min": 194,
+    "torque_nm": 56.8
+  },
+  {
+    "air_temp_k": 304.2,
+    "failure_modes": [],
+    "machine_failure": 0,
+    "process_temp_k": 313.5,
+    "product_id": "M19983",
+    "product_type": "M",
+    "source_row_id": "5124",
+    "speed_rpm": 1532,
+    "tool_wear_min": 161,
+    "torque_nm": 41.3
+  },
+  {
+    "air_temp_k": 302.8,
+    "failure_modes": [],
+    "machine_failure": 0,
+    "process_temp_k": 312.3,
+    "product_id": "M20257",
+    "product_type": "M",
+    "source_row_id": "5398",
+    "speed_rpm": 1416,
+    "tool_wear_min": 241,
+    "torque_nm": 42.7
+  },
+  {
+    "air_temp_k": 302.6,
+    "failure_modes": [
+      "TWF",
+      "OSF"
+    ],
+    "machine_failure": 1,
+    "process_temp_k": 312.3,
+    "product_id": "M20261",
+    "product_type": "M",
+    "source_row_id": "5402",
+    "speed_rpm": 1454,
+    "tool_wear_min": 253,
+    "torque_nm": 54.8
+  },
+  {
+    "air_temp_k": 302.6,
+    "failure_modes": [
+      "RNF"
+    ],
+    "machine_failure": 0,
+    "process_temp_k": 312.1,
+    "product_id": "L52669",
+    "product_type": "L",
+    "source_row_id": "5490",
+    "speed_rpm": 1499,
+    "tool_wear_min": 215,
+    "torque_nm": 35.0
+  },
+  {
+    "air_temp_k": 300.8,
+    "failure_modes": [],
+    "machine_failure": 0,
+    "process_temp_k": 310.9,
+    "product_id": "M20878",
+    "product_type": "M",
+    "source_row_id": "6019",
+    "speed_rpm": 1557,
+    "tool_wear_min": 52,
+    "torque_nm": 31.6
+  },
+  {
+    "air_temp_k": 301.0,
+    "failure_modes": [],
+    "machine_failure": 0,
+    "process_temp_k": 310.6,
+    "product_id": "H35632",
+    "product_type": "H",
+    "source_row_id": "6219",
+    "speed_rpm": 1366,
+    "tool_wear_min": 106,
+    "torque_nm": 50.6
+  },
+  {
+    "air_temp_k": 300.8,
+    "failure_modes": [],
+    "machine_failure": 0,
+    "process_temp_k": 310.3,
+    "product_id": "L53623",
+    "product_type": "L",
+    "source_row_id": "6444",
+    "speed_rpm": 1537,
+    "tool_wear_min": 52,
+    "torque_nm": 33.3
+  },
+  {
+    "air_temp_k": 299.9,
+    "failure_modes": [],
+    "machine_failure": 0,
+    "process_temp_k": 311.3,
+    "product_id": "L55004",
+    "product_type": "L",
+    "source_row_id": "7825",
+    "speed_rpm": 1535,
+    "tool_wear_min": 160,
+    "torque_nm": 38.1
+  },
+  {
+    "air_temp_k": 300.4,
+    "failure_modes": [
+      "RNF"
+    ],
+    "machine_failure": 0,
+    "process_temp_k": 311.9,
+    "product_id": "H37282",
+    "product_type": "H",
+    "source_row_id": "7869",
+    "speed_rpm": 1438,
+    "tool_wear_min": 41,
+    "torque_nm": 46.7
+  },
+  {
+    "air_temp_k": 300.8,
+    "failure_modes": [],
+    "machine_failure": 0,
+    "process_temp_k": 312.5,
+    "product_id": "L55071",
+    "product_type": "L",
+    "source_row_id": "7892",
+    "speed_rpm": 1517,
+    "tool_wear_min": 107,
+    "torque_nm": 39.2
+  },
+  {
+    "air_temp_k": 297.3,
+    "failure_modes": [],
+    "machine_failure": 0,
+    "process_temp_k": 308.7,
+    "product_id": "M23593",
+    "product_type": "M",
+    "source_row_id": "8734",
+    "speed_rpm": 1447,
+    "tool_wear_min": 105,
+    "torque_nm": 44.5
+  },
+  {
+    "air_temp_k": 299.0,
+    "failure_modes": [],
+    "machine_failure": 0,
+    "process_temp_k": 310.2,
+    "product_id": "L56851",
+    "product_type": "L",
+    "source_row_id": "9672",
+    "speed_rpm": 1412,
+    "tool_wear_min": 246,
+    "torque_nm": 44.1
+  },
+  {
+    "air_temp_k": 298.6,
+    "failure_modes": [
+      "TWF"
+    ],
+    "machine_failure": 1,
+    "process_temp_k": 309.8,
+    "product_id": "L56938",
+    "product_type": "L",
+    "source_row_id": "9759",
+    "speed_rpm": 2271,
+    "tool_wear_min": 218,
+    "torque_nm": 16.2
+  },
+  {
+    "air_temp_k": 298.6,
+    "failure_modes": [
+      "PWF",
+      "OSF"
+    ],
+    "machine_failure": 1,
+    "process_temp_k": 308.2,
+    "product_id": "L57154",
+    "product_type": "L",
+    "source_row_id": "9975",
+    "speed_rpm": 1361,
+    "tool_wear_min": 172,
+    "torque_nm": 68.2
+  }
+]

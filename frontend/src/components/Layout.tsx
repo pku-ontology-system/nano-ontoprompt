@@ -6,6 +6,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Database,
+  ChartNoAxesCombined,
   FileSearch,
   FlaskConical,
   Images,
@@ -34,6 +35,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const navItems: NavItem[] = [
     { to: '/overview', icon: LayoutDashboard, label: '总览' },
     { to: '/what-if', icon: FlaskConical, label: '情景推演' },
+    { to: '/decision-lab', icon: ChartNoAxesCombined, label: '决策分析' },
     { to: '/scenarios', icon: FlaskConical, label: '通用情景' },
     {
       to: '/data', icon: Database, label: '数据工具',

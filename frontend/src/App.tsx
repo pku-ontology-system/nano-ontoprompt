@@ -28,6 +28,7 @@ const DynamicDataPage = React.lazy(() => import("@/pages/data-management/dynamic
 const BenchmarksPage = React.lazy(() => import("@/pages/benchmarks/BenchmarksPage"));
 const WhatIfWorkbenchPage = React.lazy(() => import("@/pages/what-if/SupplierStudyPage"));
 const WhatIfDemoLandingPage = React.lazy(() => import("@/pages/what-if/SupplierStudyPage").then(module => ({ default: module.WhatIfDemoLandingPage })));
+const DecisionLabPage = React.lazy(() => import("@/pages/decision-lab/DecisionLabPage"));
 const GenericScenarioWorkbenchPage = React.lazy(() => import("@/pages/what-if/GenericScenarioWorkbenchPage"));
 const ScenarioCatalogPage = React.lazy(() => import("@/pages/what-if/GenericScenarioWorkbenchPage").then(module => ({ default: module.ScenarioCatalogPage })));
 const ComponentSpikesPage = React.lazy(() => import("@/pages/component-spikes/ComponentSpikesPage"));
@@ -263,6 +264,10 @@ export default function App() {
             <Route
               path="/what-if"
               element={<ProtectedRoute><WhatIfDemoLandingPage /></ProtectedRoute>}
+            />
+            <Route
+              path="/decision-lab"
+              element={<ProtectedRoute><DecisionLabPage /></ProtectedRoute>}
             />
             <Route
               path="/scenarios"

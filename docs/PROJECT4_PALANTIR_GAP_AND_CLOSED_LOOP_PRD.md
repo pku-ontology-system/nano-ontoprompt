@@ -101,6 +101,20 @@ Palantir 的 [Ontology](https://www.palantir.com/docs/foundry/ontology)、[Actio
 
 这些是 frePPLe 制造样例和项目合成供应商 profile 的结果；cost units 不是美元。2026-10-22 逐个重启本地 backend、Celery worker 和 FalkorDB 后，health 恢复为 ok；三个原 Run ID、result view、输入/输出 digest 和上述指标保持不变，B/C 图仍分别返回 308 个对象、329 条关系。浏览器再次刷新后 Compare 仍显示 B/C 相对基线的差异。这证明当前本地栈的这次恢复验收，不代表所有环境的长期可用性或第 15 节全部 Gate 已通过。演示按 [逐步操作稿](DEMO_SUPPLIER_SCENARIO_WORKBENCH.md) 保持独立，不把本次恢复误写成三类数据的业务闭环已完成。
 
+### 2.3 2026-10-22 新增：小样例决策分析切片
+
+在 `palantir` 分支新增 `/decision-lab`：AI4I 维护优先级、FactoryNet CNC 速度偏差、I-BADAS 证据预算三个独立本体和九个预置计算 Run。每个用例可更改阈值或预算、保存新 Run、比较指标、打开对象与来源证据；木材 Study 仍从原 `/what-if` 进入。三条示例的共同能力是固定来源版本、规则公式、方案对比、输入/输出摘要和来源行追溯。它们只做分析，不执行生产动作。
+
+| 演示 | 来源与取样 | 三方案权衡 | 当前已验证的预置结果 |
+|---|---|---|---|
+| AI4I 维护优先级 | [UCI AI4I 2020](https://archive.ics.uci.edu/dataset/601/ai4i%2B2020%2B) 的 29 条有意分层记录；下载归档后仅保留切片 | 规则阈值 25/40/60；复核工作量与切片内官方故障标签覆盖 | 复核 18/8/4 条，覆盖 11/7/4 个故障标签 |
+| FactoryNet CNC | 已安装、哈希固定的 [FactoryNet CNC](https://huggingface.co/datasets/Forgis/FactoryNet) `cnc_000.parquet`；4 个 episode 各等距取 64 点 | 速度跟踪偏差阈值 0.25/0.5/1.0；告警与人工复核量 | 告警 22/14/5 点，需复核 4/2/1 批次 |
+| I-BADAS | 已安装的 [I-BADAS](https://huggingface.co/datasets/moiaraya/i-badas) 12 组 RGB、深度、掩码、点云样本；不复制大媒体 | 同一 12 MB 预算下，RGB/RGB+深度/四模态覆盖 | 可复核 12/6/4 组，传输 10.503/10.971/11.095 MB |
+
+三个演示在 PostgreSQL 留有 DatasetVersion、Ontology、ConstructionRun、EvidenceRef 与计算 Run；FactoryNet 和 I-BADAS 的媒体/来源由现有对象存储保存。来源页面、选样规则、SHA-256 和限制见 `backend/data/decision_lab/manifest.json`。AI4I 是合成数据，故障切片刻意分层；FactoryNet 是离散下采样，不是连续故障检测；I-BADAS 的异常标签仅用于回看统计。此演示不构成预测模型准确率、Action 审批写回、Agent 持久会话或平台级治理的验收。FactoryNet CNC 子集依原始 UMich CNC 来源条款，当前产品页面明确标记条款待核验，不能复用其他子集的许可证标注。
+
+本地单用户 Docker Compose 的 25 次顺序预热 GET 记录在 `backend/evidence/decision_lab_local_perf_2026-10-22.json`：目录接口 p95 为 26.41 ms，三组 Run 详情接口 p95 为 6.13–9.13 ms。该记录只验证当前小样例的本机响应，不代表并发吞吐或生产环境性能。自定义 Run `71812f00-4373-464c-8026-41b8befd8d13` 在 backend 重启后仍可回读，用于证明这次本地持久化路径；并不替代跨环境恢复验收。
+
 ## 3. Palantir 对照能力清单与产品优先级
 
 “现状”以当前代码审计为基础。P0/P1/P2 是本项目优先级，而不是 Palantir 官方路线。每项的完成条件由后文需求与阶段门槛进一步定义。
