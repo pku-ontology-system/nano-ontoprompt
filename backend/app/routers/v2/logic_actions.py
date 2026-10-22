@@ -3,7 +3,8 @@ from __future__ import annotations
 import uuid
 from types import SimpleNamespace
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from typing import Optional
 from datetime import datetime, timezone
@@ -11,9 +12,11 @@ from app.deps import get_current_user, get_db, require_admin, require_editor
 from app.models.user import User
 from app.models.v2.logic import OntologyLogicRule, OntologyStateMachine
 from app.models.v2.action import OntologyActionType, OntologyActionRun
+from app.models.v2.decision_case import DecisionCase
 from app.schemas.v2.object_query import ExecutionContext
 from app.services.v2.action_context import ActionContextError, action_context_error, resolve_action_context
 from app.services.v2.scenario_actions import compile_actions, validate_definition
+from app.services.v2.decision_cases import CaseError, DecisionCaseService, digest
 from app.services.v2.scenarios import ScenarioError, ScenarioService
 from app.models.v2.query_view import QueryDataView
 from app.services.v2.graph.falkordb_service import FalkorDBService
@@ -266,6 +269,9 @@ class ActionRunRequest(BaseModel):
     context: Optional[ExecutionContext] = None
     expected_etag: Optional[int | str] = None
     client_request_id: Optional[str] = None
+    evidence_refs: list[str | dict] = Field(default_factory=list)
+    reason: str = ""
+    case_context: dict = Field(default_factory=dict)
 
 
 class ActionReviewRequest(BaseModel):
@@ -640,6 +646,47 @@ def _apply_live_edits(db, ontology_id, action, edits):
     return before_snapshot, after_snapshot, results
 
 
+def _reviewed_live_proposal(ontology_id: str, action_id: str, body: ActionRunRequest,
+                            db: Session, current_user: User, resolved_context):
+    """Adapt the legacy live route to the read-only DecisionCase preview core."""
+    from app.services.v2.decision_cases import CaseError, DecisionCaseService
+
+    service = DecisionCaseService(db, ontology_id, current_user)
+    if not body.target_object_id:
+        raise CaseError("target_required", "正式对象操作须指定目标对象", 422)
+    target = service.target_state(body.target_object_id)
+    action = service._action(action_id)
+    if body.expected_etag is not None and (not isinstance(body.expected_etag, str)
+                                           or len(body.expected_etag) != 64):
+        raise CaseError("etag_format", "正式对象操作须使用 target-state 返回的 64 位 etag", 422)
+    expected_etag = body.expected_etag or target["etag"]
+    if expected_etag != target["etag"]:
+        raise CaseError("etag_conflict", "目标对象已变化，请重新读取", 409)
+    parameters = dict(body.parameters or {})
+    if any(item.get("name") == "target" for item in (action.parameters or [])) and "target" not in parameters:
+        parameters["target"] = {"object_type": target["object_type"], "object_id": target["object_id"]}
+    if body.reason and "reason" in parameters and body.reason != parameters["reason"]:
+        raise CaseError("reason_conflict", "事项理由与 Action 参数理由不一致", 422)
+    reason = (body.reason or parameters.get("reason") or "通过旧 Action API 提交，等待人工审核")
+    if not isinstance(reason, str) or not reason.strip():
+        raise CaseError("reason_required", "须说明操作理由", 422)
+    if any(item.get("name") == "reason" for item in (action.parameters or [])) and "reason" not in parameters:
+        parameters["reason"] = reason
+    kind = ("quality_review" if target["object_type"] == "InspectionSample"
+            else "dynamic_event" if target["object_type"] == "DynamicIncident"
+            else "maintenance_review" if target["object_type"] in {"Record", "Episode"}
+            else "general")
+    context = {**body.case_context, "source": "legacy_action_api",
+               "execution_context": resolved_context.context.model_dump(mode="json")}
+    proposed = SimpleNamespace(id="unpersisted", action_type_id=action.id,
+        created_by=current_user.id, target_object_id=target["object_id"],
+        target_object_type=target["object_type"], expected_etag=expected_etag,
+        parameters=parameters, evidence_refs=body.evidence_refs,
+        context_json=context, kind=kind)
+    preview, preview_digest, _, _ = service._preview(proposed)
+    return service, action, proposed, reason, preview, preview_digest
+
+
 @router.post("/{ontology_id}/actions/{action_id}/preview", dependencies=[Depends(require_action_ontology)])
 def preview_action_type(
     ontology_id: str,
@@ -652,9 +699,15 @@ def preview_action_type(
         resolved_context = resolve_action_context(db, ontology_id, body.context, current_user)
         from app.models.ontology import OntologyProject
         if resolved_context.target == "live" and db.get(OntologyProject, ontology_id):
-            raise HTTPException(409, detail={"code": "review_required", "message":
-                "正式对象操作须创建 DecisionCase 并经过预览、审核与执行", "decision_case_path":
-                f"/api/v2/ontologies/{ontology_id}/decision-cases"})
+            _, _, _, _, preview, preview_digest = _reviewed_live_proposal(
+                ontology_id, action_id, body, db, current_user, resolved_context)
+            return {"valid": True, "target": "live", "requires_review": True,
+                    "preview": preview, "preview_digest": preview_digest,
+                    "edits": [{"op": item["op"], "target": preview["target"],
+                               "property": item["property"], "value": item["after"]}
+                              for item in preview["diff"]],
+                    "edit_count": len(preview["diff"]),
+                    "decision_case_path": f"/api/v2/ontologies/{ontology_id}/decision-cases"}
         if db.get(OntologyProject, ontology_id):
             ScenarioService(db, ontology_id, current_user).authorize_ontology()
         action = db.query(OntologyActionType).filter(OntologyActionType.id == action_id, OntologyActionType.ontology_id == ontology_id).first()
@@ -669,6 +722,8 @@ def preview_action_type(
         raise HTTPException(exc.status, detail=action_context_error(exc)) from exc
     except ScenarioError as exc:
         raise HTTPException(exc.status, detail={"code": exc.code, "path": exc.path, "message": exc.message, "details": {}}) from exc
+    except CaseError as exc:
+        raise HTTPException(exc.status, detail={"code": exc.code, "message": str(exc)}) from exc
 
 
 @router.post("/{ontology_id}/actions/{action_id}/run", dependencies=[Depends(require_action_ontology), Depends(require_editor)])
@@ -683,15 +738,65 @@ def run_action_type(
         resolved_context = resolve_action_context(db, ontology_id, body.context, current_user)
         from app.models.ontology import OntologyProject
         if resolved_context.target == "live" and db.get(OntologyProject, ontology_id):
-            raise HTTPException(409, detail={"code": "review_required", "message":
-                "正式对象操作须创建 DecisionCase 并经过预览、审核与执行", "decision_case_path":
-                f"/api/v2/ontologies/{ontology_id}/decision-cases"})
+            if body.client_request_id:
+                legacy_context = {**body.case_context, "source": "legacy_action_api",
+                                  "execution_context": resolved_context.context.model_dump(mode="json")}
+                existing = db.query(DecisionCase).filter_by(
+                    ontology_id=ontology_id, created_by=current_user.id,
+                    action_type_id=action_id, context_digest=digest(legacy_context),
+                    client_request_id=body.client_request_id).first()
+                if existing:
+                    action_row = db.get(OntologyActionType, action_id)
+                    parameters = dict(body.parameters or {})
+                    if (action_row and any(item.get("name") == "target" for item in (action_row.parameters or []))
+                            and "target" not in parameters):
+                        parameters["target"] = {"object_type": existing.target_object_type,
+                                                "object_id": existing.target_object_id}
+                    if body.reason and "reason" in parameters and body.reason != parameters["reason"]:
+                        raise CaseError("reason_conflict", "事项理由与 Action 参数理由不一致", 422)
+                    reason = body.reason or parameters.get("reason") or "通过旧 Action API 提交，等待人工审核"
+                    if (action_row and any(item.get("name") == "reason" for item in (action_row.parameters or []))
+                            and "reason" not in parameters):
+                        parameters["reason"] = reason
+                    original_request = {"kind": existing.kind, "title": existing.title,
+                        "action_type_id": action_id, "target_object_id": body.target_object_id,
+                        "target_object_type": existing.target_object_type,
+                        "parameters": parameters, "evidence_refs": body.evidence_refs,
+                        "reason": reason, "expected_etag": existing.expected_etag,
+                        "context": legacy_context}
+                    if ((body.expected_etag is not None and body.expected_etag != existing.expected_etag)
+                            or digest(original_request) != existing.request_digest):
+                        raise CaseError("idempotency_conflict", "请求编号已用于其他操作内容", 409)
+                    DecisionCaseService(db, ontology_id, current_user).get_case(existing.id)
+                    return JSONResponse(status_code=200, content={
+                        "case_id": existing.id, "status": existing.status,
+                        "action_run_id": existing.action_run_id,
+                        "requires_review": existing.status != "completed",
+                        "preview_digest": existing.preview_digest,
+                        "decision_case_path": f"/api/v2/ontologies/{ontology_id}/decision-cases/{existing.id}"})
+            service, action, proposed, reason, _, _ = _reviewed_live_proposal(
+                ontology_id, action_id, body, db, current_user, resolved_context)
+            case = service.create(kind=proposed.kind, title=action.name,
+                action_type_id=action.id, target_object_id=proposed.target_object_id,
+                target_object_type=proposed.target_object_type, parameters=proposed.parameters,
+                evidence_refs=proposed.evidence_refs, reason=reason,
+                expected_etag=proposed.expected_etag,
+                client_request_id=body.client_request_id or str(uuid.uuid4()),
+                context=proposed.context_json)
+            preview_result = service.preview(case.id)
+            return JSONResponse(status_code=202, content={
+                "case_id": case.id, "status": case.status,
+                "action_run_id": case.action_run_id, "requires_review": case.status == "draft",
+                "preview_digest": preview_result["preview_digest"],
+                "decision_case_path": f"/api/v2/ontologies/{ontology_id}/decision-cases/{case.id}"})
         if db.get(OntologyProject, ontology_id):
             ScenarioService(db, ontology_id, current_user).authorize_ontology()
     except ActionContextError as exc:
         raise HTTPException(exc.status, detail=action_context_error(exc)) from exc
     except ScenarioError as exc:
         raise HTTPException(exc.status, detail={"code": exc.code, "path": exc.path, "message": exc.message, "details": {}}) from exc
+    except CaseError as exc:
+        raise HTTPException(exc.status, detail={"code": exc.code, "message": str(exc)}) from exc
 
     action = db.query(OntologyActionType).filter(
         OntologyActionType.id == action_id,

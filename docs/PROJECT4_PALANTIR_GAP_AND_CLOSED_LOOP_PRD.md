@@ -120,7 +120,7 @@ Palantir 的 [Ontology](https://www.palantir.com/docs/foundry/ontology)、[Actio
 | 工作项 | 当前状态 | 当前证据与边界 |
 |---|---|---|
 | 木材横向基准 | 已恢复并在运行页面核对 | `/what-if` 仍显示 Baseline/B/C、关系图、来源模型和第 2.2 节的准时率、采购成本、缺货值；此次新内核未改动木材页面和 Run。 |
-| DecisionCase 与本地属性 Action | 已实现一条 AI4I 运行路径 | PostgreSQL 同事务保存对象属性、ActionRun 和追加 Case 事件；批准后执行，图投影可重试。AI4I Case `8f25eaf7-441d-4d39-a5d4-3b0f54fd9f55` 及 Run `599360d6-a228-4021-b4c4-817aaae03708` 在本地完成并回读。仅支持单目标对象的本地属性设置/清除；其他 effect 返回明确错误。 |
+| DecisionCase 与本地属性 Action | 已实现一条 AI4I 运行路径 | PostgreSQL 同事务保存对象属性、ActionRun 和追加 Case 事件；批准后执行，图投影可重试。AI4I Case `8f25eaf7-441d-4d39-a5d4-3b0f54fd9f55` 及 Run `599360d6-a228-4021-b4c4-817aaae03708` 在本地完成并回读。旧 live Action API 的 preview 改为同一只读预览核心，run 建立待审核 Case 并返回 202；Scenario 路径仍独立。仅支持单目标对象的本地属性设置/清除；其他 effect 返回明确错误。 |
 | I-BADAS 质量复核 | 代码已接入，待运行验收 | 事项可绑定样例媒体、SHA-256、图像区域或点云视角，并保存严重度与待补证据；执行前重新检查媒体存在和版本。尚未通过缺失媒体、过期媒体和完整审核写回的实跑场景。 |
 | FactoryNet 时序维护复核 | 代码已接入，待运行验收 | 时间窗口绑定分析 Run、规则版本、episode 与来源行；创建、修改和执行前检查证据落在窗口内，重叠窗口给出冲突。尚未完成完整审核写回与恢复验收。 |
 | FactoryNet 动态事件处置 | 代码已接入，待运行验收 | 固定速度偏差规则触发独立待确认对象，保留原事件；处置通过 DecisionCase 写回，并在流图中建立触发关系。新增事件路径尚未实跑，不能声称重启后去重 Gate 已通过。 |
