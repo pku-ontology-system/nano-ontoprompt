@@ -77,6 +77,7 @@ from app.models.v2 import query_job  # noqa: E402, F401
 from app.models.v2 import scenario  # noqa: E402, F401
 from app.models.v2 import time_series  # noqa: E402, F401
 from app.models.v2 import object_view  # noqa: E402, F401
+from app.models.v2 import decision_lab, decision_case  # noqa: E402, F401
 
 
 def _ensure_version_column_capacity(connection) -> bool:

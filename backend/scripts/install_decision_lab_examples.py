@@ -15,6 +15,7 @@ from app.models.user import User
 from app.models.v2.construction import ConstructionRun, EvidenceRef
 from app.models.v2.dataset import Dataset, DatasetVersion, MediaItem, MultimodalSample
 from app.models.v2.decision_lab import DecisionLabRun
+from app.models.v2.action import OntologyActionType
 from app.services.storage_service import get_storage_service
 from app.services.v2.decision_lab import (
     DATASET_IDS, DATASET_VERSION_IDS, DESCRIPTIONS, ONTOLOGY_IDS, PRESETS, ROOT,
@@ -29,6 +30,46 @@ LABELS = {
     "factorynet": {"Episode": "加工批次", "Observation": "速度观测"},
     "ibadas": {"Scene": "采集场景", "InspectionSample": "质量复核样例"},
 }
+
+REVIEW_ACTIONS = {
+    "ai4i": [("maintenance_review", "Record", "maintenance_status",
+              ["inspection_requested", "inspection_deferred", "not_required"], "维护复核状态")],
+    "factorynet": [
+        ("maintenance_review", "Episode", "maintenance_status",
+         ["inspection_requested", "inspection_deferred", "not_required"], "加工批次维护复核"),
+        ("dynamic_event", "Observation", "disposition_status",
+         ["confirmed", "ignored", "in_progress", "resolved"], "动态观测处置"),
+    ],
+    "ibadas": [("quality_review", "InspectionSample", "review_status",
+                ["needs_followup", "no_issue", "insufficient_evidence"], "质量人工复核")],
+}
+
+
+def _seed_review_actions(db, admin: User, domain: str) -> None:
+    ontology_id = ONTOLOGY_IDS[domain]
+    for key, object_type, property_name, choices, title in REVIEW_ACTIONS[domain]:
+        action_id = f"{ontology_id}:action:{key}"
+        parameters = [
+            {"name": "target", "type": "object", "object_type": object_type, "required": True},
+            {"name": "decision", "type": "string", "choices": choices, "required": True},
+            {"name": "reason", "type": "string", "required": True},
+        ]
+        effects = [
+            {"op": "set_property", "target_parameter": "target", "property": property_name,
+             "value_parameter": "decision"},
+            {"op": "set_property", "target_parameter": "target", "property": property_name + "_reason",
+             "value_parameter": "reason"},
+        ]
+        action = db.get(OntologyActionType, action_id)
+        if action is None:
+            db.add(OntologyActionType(id=action_id, ontology_id=ontology_id, name=title,
+                description="本地审核后写回对象复核状态；不控制设备或外部系统。",
+                target_entity_type=object_type, action_category="decision_case",
+                parameters=parameters, effects=effects, submission_criteria=[{"type": "required_target"}],
+                permission_rules=[{"role": "admin"}, {"role": "editor"}],
+                side_effects=[], enabled=True, status="published", version=1, created_by=admin.id))
+        elif action.parameters != parameters or action.effects != effects:
+            raise ValueError(f"Published review Action changed: {action_id}; version it instead")
 
 
 def _source_version(db, domain: str, source: dict) -> DatasetVersion:
@@ -228,6 +269,7 @@ def install() -> list[dict]:
                 run.status, run.error = "completed", None
                 run.metrics = {"objects": count, "links": relation_count, "selected_examples": len(rows)}
                 _seed_runs(db, admin, domain, version)
+                _seed_review_actions(db, admin, domain)
                 db.commit()
             except Exception as exc:
                 run.status, run.error = "failed", str(exc)

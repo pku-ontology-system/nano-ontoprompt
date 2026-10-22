@@ -7,13 +7,13 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import Optional
 from datetime import datetime, timezone
-from app.deps import get_current_user, get_db
+from app.deps import get_current_user, get_db, require_admin, require_editor
 from app.models.user import User
 from app.models.v2.logic import OntologyLogicRule, OntologyStateMachine
 from app.models.v2.action import OntologyActionType, OntologyActionRun
 from app.schemas.v2.object_query import ExecutionContext
 from app.services.v2.action_context import ActionContextError, action_context_error, resolve_action_context
-from app.services.v2.scenario_actions import compile_actions
+from app.services.v2.scenario_actions import compile_actions, validate_definition
 from app.services.v2.scenarios import ScenarioError, ScenarioService
 from app.models.v2.query_view import QueryDataView
 from app.services.v2.graph.falkordb_service import FalkorDBService
@@ -75,7 +75,7 @@ def list_logic_rules(ontology_id: str, logic_type: str = "", db: Session = Depen
             for r in rules]
 
 
-@router.post("/{ontology_id}/logic", status_code=201)
+@router.post("/{ontology_id}/logic", status_code=201, dependencies=[Depends(require_editor)])
 def create_logic_rule(ontology_id: str, body: LogicRuleCreate, db: Session = Depends(get_db)):
     rule = OntologyLogicRule(
         ontology_id=ontology_id, name=body.name, logic_type=body.logic_type,
@@ -87,7 +87,7 @@ def create_logic_rule(ontology_id: str, body: LogicRuleCreate, db: Session = Dep
     return {"id": rule.id, "name": rule.name, "status": rule.status}
 
 
-@router.put("/{ontology_id}/logic/{rule_id}")
+@router.put("/{ontology_id}/logic/{rule_id}", dependencies=[Depends(require_editor)])
 def update_logic_rule(ontology_id: str, rule_id: str, body: LogicRuleCreate, db: Session = Depends(get_db)):
     rule = db.query(OntologyLogicRule).filter(
         OntologyLogicRule.id == rule_id, OntologyLogicRule.ontology_id == ontology_id
@@ -101,7 +101,7 @@ def update_logic_rule(ontology_id: str, rule_id: str, body: LogicRuleCreate, db:
     return {"id": rule.id, "status": "updated"}
 
 
-@router.post("/{ontology_id}/logic/{rule_id}/review")
+@router.post("/{ontology_id}/logic/{rule_id}/review", dependencies=[Depends(require_admin)])
 def review_logic_rule(ontology_id: str, rule_id: str, body: LogicReviewRequest, db: Session = Depends(get_db)):
     rule = db.query(OntologyLogicRule).filter(
         OntologyLogicRule.id == rule_id, OntologyLogicRule.ontology_id == ontology_id
@@ -136,7 +136,7 @@ def test_logic_rule(ontology_id: str, rule_id: str, body: LogicTestRequest, db: 
     return {"rule_id": rule.id, **_evaluate_logic_rule(rule, body.row or {}, body.parameters or {})}
 
 
-@router.delete("/{ontology_id}/logic/{rule_id}")
+@router.delete("/{ontology_id}/logic/{rule_id}", dependencies=[Depends(require_admin)])
 def delete_logic_rule(ontology_id: str, rule_id: str, db: Session = Depends(get_db)):
     rule = db.query(OntologyLogicRule).filter(
         OntologyLogicRule.id == rule_id, OntologyLogicRule.ontology_id == ontology_id
@@ -147,7 +147,7 @@ def delete_logic_rule(ontology_id: str, rule_id: str, db: Session = Depends(get_
     return {"status": "deleted"}
 
 
-@router.post("/{ontology_id}/logic/publish")
+@router.post("/{ontology_id}/logic/publish", dependencies=[Depends(require_admin)])
 def publish_logic_rules_v2(ontology_id: str, db: Session = Depends(get_db)):
     from app.models.logic import LogicRule as LogicRuleV1
 
@@ -172,7 +172,7 @@ def publish_logic_rules_v2(ontology_id: str, db: Session = Depends(get_db)):
 
 # ── Logic: Discovery ────────────────────────────────────────────
 
-@router.post("/{ontology_id}/logic/discover")
+@router.post("/{ontology_id}/logic/discover", dependencies=[Depends(require_editor)])
 def discover_logic_rules(ontology_id: str, db: Session = Depends(get_db)):
     """发现 Logic Rules（同步写入 v2 + v1 表，供前端 LogicTab 读取）"""
     from app.services.v2.mapping.mapping_service import MappingService
@@ -264,7 +264,7 @@ class ActionRunRequest(BaseModel):
     target_object_id: Optional[str] = None
     parameters: dict = {}
     context: Optional[ExecutionContext] = None
-    expected_etag: Optional[int] = None
+    expected_etag: Optional[int | str] = None
     client_request_id: Optional[str] = None
 
 
@@ -291,7 +291,7 @@ def list_action_types(ontology_id: str, category: str = "", db: Session = Depend
              "created_at": a.created_at.isoformat() if a.created_at else None} for a in actions]
 
 
-@router.post("/{ontology_id}/actions", status_code=201)
+@router.post("/{ontology_id}/actions", status_code=201, dependencies=[Depends(require_editor)])
 def create_action_type(ontology_id: str, body: ActionTypeCreate, db: Session = Depends(get_db)):
     act = OntologyActionType(
         ontology_id=ontology_id, name=body.name, action_category=body.action_category,
@@ -304,7 +304,7 @@ def create_action_type(ontology_id: str, body: ActionTypeCreate, db: Session = D
     return {"id": act.id, "name": act.name, "status": act.status}
 
 
-@router.post("/{ontology_id}/actions/{action_id}/review")
+@router.post("/{ontology_id}/actions/{action_id}/review", dependencies=[Depends(require_admin)])
 def review_action_type(ontology_id: str, action_id: str, body: ActionReviewRequest, db: Session = Depends(get_db)):
     act = db.query(OntologyActionType).filter(
         OntologyActionType.id == action_id, OntologyActionType.ontology_id == ontology_id
@@ -316,6 +316,11 @@ def review_action_type(ontology_id: str, action_id: str, body: ActionReviewReque
     if body.status is not None:
         if body.status not in ("draft", "reviewed", "disabled", "published"):
             raise HTTPException(400, "Invalid action status")
+        if body.status == "published" and not act.backed_by_function:
+            try:
+                validate_definition(act.parameters or [], act.effects or [])
+            except ScenarioError as exc:
+                raise HTTPException(422, {"code": exc.code, "message": exc.message}) from exc
         act.status = body.status
     if body.permission_rules is not None:
         act.permission_rules = body.permission_rules
@@ -334,7 +339,7 @@ def review_action_type(ontology_id: str, action_id: str, body: ActionReviewReque
     return {"id": act.id, "enabled": act.enabled, "status": act.status}
 
 
-@router.post("/{ontology_id}/actions/discover")
+@router.post("/{ontology_id}/actions/discover", dependencies=[Depends(require_editor)])
 def discover_actions(ontology_id: str, db: Session = Depends(get_db)):
     """发现 Actions（同步写入 v2 + v1 表，供前端 ActionsTab 读取）"""
     from app.services.v2.mapping.mapping_service import MappingService
@@ -390,7 +395,7 @@ def discover_actions(ontology_id: str, db: Session = Depends(get_db)):
     return {"discovered": len(created), "total_v2": tv2, "total_v1": tv1}
 
 
-@router.delete("/{ontology_id}/actions/{action_id}")
+@router.delete("/{ontology_id}/actions/{action_id}", dependencies=[Depends(require_admin)])
 def delete_action_type(ontology_id: str, action_id: str, db: Session = Depends(get_db)):
     act = db.query(OntologyActionType).filter(
         OntologyActionType.id == action_id, OntologyActionType.ontology_id == ontology_id
@@ -401,7 +406,7 @@ def delete_action_type(ontology_id: str, action_id: str, db: Session = Depends(g
     return {"status": "deleted"}
 
 
-@router.post("/{ontology_id}/actions/publish")
+@router.post("/{ontology_id}/actions/publish", dependencies=[Depends(require_admin)])
 def publish_actions_v2(ontology_id: str, db: Session = Depends(get_db)):
     from app.models.action import Action as ActionV1
 
@@ -410,6 +415,13 @@ def publish_actions_v2(ontology_id: str, db: Session = Depends(get_db)):
         OntologyActionType.status != "published",
         OntologyActionType.enabled == True,  # noqa: E712
     ).all()
+    for action in actions:
+        if not action.backed_by_function:
+            try:
+                validate_definition(action.parameters or [], action.effects or [])
+            except ScenarioError as exc:
+                raise HTTPException(422, {"code": exc.code, "action_type_id": action.id,
+                                          "message": exc.message}) from exc
     for action in actions:
         action.status = "published"
         action.updated_at = datetime.now(timezone.utc)
@@ -427,26 +439,52 @@ def publish_actions_v2(ontology_id: str, db: Session = Depends(get_db)):
 # ── Action Runs ─────────────────────────────────────────────────
 
 @router.get("/{ontology_id}/action-runs", dependencies=[Depends(require_action_ontology)])
-def list_action_runs(ontology_id: str, limit: int = 20, target_object_id: str | None = None, db: Session = Depends(get_db)):
+def list_action_runs(ontology_id: str, limit: int = 20, target_object_id: str | None = None,
+                     db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    from app.models.ontology import OntologyProject
+    from app.services.v2.decision_cases import CaseError, DecisionCaseService
     query = db.query(OntologyActionRun).filter(
         OntologyActionRun.ontology_id == ontology_id
     )
     if target_object_id:
         query = query.filter(OntologyActionRun.target_object_id == target_object_id)
     runs = query.order_by(OntologyActionRun.started_at.desc()).limit(max(1, min(limit, 100))).all()
-    return [{"id": r.id, "action_type_id": r.action_type_id, "status": r.status,
-             "target_object_id": r.target_object_id, "error": r.error,
-             "side_effect_results": r.side_effect_results,
-             "execution_context": r.execution_context or {},
-             "started_at": r.started_at.isoformat() if r.started_at else None} for r in runs]
+    service = DecisionCaseService(db, ontology_id, current_user) if db.get(OntologyProject, ontology_id) else None
+    visible = []
+    for run in runs:
+        if current_user.role != "admin" and run.executed_by != current_user.id:
+            continue
+        if service and run.target_object_id:
+            try:
+                service._target(run.target_object_id)
+            except CaseError:
+                continue
+        # The log lists operations, not raw values or context payloads. A
+        # reader's current field policy must not be bypassed by old Run JSON.
+        operations = [{"op": item.get("op")}
+                      for item in (run.side_effect_results or []) if isinstance(item, dict)]
+        visible.append({"id": run.id, "action_type_id": run.action_type_id, "status": run.status,
+                        "target_object_id": run.target_object_id, "error_code": "action_failed" if run.error else None,
+                        "side_effect_results": operations, "decision_case_id": run.decision_case_id,
+                        "trace_id": run.trace_id, "projection_status": run.projection_status,
+                        "started_at": run.started_at.isoformat() if run.started_at else None})
+    return visible
 
 
-@router.post("/{ontology_id}/action-runs/{run_id}:revert", dependencies=[Depends(require_action_ontology)])
+@router.post("/{ontology_id}/action-runs/{run_id}:revert", dependencies=[Depends(require_action_ontology), Depends(require_editor)])
 def revert_action_run(ontology_id: str, run_id: str, db: Session = Depends(get_db),
                       current_user: User = Depends(get_current_user)):
     original = db.query(OntologyActionRun).filter_by(id=run_id, ontology_id=ontology_id).with_for_update().first()
     if not original:
         raise HTTPException(404, "Action run not found")
+    if original.decision_case_id:
+        from app.services.v2.decision_cases import CaseError, DecisionCaseService
+        try:
+            run = DecisionCaseService(db, ontology_id, current_user).revert(original)
+            return {"run_id": run.id, "reverted_run_id": original.id, "status": run.status,
+                    "projection_status": run.projection_status, "edits": len(run.side_effect_results or [])}
+        except CaseError as exc:
+            raise HTTPException(exc.status, detail={"code": exc.code, "message": str(exc)}) from exc
     if current_user.role != "admin" and original.executed_by != current_user.id:
         raise HTTPException(403, "Only the executor or an administrator can revert this Action")
     if original.status != "completed" or (original.execution_context or {}).get("scenario_id"):
@@ -613,6 +651,10 @@ def preview_action_type(
     try:
         resolved_context = resolve_action_context(db, ontology_id, body.context, current_user)
         from app.models.ontology import OntologyProject
+        if resolved_context.target == "live" and db.get(OntologyProject, ontology_id):
+            raise HTTPException(409, detail={"code": "review_required", "message":
+                "正式对象操作须创建 DecisionCase 并经过预览、审核与执行", "decision_case_path":
+                f"/api/v2/ontologies/{ontology_id}/decision-cases"})
         if db.get(OntologyProject, ontology_id):
             ScenarioService(db, ontology_id, current_user).authorize_ontology()
         action = db.query(OntologyActionType).filter(OntologyActionType.id == action_id, OntologyActionType.ontology_id == ontology_id).first()
@@ -629,7 +671,7 @@ def preview_action_type(
         raise HTTPException(exc.status, detail={"code": exc.code, "path": exc.path, "message": exc.message, "details": {}}) from exc
 
 
-@router.post("/{ontology_id}/actions/{action_id}/run", dependencies=[Depends(require_action_ontology)])
+@router.post("/{ontology_id}/actions/{action_id}/run", dependencies=[Depends(require_action_ontology), Depends(require_editor)])
 def run_action_type(
     ontology_id: str,
     action_id: str,
@@ -640,6 +682,10 @@ def run_action_type(
     try:
         resolved_context = resolve_action_context(db, ontology_id, body.context, current_user)
         from app.models.ontology import OntologyProject
+        if resolved_context.target == "live" and db.get(OntologyProject, ontology_id):
+            raise HTTPException(409, detail={"code": "review_required", "message":
+                "正式对象操作须创建 DecisionCase 并经过预览、审核与执行", "decision_case_path":
+                f"/api/v2/ontologies/{ontology_id}/decision-cases"})
         if db.get(OntologyProject, ontology_id):
             ScenarioService(db, ontology_id, current_user).authorize_ontology()
     except ActionContextError as exc:

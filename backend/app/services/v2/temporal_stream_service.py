@@ -24,9 +24,12 @@ from typing import Any, Iterable
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.models.entity import Entity
+from app.models.entity_instance import EntityInstance
 from app.models.ontology import OntologyProject
 from app.models.ontology_revision import OntologyRevision
 from app.models.v2.construction import ConstructionRun, EvidenceRef
+from app.models.v2.action import OntologyActionType
 from app.models.v2.dataset import Dataset, DatasetVersion
 from app.models.v2.temporal_replay import (
     DataModelSnapshot,
@@ -53,6 +56,8 @@ DEFAULT_SPEED = 1.0
 MAX_SPEED = 20.0
 MAX_GRAPH_NODES = 500
 MAX_GRAPH_EDGES = 2000
+DYNAMIC_DISPOSITION_RULE_VERSION = "factorynet_velocity_residual_v1"
+DYNAMIC_DISPOSITION_THRESHOLD = 0.5
 
 _worker_lock = threading.RLock()
 _active_stream_workers: set[str] = set()
@@ -738,6 +743,79 @@ def _evidence_for_event(db: Session, replay: TemporalReplay, event: TemporalStre
     return evidence
 
 
+def _maybe_create_dynamic_incident(db: Session, replay: TemporalReplay,
+                                   event: TemporalStreamEvent, evidence: EvidenceRef,
+                                   payload: dict[str, Any], ordinal: float) -> EntityInstance | None:
+    """Persist a reviewable business object; never rewrite the source event."""
+    try:
+        feedback = _finite_number(payload.get("feedback_vel_0"), "feedback_vel_0")
+        setpoint = _finite_number(payload.get("setpoint_vel_0"), "setpoint_vel_0")
+    except StreamError:
+        return None
+    residual = abs(feedback - setpoint)
+    if residual < DYNAMIC_DISPOSITION_THRESHOLD:
+        return None
+    incident_id = f"dynamic-incident:{replay.id}:{event.id}"
+    existing = db.get(EntityInstance, incident_id)
+    if existing:
+        return existing
+    type_id = f"{replay.ontology_id}:type:DynamicIncident"
+    action_id = f"{replay.ontology_id}:action:factorynet_disposition_v1"
+    if db.get(Entity, type_id) is None:
+        db.add(Entity(id=type_id, ontology_id=replay.ontology_id,
+                      name_cn="动态事件处置事项", name_en="DynamicIncident", type="EntityType",
+                      properties={"property_definitions": [
+                          {"id": name, "name": name, "type": "string"} for name in
+                          ("event_key", "run_id", "episode_id", "source_row_id", "ordinal",
+                           "residual", "threshold", "rule_version", "disposition_status")]}))
+        db.flush()
+    parameters = [{"name": "target", "type": "object", "object_type": "DynamicIncident", "required": True},
+                  {"name": "decision", "type": "string", "choices":
+                   ["confirmed", "ignored", "in_progress", "resolved"], "required": True},
+                  {"name": "reason", "type": "string", "required": True}]
+    effects = [{"op": "set_property", "target_parameter": "target", "property": "disposition_status",
+                "value_parameter": "decision"},
+               {"op": "set_property", "target_parameter": "target", "property": "disposition_reason",
+                "value_parameter": "reason"}]
+    action = db.get(OntologyActionType, action_id)
+    if action is None:
+        project = db.get(OntologyProject, replay.ontology_id)
+        db.add(OntologyActionType(id=action_id, ontology_id=replay.ontology_id,
+            name="动态事件人工处置", target_entity_type="DynamicIncident",
+            action_category="decision_case", parameters=parameters, effects=effects,
+            submission_criteria=[{"type": "required_target"}],
+            permission_rules=[{"role": "admin"}, {"role": "editor"}],
+            side_effects=[], enabled=True, status="published", version=1,
+            created_by=project.created_by if project else None))
+    elif action.parameters != parameters or action.effects != effects:
+        raise StreamError("动态处置 Action 定义与当前规则不一致", "ACTION_VERSION_CONFLICT")
+    incident_evidence_id = f"stream-incident-evidence:{replay.id}:{event.id}"
+    if db.get(EvidenceRef, incident_evidence_id) is None:
+        db.add(EvidenceRef(id=incident_evidence_id,
+            construction_run_id=evidence.construction_run_id, ontology_id=replay.ontology_id,
+            assertion_id=incident_id, assertion_kind="node",
+            source_dataset_id=evidence.source_dataset_id, source_version=evidence.source_version,
+            source_file=evidence.source_file, source_row_id=evidence.source_row_id,
+            revision_id=evidence.revision_id, extractor="rule", confidence=1.0,
+            confidence_method=DYNAMIC_DISPOSITION_RULE_VERSION,
+            evidence_text=evidence.evidence_text, content_hash=evidence.content_hash))
+    incident = EntityInstance(id=incident_id, ontology_id=replay.ontology_id,
+        entity_id=type_id, row_identity=incident_id, source_version=evidence.source_version,
+        row_data={"event_key": event.event_key, "event_id": event.id, "run_id": replay.id,
+                  "episode_id": event.episode_id, "source_row_id": event.source_row_id,
+                  "event_time": (event.source_ref or {}).get("event_time"),
+                  "ingestion_time": event.ingested_at.isoformat() if event.ingested_at else None,
+                  "ordinal": ordinal, "source_cursor": event.source_sequence,
+                  "feedback_vel_0": feedback, "setpoint_vel_0": setpoint,
+                  "residual": round(residual, 6), "threshold": DYNAMIC_DISPOSITION_THRESHOLD,
+                  "rule_version": DYNAMIC_DISPOSITION_RULE_VERSION,
+                  "source_ref": event.source_ref or {},
+                  "evidence_ref_id": incident_evidence_id,
+                  "disposition_status": "pending_confirmation"})
+    db.add(incident)
+    return incident
+
+
 def _fact_id(replay_id: str, subject: str, predicate: str, obj: str | None, state_key: str, valid_from: Any) -> str:
     return "fact:" + hashlib.sha256(_json([replay_id, subject, predicate, obj, state_key, str(valid_from)]).encode("utf-8")).hexdigest()
 
@@ -922,6 +1000,7 @@ def process_one_event(db: Session, replay: TemporalReplay, event: TemporalStream
     nodes, structural_edges, builder = build_factorynet_instances_incremental([row], builder, sequence_column=time_column)
     graph = FalkorDBService()
     evidence = _evidence_for_event(db, replay, event, payload)
+    incident = _maybe_create_dynamic_incident(db, replay, event, evidence, payload, ordinal)
     namespace = replay.graph_namespace or f"stream_{replay.id.replace('-', '')}"
     graph_nodes: list[dict[str, Any]] = []
     for node in nodes:
@@ -940,6 +1019,22 @@ def process_one_event(db: Session, replay: TemporalReplay, event: TemporalStream
 
     episode_node = f"FactoryNet:Episode:{event.episode_id}"
     observation_node = f"FactoryNet:Observation:{event.episode_id}:{event.source_row_id or sequence}"
+    if incident is not None:
+        incident_props = {key: value for key, value in (incident.row_data or {}).items()
+                          if value is None or isinstance(value, (str, int, float, bool))}
+        graph_nodes.append({"id": incident.id, "entity_type": "DynamicIncident",
+                            "properties": {**incident_props, "_replay_id": replay.id,
+                                           "_event_id": event.id, "event_ordinal": ordinal,
+                                           "_graph_namespace": namespace}})
+        triggered = _add_fact(db, replay, subject_id=observation_node,
+                              predicate="TRIGGERS_INCIDENT", object_id=incident.id,
+                              ordinal=ordinal, event=event, evidence=evidence, graph=graph)
+        facts.append(triggered)
+        graph_edges.append({"source": observation_node, "target": incident.id,
+                            "type": "TRIGGERS_INCIDENT", "properties": {
+                                "_fact_id": triggered.id, "_event_id": event.id,
+                                "event_ordinal": ordinal, "valid_from_ordinal": ordinal,
+                                "_replay_id": replay.id, "_graph_namespace": namespace}})
     state_map = dict(state_payload.get("episodes") or {})
     episode_state = dict(state_map.get(event.episode_id) or {})
     # LATEST_OBSERVATION is a new fact for each submitted event.

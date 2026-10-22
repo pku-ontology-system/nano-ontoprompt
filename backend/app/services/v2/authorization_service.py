@@ -56,6 +56,7 @@ class AuthorizationProjection:
     policy_ids: list[str] = field(default_factory=list)
     permission_digest: str = ""
     reason: str | None = None
+    privileged: bool = False
     # Keep the already-loaded policy set with the projection.  Readers that
     # stream rows can evaluate row conditions without issuing another query.
     object_allow_policies: list[OntologySecurityPolicy] = field(default_factory=list, repr=False)
@@ -311,7 +312,22 @@ def resolve_projection(
     owner = str(project.created_by or "") == str(context.principal_id)
     admin = str(role or "") == "admin"
     if owner or admin:
-        return AuthorizationProjection(context=context, allowed=True, allowed_fields=None, policy_ids=[row.id for row in policies], permission_digest=digest, reason="owner_or_admin")
+        # Owner/admin has an implicit broad grant, but an explicit deny still
+        # constrains objects, fields and links. Keep the policy set so every
+        # terminal reader applies the same deny decision.
+        deny_policies = [row for row in policies if str(row.effect).lower() == "deny"]
+        object_denies = [row for row in deny_policies if row.scope_kind in {"ontology", "object_type"}]
+        field_denies = [row for row in deny_policies if row.scope_kind == "property"]
+        link_denies = [row for row in deny_policies if row.scope_kind == "link"]
+        return AuthorizationProjection(
+            context=context, allowed=True, allowed_fields=None,
+            policy_ids=[row.id for row in policies], permission_digest=digest,
+            reason="owner_or_admin_with_explicit_deny", privileged=True,
+            object_deny_policies=object_denies, field_deny_policies=field_denies,
+            link_deny_policies=link_denies,
+            resource_aliases=resource_aliases,
+            resource_ids_by_api_name=resource_ids_by_api_name,
+        )
 
     # Ontology/object_type policies decide whether an object is visible.
     # Property/link policies only shape the corresponding fields/edges and
@@ -434,6 +450,30 @@ def redact_record(projection: AuthorizationProjection, record: dict[str, Any]) -
     if projection.unrestricted:
         return dict(record)
 
+    if projection.privileged:
+        matching_denies = [
+            policy for policy in [*projection.object_deny_policies, *projection.field_deny_policies]
+            if conditions_match(record, policy.conditions_json, projection.resource_aliases)
+            and _scope_matches(policy, projection.context.object_type_id, record, projection.context,
+                               projection.resource_aliases, projection.resource_ids_by_api_name)
+        ]
+        if any(policy.scope_kind in {"ontology", "object_type"}
+               and not _policy_field_names(policy, projection.resource_aliases)
+               for policy in matching_denies):
+            return None
+        result = dict(record)
+        properties = result.get("properties")
+        if isinstance(properties, dict):
+            properties = dict(properties)
+            result["properties"] = properties
+        for policy in matching_denies:
+            for name in _policy_field_names(policy, projection.resource_aliases):
+                if name in result:
+                    result[name] = None
+                if isinstance(properties, dict) and name in properties:
+                    properties[name] = None
+        return result
+
     # When the adapter did not materialize the complete row set up front,
     # enforce conditional object and field policies here against this row.
     # Previously ``allowed`` meant that some allow rule existed, which let a
@@ -511,6 +551,33 @@ def require_visible(projection: AuthorizationProjection, record: dict[str, Any])
     return visible
 
 
+def field_permitted(projection: AuthorizationProjection, record: dict[str, Any], field_name: str) -> bool:
+    """Check a field even when an Action creates it for the first time."""
+    if redact_record(projection, record) is None:
+        return False
+    object_id = str(record.get("id") or record.get("object_id") or record.get("entity_instance_id") or "")
+    allowed = projection.allowed_fields_by_object.get(object_id, projection.allowed_fields)
+    denied = projection.denied_fields | projection.denied_fields_by_object.get(object_id, set())
+    if field_name in denied or (allowed is not None and field_name not in allowed):
+        return False
+    for policy in [*projection.object_deny_policies, *projection.field_deny_policies]:
+        if not conditions_match(record, policy.conditions_json, projection.resource_aliases):
+            continue
+        if policy.scope_kind == "property":
+            scoped_name = projection.resource_aliases.get(str(policy.scope_id or ""), str(policy.scope_id or ""))
+            scope_matches = scoped_name == field_name
+        else:
+            scope_matches = _scope_matches(policy, projection.context.object_type_id, record,
+                                           projection.context, projection.resource_aliases,
+                                           projection.resource_ids_by_api_name)
+        if not scope_matches:
+            continue
+        fields = _policy_field_names(policy, projection.resource_aliases)
+        if not fields or field_name in fields:
+            return False
+    return True
+
+
 def redact_link_record(
     projection: AuthorizationProjection,
     record: dict[str, Any],
@@ -554,9 +621,9 @@ def redact_link_record(
     # existence of the relationship itself.  Relationships are default-deny
     # for ordinary principals just like objects; endpoint visibility alone
     # must not reveal an otherwise unauthorized edge.
-    if not any(not _policy_field_names(policy, projection.resource_aliases) for policy in allows):
+    if not projection.privileged and not any(not _policy_field_names(policy, projection.resource_aliases) for policy in allows):
         return None
-    if allows and any(not _policy_field_names(policy, projection.resource_aliases) for policy in allows):
+    if projection.privileged or (allows and any(not _policy_field_names(policy, projection.resource_aliases) for policy in allows)):
         allowed_fields = None
     elif allows:
         allowed_fields = {name for policy in allows for name in _policy_field_names(policy, projection.resource_aliases)}
@@ -591,6 +658,7 @@ __all__ = [
     "redact_record",
     "filter_records",
     "require_visible",
+    "field_permitted",
     "redact_link_record",
     "cached_permission_digest",
 ]

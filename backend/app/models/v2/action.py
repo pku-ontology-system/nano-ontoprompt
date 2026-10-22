@@ -49,3 +49,17 @@ class OntologyActionRun(Base):
     executed_by: Mapped[str | None] = mapped_column(String, ForeignKey("users.id"), nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # New reviewed runs use these fields; historical runs remain readable
+    # without inventing approval or provenance that was never recorded.
+    decision_case_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    client_request_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    input_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    preview_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    permission_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    before_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    after_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    expected_etag: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    action_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    trace_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    projection_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    projection_error: Mapped[str | None] = mapped_column(Text, nullable=True)

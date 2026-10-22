@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.deps import get_current_user, get_db, require_editor
 from app.models.ontology import OntologyProject
+from app.models.entity_instance import EntityInstance
 from app.models.user import User
 from app.models.v2.temporal_replay import TemporalFact, TemporalReplay, TemporalStreamEvent
 from app.services.v2.temporal_stream_service import (
@@ -26,6 +27,7 @@ from app.services.v2.temporal_stream_service import (
     stream_graph,
     update_stream_control,
 )
+from app.services.v2.decision_cases import CaseError, DecisionCaseService
 
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -146,6 +148,31 @@ def create_stream(ontology_id: str, body: TemporalStreamCreate, db: Session = De
 @router.get("/temporal-streams/{run_id}")
 def get_stream(run_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     return serialize_stream(_get_replay(db, run_id, user), db=db)
+
+
+@router.get("/temporal-streams/{run_id}/incidents")
+def list_stream_incidents(run_id: str, limit: int = Query(50, ge=1, le=200),
+                          db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    replay = _get_replay(db, run_id, user)
+    type_id = f"{replay.ontology_id}:type:DynamicIncident"
+    rows = db.query(EntityInstance).filter_by(ontology_id=replay.ontology_id,
+                                               entity_id=type_id).filter(
+        EntityInstance.row_data["run_id"].as_string() == replay.id).order_by(
+        EntityInstance.created_at.desc()).limit(limit).all()
+    service = DecisionCaseService(db, replay.ontology_id, user)
+    incidents = []
+    for row in rows:
+        try:
+            state = service.target_state(row.id)
+        except CaseError:
+            continue
+        incidents.append({"object_id": row.id, "object_type": state["object_type"],
+                          "properties": state["properties"], "etag": state["etag"],
+                          "source_version": state["source_version"]})
+        if len(incidents) >= limit:
+            break
+    return {"run_id": replay.id, "ontology_id": replay.ontology_id,
+            "incidents": incidents, "count": len(incidents)}
 
 
 @router.post("/temporal-streams/{run_id}/control")

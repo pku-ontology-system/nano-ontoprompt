@@ -1,6 +1,7 @@
 """Read and run the bounded public benchmark decision demonstrations."""
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from uuid import uuid4
 
@@ -14,6 +15,8 @@ from app.models.user import User
 from app.models.v2.construction import EvidenceRef
 from app.models.v2.dataset import Dataset, DatasetVersion, MultimodalSample
 from app.models.v2.decision_lab import DecisionLabRun
+from app.services.v2.authorization_service import field_permitted
+from app.services.v2.decision_cases import CaseError, DecisionCaseService
 from app.services.v2.decision_lab import (
     DESCRIPTIONS, ONTOLOGY_IDS, PRESETS, RULE_VERSION, calculate, canonical_sha, load_examples,
 )
@@ -65,6 +68,40 @@ def _summary(run: DecisionLabRun) -> dict:
             "created_by": run.created_by}
 
 
+def _run_result_visible(db: Session, user: User, ontology_id: str, result: dict,
+                        visibility_cache: dict[tuple[str, str], bool] | None = None) -> bool:
+    """Aggregates can disclose hidden rows, so only release complete result sets."""
+    service = DecisionCaseService(db, ontology_id, user)
+    for item in result.get("rows", []):
+        object_id = item.get("object_id") if isinstance(item, dict) else None
+        if not isinstance(object_id, str):
+            return False
+        cache_key = (ontology_id, object_id)
+        if visibility_cache is not None and cache_key in visibility_cache:
+            if not visibility_cache[cache_key]:
+                return False
+            continue
+        try:
+            _, _, auth, _ = service._target(object_id)
+        except CaseError:
+            if visibility_cache is not None:
+                visibility_cache[cache_key] = False
+            return False
+        allowed = auth["projection"].unrestricted
+        if visibility_cache is not None:
+            visibility_cache[cache_key] = allowed
+        if not allowed:
+            return False
+    return True
+
+
+def _restricted_summary(run: DecisionLabRun) -> dict:
+    return {"id": run.id, "domain": run.domain, "case_key": run.case_key,
+            "case_name": run.case_name, "rule_version": run.rule_version,
+            "source_digest": run.source_digest, "access_state": "restricted",
+            "created_at": run.created_at.isoformat() if isinstance(run.created_at, datetime) else str(run.created_at)}
+
+
 @router.get("")
 def catalog(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     domains = []
@@ -86,7 +123,10 @@ def catalog(db: Session = Depends(get_db), user: User = Depends(get_current_user
 def list_runs(domain: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     _access(db, user, domain)
     runs = db.query(DecisionLabRun).filter_by(domain=domain).order_by(DecisionLabRun.created_at.desc()).limit(30).all()
-    return {"runs": [_summary(run) for run in runs]}
+    visibility_cache: dict[tuple[str, str], bool] = {}
+    return {"runs": [_summary(run) if _run_result_visible(db, user, run.ontology_id,
+                                                         run.result_json or {}, visibility_cache)
+                     else _restricted_summary(run) for run in runs]}
 
 
 @router.get("/{domain}/runs/{run_id}")
@@ -95,6 +135,8 @@ def get_run(domain: str, run_id: str, db: Session = Depends(get_db), user: User 
     run = db.get(DecisionLabRun, run_id)
     if run is None or run.domain != domain:
         raise HTTPException(404, "计算记录不存在")
+    if not _run_result_visible(db, user, run.ontology_id, run.result_json or {}):
+        raise HTTPException(403, "计算结果包含当前不可访问的对象或字段")
     return {**_summary(run), "result": run.result_json, "ontology_id": run.ontology_id,
             "dataset_version_id": run.dataset_version_id}
 
@@ -107,6 +149,8 @@ def create_run(domain: str, body: RunRequest, db: Session = Depends(get_db), use
     if existing:
         if existing.parameters != body.parameters or existing.case_key != body.case_key:
             raise HTTPException(409, "同一请求 ID 已用于另一组参数")
+        if not _run_result_visible(db, user, existing.ontology_id, existing.result_json or {}):
+            raise HTTPException(403, "计算结果包含当前不可访问的对象或字段")
         return {**_summary(existing), "result": existing.result_json, "ontology_id": existing.ontology_id,
                 "dataset_version_id": existing.dataset_version_id}
     try:
@@ -115,6 +159,8 @@ def create_run(domain: str, body: RunRequest, db: Session = Depends(get_db), use
         raise HTTPException(422, str(exc)) from exc
     if body.expected_source_digest and body.expected_source_digest != result["source_digest"]:
         raise HTTPException(409, "来源切片已变化，请刷新页面重新确认参数")
+    if not _run_result_visible(db, user, ontology_id, result):
+        raise HTTPException(403, "计算结果包含当前不可访问的对象或字段")
     row = DecisionLabRun(domain=domain, ontology_id=ontology_id, dataset_version_id=version.id,
                          case_key=body.case_key, case_name=body.case_name, rule_version=RULE_VERSION[domain],
                          parameters=result["parameters"], result_json=result, source_digest=result["source_digest"],
@@ -137,10 +183,29 @@ def object_evidence(domain: str, object_id: str, db: Session = Depends(get_db), 
     ref = db.get(EvidenceRef, f"{ontology_id}:evidence:{object_id}")
     if ref is None:
         raise HTTPException(404, "来源证据不存在")
+    try:
+        _, object_type, auth, _ = DecisionCaseService(db, ontology_id, user)._target(object_id)
+    except CaseError:
+        raise HTTPException(404, "样例对象不存在或不可访问") from None
     sample = db.get(MultimodalSample, ref.source_sample_id) if ref.source_sample_id else None
-    return {"object_id": object_id, "ontology_id": ontology_id, "properties": instance.row_data,
+    try:
+        source_properties = json.loads(ref.evidence_text) if ref.evidence_text else {}
+    except (TypeError, ValueError):
+        source_properties = {}
+    current_properties = auth["record"]["properties"]
+    if isinstance(source_properties, dict):
+        record = {"id": instance.id, "entity_id": instance.entity_id, "entity_type": object_type,
+                  "object_type_resource_id": instance.object_type_resource_id,
+                  "properties": instance.row_data or {}}
+        source_properties = {key: value for key, value in source_properties.items()
+                             if field_permitted(auth["projection"], record, key)}
+    return {"object_id": object_id, "ontology_id": ontology_id, "properties": current_properties,
+            "evidence_ref_id": ref.id,
+            "source_properties": source_properties if isinstance(source_properties, dict) else {},
+            "current_properties": current_properties,
             "source_dataset_id": ref.source_dataset_id, "source_version": ref.source_version,
             "source_file": ref.source_file, "source_row_id": ref.source_row_id,
             "source_sample_id": sample.id if sample else None, "source_media_id": ref.source_media_id,
-            "evidence_text": ref.evidence_text, "content_hash": ref.content_hash,
+            "evidence_text": json.dumps(source_properties, ensure_ascii=False, sort_keys=True),
+            "content_hash": ref.content_hash,
             "construction_run_id": ref.construction_run_id}
