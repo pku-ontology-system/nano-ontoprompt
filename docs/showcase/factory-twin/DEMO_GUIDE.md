@@ -1,20 +1,24 @@
 # 工厂数字孪生控制塔：完整演示 Guide
 
-更新日期：2026-10-26
+更新日期：2026-11-01
 
 ## 1. 你要展示的故事
 
 这是一个“设备健康风险驱动生产与维护协同排程”的工厂数字孪生演示。它参考 Palantir 官方 [Lear JIT Production](https://www.youtube.com/watch?v=-DPdyQR1bG4) 的操作结构，以及 Foundry 的 [Dynamic Scheduling](https://www.palantir.com/docs/foundry/dynamic-scheduling/scheduling-overview) 契约：业务人员先看到工厂态势，进入资源排程，查看依赖和推荐，制造一个约束冲突并看到系统阻断，再提交一条有效改排到 Scenario 预览。
 
-它不是静态 UI mock：页面读取真实本体快照；推荐和业务校验调用已发布的用户 Function；预览调用已发布 Action；Scenario 使用实时 ETag。资产页使用本地固定的 NASA C-MAPSS FD001 子集；生产排程是确定性演示数据，不能描述为真实工厂历史。
+新增的“方案对比与决策”页把故事补到最后一步：用户 Function 按 `decision/v1` 比较多个候选方案并标出依据，推荐方案经决策包提交、由第二个人批准后才合并到本体，并且可以回滚。
+
+它不是静态 UI mock：页面读取真实本体快照；推荐和业务校验调用已发布的用户 Function；预览调用已发布 Action；Scenario 使用实时 ETag。资产页使用本地固定的 NASA C-MAPSS FD001 子集；生产排程和交期是确定性演示数据，不能描述为真实工厂历史。
 
 演示地址：
 
 [打开 Factory Twin Operations](http://localhost:15173/apps/workshop/dea63459-3064-4385-83c7-acb3b5f47daf?ontology=6681e0bf-a289-40e0-b6c5-b823186b3198)
 
-登录：`admin` / `admin123`
+本机重新安装后，链接以 `backend/.factory-twin-demo.json` 里的 `url` 为准（每次 `--force-new` 都会生成新链接）。
 
-建议使用 1440×900 或更大的浏览器窗口，缩放保持 100%。完整演示约 7–10 分钟。
+登录：`admin` / `admin123`。审核人账号由安装脚本准备，只写在本机私有文件 `backend/.factory-twin-demo.users.json`（600 权限，不进 Git）。
+
+建议使用 1440×900 或更大的浏览器窗口，缩放保持 100%。完整演示约 10–13 分钟，其中决策闭环约 3 分钟。
 
 ## 2. 一句话开场
 
@@ -120,7 +124,57 @@
 
 ![设备数字孪生](screenshots/07-asset-twin.png)
 
-## 10. Step 8 — 证明这不是硬编码应用
+## 10. Step 8 — 方案对比、审批与执行（新增）
+
+点击“方案对比与决策”。这一页全部由通用 `study_run` 组件组成：已发布的 Study 用三个 Object Query 节点读取排程、设备和资源，用户 Function `factory_schedule_decision`（`decision/v1`）在固定的数据视图上比较方案。
+
+先指出问题和依据（顶部指标都标了依据类型）：
+
+- **330 分钟高风险暴露（推断）**：EQ005 健康分 52、风险 High，但排程里没有它的检修任务；CNC 上 WO-100、WO-200 的工序都在它检修之前运行。
+- **1 个延误或未排工单（观测）**：加急单 WO-300 尚未排产，交期 16:00。
+- **维护覆盖率 50%（推断）**：两台高风险设备中，只有 EQ002 在首个生产任务前完成检修。
+- 下方表格逐个工单给出原因，每条都标明“观测”或“推断”；证据里保留 C-MAPSS 单元与周期。
+
+再看候选方案。它们全部是模拟结果，不改正式数据：
+
+| 方案 | 结果 |
+| --- | --- |
+| 推荐 · 组合：EQ005 07:00–07:45 检修 + WO-300 排入 CNC 14:00–15:00 | 暴露 330→0，交付风险 1→0，覆盖率 50%→100% |
+| 可行 · 只检修 EQ005 | 暴露归零，但 WO-300 仍未排产 |
+| 可行 · 只把 WO-300 排到 07:00 | 按期完成，但在未检修设备上多跑 60 分钟（暴露 390） |
+| 不可行 · WO-300 直接插入 08:30 | 与 WO-100 机加工冲突（capacity_collision），不能生成决策包 |
+
+![方案对比](screenshots/09-plan-comparison.png)
+
+推荐讲法：
+
+> 候选方案由 Function 按数据生成，约束检查和排程页用的是同一套规则。不可行方案不会被悄悄修正，而是明确显示冲突并禁止提交。
+
+然后走审批闭环：
+
+1. 选择推荐方案，查看前后对比，以及将要调用的两个 Action：“安排维护任务”“修改排程项”。
+2. 写决策理由，点击“创建决策包”。服务端从固定数据视图编译出 4 项本体修改。
+3. 点击“提交审核”。作者自己再点“批准”会被拒绝：作者不能审批自己的决策包。
+4. 退出登录，换审核人账号登录，打开同一页、选同一方案，点击“批准”，再点击“执行（合并到本体）”。
+5. 点击页面顶部的“刷新数据”。应用读取的是本体快照，执行后要重新拍一份。切到“生产与维护协同排程”：EQ005 的检修出现在 07:00，WO-300 排在 14:00，显示“14 已排 · 0 未排”。
+6. 回到决策页，点击“回滚本体变更”，再点“刷新数据”，排程恢复为“12 已排 · 1 未排”。
+
+![决策包](screenshots/10-decision-package.png)
+
+![审核人批准并执行](screenshots/11-approved-and-applied.png)
+
+![执行后的排程](screenshots/12-schedule-after-apply.png)
+
+推荐讲法：
+
+> 推演只发生在 Scenario 和数据视图里。真正写回本体必须经过决策包：运行摘要固定、修改由服务端编译、由他人批准、合并时做冲突检查、全程记录事件，并且可以回滚。
+
+注意：
+
+- 每次安装生成的这条运行只能完整走一次闭环；要重演，用 `--force-new` 重新安装。
+- 登录接口每分钟最多 5 次，排练时不要频繁切换账号。
+
+## 11. Step 9 — 证明这不是硬编码应用
 
 点击“编辑”，切换编辑器页面到“生产与维护协同排程”，点击 `Factory Twin · Dynamic Schedule` 的“配置”。
 
@@ -139,13 +193,13 @@
 
 ![通用 Builder 配置](screenshots/08-generic-builder.png)
 
-## 11. 可选操作 — Shift+拖拽创建任务
+## 12. 可选操作 — Shift+拖拽创建任务
 
 返回运行态排程页，按住 Shift，在任一资源行空白区域横向拖拽。系统会生成黄色本地任务提案，并把开始、结束、资源、名称和任务 ID 编译给配置的“创建排程项”Action。它同样必须经过业务校验和 Scenario 预览。
 
 这一步不要在正式演示开头做，因为它会增加现场变量；建议放在问答环节。
 
-## 12. “没有 hardcode”的证据清单
+## 13. “没有 hardcode”的证据清单
 
 | 层 | 演示中的工厂内容存放位置 | 平台通用边界 |
 | --- | --- | --- |
@@ -156,18 +210,22 @@
 | 校验 | 用户 Function `schedule_validation.py` | `schedule-validation/v1` |
 | 修改/创建 | 已发布 Scenario Action 配置 | 通用 Action 编译与权限边界 |
 | 隔离推演 | Tracking Scenario | ETag、revision、preview/save |
+| 方案比较与推荐 | 用户 Function `decision_function.py`（Study 节点 `decide`） | `decision/v1` |
+| 审批与写回 | 决策包：提交、他人批准、执行、回滚 | 通用 Decision Package + Scenario merge |
 
 “不硬编码”不等于没有领域数据或领域配置。任务名、工厂资源、兼容能力和规则必须存在，但它们属于用户可替换的数据、Function 和应用定义，不属于平台 `if manufacturing` 分支。
 
-## 13. 稳定性与生产级别应如何表述
+## 14. 稳定性与生产级别应如何表述
 
 已经通过的真实浏览器验收包括：JWT 登录、真实 PostgreSQL/FalkorDB 数据读取、Workshop 快照、三层排程、多资源显示、依赖箭头、隔离 Function 推荐、冲突校验、有效修改、Action 预览、刷新恢复、资产页和 Builder 配置。该验收没有使用前端 API mock。
+
+决策闭环另有一条真实浏览器验收（2026-11-01，本机隔离栈）：方案对比、不可行方案禁止提交、创建决策包、作者自批被拒、审核人批准、执行合并、刷新快照后排程变化、回滚恢复。
 
 可以说“具备生产导向的控制面”：版本化应用、发布态 Function/Action、资源限制、Scenario 隔离、ETag、明确失败状态和审计边界。
 
 不能说“已完成生产认证”：本演示没有完成 24 小时 soak、真实 PLC/MES 写回、现场权限矩阵、灾备演练或代表性工厂规模性能验收。
 
-## 14. 复现与维护
+## 15. 复现与维护
 
 演示包：
 
@@ -175,7 +233,10 @@
 - `backend/examples/factory_twin/data.json`
 - `backend/examples/factory_twin/schedule_search.py`
 - `backend/examples/factory_twin/schedule_validation.py`
+- `backend/examples/factory_twin/decision_function.py`（`decision/v1` 方案比较）
+- `backend/unit_tests/test_factory_decision_function.py`（已知答案单测）
 - `frontend/src/test/e2e/factory-twin-showcase.spec.ts`
+- `frontend/src/test/e2e/factory-twin-decision.spec.ts`（决策闭环）
 
 重新安装时在 backend 容器运行：
 
@@ -187,8 +248,11 @@ FACTORY_TWIN_PASSWORD=<local-admin-password> python scripts/seed_factory_twin_de
 
 ```text
 PLAYWRIGHT_BASE_URL=http://127.0.0.1:15173 npx playwright test src/test/e2e/factory-twin-showcase.spec.ts --project=chromium --workers=1
+PLAYWRIGHT_BASE_URL=http://127.0.0.1:15173 npx playwright test src/test/e2e/factory-twin-decision.spec.ts --project=chromium --workers=1 --retries=0
 ```
 
-## 15. 结尾话术
+决策闭环用例需要 JWT 模式（安装脚本会准备审核人账号），并且会消耗这次安装的运行；重跑前先用 `--force-new` 重新安装。
+
+## 16. 结尾话术
 
 > 这个演示的价值不是一张排程图，而是一套可复用的业务构建方式：把真实世界资产和任务映射成本体对象，把客户约束发布为可版本化 Function，把操作发布为 Action，再通过 Scenario 先验证、后提交。相同制造领域换一套数据时，重做映射和配置，不重写平台。
