@@ -24,6 +24,12 @@ export type Runtime = {
 type P = Record<string, unknown>
 const str = (value: unknown) => (value === undefined || value === null ? '' : String(value))
 const list = <T,>(value: unknown) => (Array.isArray(value) ? value as T[] : [])
+const isRecord = (value: unknown): value is P => !!value && typeof value === 'object' && !Array.isArray(value)
+/** decision/v1 actions nest their inputs under `parameters`; older candidates keep them flat. */
+const actionFields = (row: P) => Object.entries(isRecord(row.parameters) ? row.parameters : row).filter(([key]) => key !== 'action_type')
+/** Object references show their id; lists join; anything else stays readable instead of "[object Object]". */
+const actionValue = (value: unknown): string => Array.isArray(value) ? value.map(actionValue).join('、')
+  : isRecord(value) ? str(value.object_id ?? value.id ?? JSON.stringify(value)) : str(value)
 
 function useData(widget: Widget, rt: Runtime) {
   const source = widget.source ? rt.sources[widget.source] : undefined
@@ -192,7 +198,7 @@ function ActionDetail({ rows, p, rt, source }: { rows: Row[]; p: P; rt: Runtime;
     <dl className="grid grid-cols-2 gap-2 lg:grid-cols-4">{list<P>(p.metrics).map(metric => <div key={str(metric.label)} className="rounded border bg-slate-50 p-2"><dt className="text-[11px] text-slate-500">{str(metric.label)}</dt>
       <dd className="text-sm font-semibold">{metric.before_path ? `${formatCell(getPath(source.outputs, str(metric.before_path)), metric.format as Format)} → ` : ''}{formatCell(getPath(candidate, str(metric.after_field)), metric.format as Format)}</dd></div>)}</dl>
     {Array.isArray(candidate.protected_orders) && <p className="text-sm">获益 {list(candidate.protected_orders).length} · 受损 <span className={list(candidate.harmed_orders).length ? 'text-rose-700' : ''}>{list(candidate.harmed_orders).length}</span></p>}
-    <ul className="max-h-32 space-y-1 overflow-auto text-xs">{actions.map((row, index) => <li key={index} className="rounded border px-2 py-1"><strong>{str(row.action_type)}</strong> · {Object.entries(row).filter(([key]) => key !== 'action_type').map(([key, value]) => `${key}=${plainId(str(value))}`).join(' · ')}</li>)}</ul>
+    <ul className="max-h-32 space-y-1 overflow-auto text-xs">{actions.map((row, index) => <li key={index} className="rounded border px-2 py-1"><strong>{str(row.action_type)}</strong> · {actionFields(row).map(([key, value]) => `${key}=${plainId(actionValue(value))}`).join(' · ')}</li>)}</ul>
     {!!p.explain && <div className="rounded border border-violet-200 bg-violet-50/50 p-3" data-testid="aip-explanation">
       <div className="flex items-center gap-2"><span className="rounded bg-violet-600 px-2 py-0.5 text-xs text-white">AI 辅助解释</span>
         {explanation && <span className="rounded bg-amber-100 px-2 py-0.5 text-xs text-amber-800">模型解释 · 语义未核验</span>}
