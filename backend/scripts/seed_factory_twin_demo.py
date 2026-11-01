@@ -1,9 +1,16 @@
 """Install the Factory Digital Twin showcase from data and public contracts.
 
 The platform runtime is not extended by this script. It creates ordinary
-Ontology types/objects, two user Functions, two Scenario Action types, one
-Scenario, and a Workshop definition through the same reusable contracts used
-by any other domain.
+Ontology types/objects, three user Functions (schedule search, schedule
+validation and a ``decision/v1`` plan comparison), three Scenario Action types,
+one tracking Scenario, a published decision Study with a completed baseline
+run, and a Workshop definition through the same reusable contracts used by any
+other domain.
+
+Under JWT auth it also prepares a reviewer account, because a Decision Package
+author cannot approve their own package.  Its credentials are written only to
+``backend/.factory-twin-demo.users.json`` (mode 600, ignored by Git); the
+public manifest ``backend/.factory-twin-demo.json`` names the account only.
 
 Run inside the backend container:
   python scripts/seed_factory_twin_demo.py --api http://127.0.0.1:8000
@@ -13,7 +20,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -30,6 +39,10 @@ from app.services.v2.graph.falkordb_service import FalkorDBService  # noqa: E402
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "factory_twin"
 NAME = "工厂数字孪生控制塔"
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+MANIFEST = BACKEND_DIR / ".factory-twin-demo.json"
+USERS_FILE = BACKEND_DIR / ".factory-twin-demo.users.json"
+DECISION_KEY = "factory_schedule_decision"
 
 
 def unwrap(response: httpx.Response, expected: int = 200):
@@ -65,8 +78,12 @@ TYPE_DEFINITIONS = {
         ("predecessors", "json", "前置任务"), ("compatible_resources", "json", "兼容资源"),
         ("material_ready", "boolean", "物料就绪"), ("quality_hold", "boolean", "质量冻结"),
         ("order_id", "string", "工单"), ("status", "string", "状态"), ("priority", "integer", "优先级"),
-        ("object_type", "string", "对象类型")]),
+        ("object_type", "string", "对象类型"), ("due", "timestamp", "交期"), ("duration_minutes", "integer", "计划时长（分钟）")]),
 }
+
+
+def fields(api_name: str) -> list[str]:
+    return [item["id"] for item in TYPE_DEFINITIONS[api_name]["property_definitions"]]
 
 
 def install_objects(ontology_id: str, fixture: dict) -> int:
@@ -117,8 +134,123 @@ def action_type(client, root: str, headers: dict, body: dict) -> dict:
     return unwrap(client.post(f"{root}/scenario-action-types/{created['id']}:publish", headers=headers))
 
 
+def accepted(response: httpx.Response):
+    """Like ``unwrap`` for endpoints that answer 200, 201 or 202."""
+    if response.status_code not in (200, 201, 202):
+        raise RuntimeError(f"{response.request.method} {response.request.url}: {response.status_code} {response.text[:1200]}")
+    body = response.json()
+    return body.get("data", body) if isinstance(body, dict) and "data" in body else body
+
+
+def decision_function(client, root: str, headers: dict) -> dict:
+    return unwrap(client.post(f"{root}/logic-assets/user-functions", headers=headers, json={
+        "asset_key": DECISION_KEY, "name": "工厂排程与检修决策", "version": "1.0.0",
+        "description": "decision/v1: risk exposure, delivery risk and maintenance coverage of candidate schedule plans",
+        "source": (EXAMPLE / "decision_function.py").read_text(encoding="utf-8"),
+        "input_schema": {"type": "object", "required": ["schedule_items", "assets"], "properties": {
+            "schedule_items": {"type": "array"}, "assets": {"type": "array"}, "resources": {"type": "array"}}},
+        "output_schema": {"type": "object", "required": ["decision"], "properties": {"decision": {"type": "object"}}},
+        "limits": {"timeout_seconds": 20, "memory_mb": 256}}), 201)
+
+
+def decision_study(client, root: str, headers: dict, ontology_id: str, wait_seconds: int = 180) -> dict:
+    """Publish the plan-comparison Study, pin a data view and run its baseline case."""
+    reads = [("read_schedule", "ScheduleItem"), ("read_assets", "FactoryAsset"), ("read_resources", "FactoryResource")]
+    spec = {"spec_version": "scenario-study/v1", "context_policy": {"scenario_mode": "pinned_on_run", "time_required": False},
+            "parameters": [],
+            "nodes": [{"key": key, "kind": "object_query", "outputs": {"objects": "object_set"},
+                       "config": {"type": api_name, "select": fields(api_name)}} for key, api_name in reads] + [
+                {"key": "decide", "kind": "function", "implementation": {"key": DECISION_KEY, "version": "1.0.0"},
+                 "inputs": {"schedule_items": {"from": "read_schedule.objects"}, "assets": {"from": "read_assets.objects"},
+                            "resources": {"from": "read_resources.objects"}},
+                 "outputs": {"decision": "decision"}}],
+            "edges": [{"source": "read_schedule.objects", "target": "decide.schedule_items"},
+                      {"source": "read_assets.objects", "target": "decide.assets"},
+                      {"source": "read_resources.objects", "target": "decide.resources"}],
+            "metrics": [], "constraints": [],
+            "budgets": {"max_nodes": 10, "max_objects": 10000, "max_wall_seconds": 300, "max_artifact_bytes": 10485760}}
+    study = accepted(client.post(f"{root}/scenario-study-definitions", headers=headers,
+                                 json={"name": "工厂排程与检修决策", "draft_spec": spec}))
+    version = accepted(client.post(f"{root}/scenario-study-definitions/{study['id']}:publish", headers=headers,
+                                   json={"expected_etag": study["etag"]}))
+    view = accepted(client.post(f"{root}/object-query/data-views", headers=headers,
+                                json={"source_ontology_id": ontology_id, "source_manifest_digest": "factory-twin-decision"}))
+    scenario = accepted(client.post(f"{root}/scenarios", headers=headers,
+                                    json={"name": "工厂决策基线", "base_view_id": view["view_id"]}))
+    cases = f"{root}/scenario-study-definitions/{study['id']}/cases"
+    case = accepted(client.post(cases, headers=headers, json={"study_version": version["version"], "scenario_id": scenario["id"],
+                                                               "name": "基线", "case_kind": "baseline"}))
+    accepted(client.post(f"{cases}/{case['id']}:compile", headers=headers))
+    run = accepted(client.post(f"{cases}/{case['id']}/runs", headers=headers,
+                               json={"expected_etag": case["etag"], "client_request_id": f"factory-seed-{ontology_id[:8]}"}))
+    state = run
+    deadline = time.monotonic() + wait_seconds
+    while time.monotonic() < deadline:
+        state = accepted(client.get(f"{root}/scenario-study-runs/{run['id']}", headers=headers))
+        if state["status"] in ("completed", "failed", "cancelled"):
+            break
+        time.sleep(2)
+    if state["status"] != "completed":
+        raise RuntimeError(f"Decision study run {run['id']} ended as {state['status']}: {state.get('error')}")
+    return {"study_id": study["id"], "run_id": run["id"], "scenario_id": scenario["id"]}
+
+
+def reviewer_account() -> dict | None:
+    """Return a second JWT identity for package review, reusing the one already prepared."""
+    from app.config import settings
+    from app.models.user import User
+    from app.services.auth_service import hash_password
+    if settings.auth_mode != "jwt":
+        return None
+    with SessionLocal() as db:
+        if USERS_FILE.exists():
+            saved = json.loads(USERS_FILE.read_text(encoding="utf-8")).get("reviewer") or {}
+            if saved.get("username") and db.query(User).filter_by(username=saved["username"]).first():
+                return saved
+        username = f"factory-reviewer-{secrets.token_hex(3)}"
+        password = secrets.token_urlsafe(18)
+        db.add(User(username=username, email=f"{username}@demo.ontoact.invalid",
+                    password_hash=hash_password(password), role="admin"))
+        db.commit()
+    reviewer = {"username": username, "password": password}
+    USERS_FILE.touch(mode=0o600, exist_ok=True)
+    USERS_FILE.chmod(0o600)
+    USERS_FILE.write_text(json.dumps({"reviewer": reviewer}, ensure_ascii=False, indent=2), encoding="utf-8")
+    return reviewer
+
+
+def decision_page() -> dict:
+    """Plan comparison and governed approval, built only from generic study_run widgets."""
+    return {"id": "decision", "title": "方案对比与决策", "template": "free", "widgets": [
+        {"id": "decision_kpis", "type": "kpi_strip", "title": "", "source": "decision", "path": "", "props": {"items": [
+            {"label": "高风险设备暴露（分钟）", "path": "decision.metric.baseline", "format": "number", "note": "推断：生产在未检修的高风险设备上运行的时长"},
+            {"label": "延误或未排工单", "path": "decision.kpis.0.value", "format": "number", "note": "观测：当前计划与交期"},
+            {"label": "维护覆盖率", "path": "decision.kpis.3.value", "format": "percent", "note": "推断：高风险设备在首个生产任务前完成检修的比例"},
+            {"label": "最晚完工", "path": "decision.kpis.5.value", "format": "text", "note": "观测：当前计划"}]}},
+        {"id": "orders", "type": "table", "title": "工单风险与依据", "source": "decision", "path": "decision.subjects", "props": {"columns": [
+            {"label": "工单", "field": "label", "format": "text"}, {"label": "状态", "field": "status", "format": "text", "badge": True},
+            {"label": "高风险暴露（分钟）", "field": "metric_value", "format": "number", "tone_rule": "gt", "tone_value": 0},
+            {"label": "依据（观测 / 推断）", "field": "reasons", "format": "text"}]}},
+        {"id": "plans", "type": "action_list", "title": "候选方案（模拟结果）", "source": "decision", "path": "decision.candidates", "props": {
+            "label_field": "label", "variable": "plan",
+            "subtitle": "{verdict} · 暴露 {metric_after|number} 分钟 · 交付风险 {delivery_risk_after|number} · 新增占用 {cost|number} 分钟"}},
+        {"id": "plan_detail", "type": "action_detail", "title": "方案详情与审批", "source": "decision", "path": "decision.candidates", "props": {
+            "variable": "plan", "explain": False, "metrics": [
+                {"label": "高风险暴露（分钟）", "before_path": "decision.metric.baseline", "after_field": "metric_after", "format": "number"},
+                {"label": "延误或未排工单", "before_path": "decision.kpis.0.value", "after_field": "delivery_risk_after", "format": "number"},
+                {"label": "维护覆盖率", "before_path": "decision.kpis.3.value", "after_field": "coverage_after", "format": "percent"},
+                {"label": "新增占用产能（分钟）", "after_field": "cost", "format": "number"}]}},
+        {"id": "replan", "type": "rerun_button", "title": "", "source": "decision", "path": "", "props": {"label": "用最新本体数据重跑", "steps": [
+            {"label": "高风险暴露（分钟）", "path": "decision.metric.baseline", "format": "number"},
+            {"label": "延误或未排工单", "path": "decision.kpis.0.value", "format": "number"}]}}],
+        "layout": [{"i": "decision_kpis", "x": 0, "y": 0, "w": 24, "h": 3},
+                   {"i": "orders", "x": 0, "y": 3, "w": 24, "h": 7},
+                   {"i": "plans", "x": 0, "y": 10, "w": 9, "h": 14}, {"i": "plan_detail", "x": 9, "y": 10, "w": 15, "h": 19},
+                   {"i": "replan", "x": 0, "y": 24, "w": 9, "h": 2}]}
+
+
 def app_definition(fixture: dict, scenario_id: str, modify_action: str, create_action: str,
-                   search_asset: str, validation_asset: str) -> dict:
+                   search_asset: str, validation_asset: str, study_id: str | None = None) -> dict:
     resources = [{"id": row["id"], "label": row["label"]} for row in fixture["resources"]]
     sources = [
         {"id": "schedule", "kind": "object_set", "label": "排程对象", "object_type": "ScheduleItem", "limit": 2000},
@@ -146,9 +278,11 @@ def app_definition(fixture: dict, scenario_id: str, modify_action: str, create_a
     table_columns = [{"label": "任务", "field": "name", "format": "text"}, {"label": "工单", "field": "order_id", "format": "text"},
                      {"label": "状态", "field": "status", "format": "text", "badge": True}, {"label": "开始", "field": "start", "format": "date"},
                      {"label": "资源", "field": "resource", "format": "text"}]
-    return {"schema": "workshop-app/v1", "data_sources": sources,
+    if study_id:
+        sources.append({"id": "decision", "kind": "study_run", "label": "排程与检修决策", "study_id": study_id, "node": "decide"})
+    definition = {"schema": "workshop-app/v1", "data_sources": sources,
             "variables": [{"id": "scenario", "label": "Scenario", "default": scenario_id},
-                          {"id": "risk", "label": "风险等级"}],
+                          {"id": "risk", "label": "风险等级"}, {"id": "plan", "label": "候选方案"}],
             "settings": {"time_range": "all", "refresh_minutes": 0}, "pages": [
         {"id": "command", "title": "工厂控制塔", "template": "free", "widgets": [
             {"id": "kpis", "type": "stat_row", "title": "运营态势", "source": "schedule", "path": "objects", "props": {"items": [
@@ -179,6 +313,9 @@ def app_definition(fixture: dict, scenario_id: str, modify_action: str, create_a
              "props": {"label_field": "name", "value_field": "health_score", "max_rows": 10, "format": "number", "color": "#7c3aed"}}],
          "layout": [{"i": "asset_table", "x": 0, "y": 0, "w": 16, "h": 13}, {"i": "asset_health", "x": 16, "y": 0, "w": 8, "h": 9}]}
     ]}
+    if study_id:
+        definition["pages"].insert(2, decision_page())
+    return definition
 
 
 def main():
@@ -224,16 +361,33 @@ def main():
                 "schedule_id": {"parameter": "schedule_id"}, "name": {"parameter": "name"}, "start": {"parameter": "start"},
                 "end": {"parameter": "end"}, "resource": {"parameter": "resource"}, "layer": {"static": "production"},
                 "material_ready": {"static": True}, "status": {"static": "Proposed"}, "priority": {"static": 3}}}]})
+        # Decision candidates compile through published Actions by name; this one plans a missing inspection.
+        maintenance = action_type(client, root, headers, {"name": "安排维护任务",
+            "description": "Create a planned predictive-maintenance task on a resource",
+            "parameters": [{"name": "schedule_id", "type": "string"}, {"name": "name", "type": "string"}, {"name": "order_id", "type": "string"},
+                           {"name": "start", "type": "string"}, {"name": "end", "type": "string"}, {"name": "resource", "type": "string"}],
+            "rules": [{"op": "create_object", "object_type": "ScheduleItem", "properties": {
+                "schedule_id": {"parameter": "schedule_id"}, "name": {"parameter": "name"}, "order_id": {"parameter": "order_id"},
+                "start": {"parameter": "start"}, "end": {"parameter": "end"}, "resource": {"parameter": "resource"},
+                "layer": {"static": "maintenance"}, "status": {"static": "Planned"}, "material_ready": {"static": True},
+                "priority": {"static": 1}, "object_type": {"static": "ScheduleItem"}}}]})
+        decision = decision_function(client, root, headers)
         scenario = unwrap(client.post(f"{root}/scenarios:from-live", headers=headers, json={
             "name": "Factory Twin · Shift Recovery", "description": "Isolated operator proposals before controlled merge", "mode": "tracking"}), 201)
-        definition = app_definition(fixture, scenario["id"], modify["id"], create["id"], search["id"], validation["id"])
+        study = decision_study(client, root, headers, ontology_id)
+        definition = app_definition(fixture, scenario["id"], modify["id"], create["id"], search["id"], validation["id"],
+                                    study_id=study["study_id"])
         app = unwrap(client.post(f"{root}/workshop-apps", headers=headers, json={"name": "Factory Twin Operations",
-            "description": "Asset health, production/maintenance schedule, constraints, recommendations and governed scenario actions",
+            "description": "Asset health, production/maintenance schedule, plan comparison, constraints, recommendations and governed decisions",
             "definition": definition}), 201)
+        reviewer = reviewer_account()
         result = {"ontology_id": ontology_id, "app_id": app["id"], "scenario_id": scenario["id"],
-                  "search_asset_id": search["id"], "validation_asset_id": validation["id"], "objects": object_count,
+                  "search_asset_id": search["id"], "validation_asset_id": validation["id"], "decision_asset_id": decision["id"],
+                  "maintenance_action_id": maintenance["id"], "decision_study_id": study["study_id"],
+                  "decision_run_id": study["run_id"], "decision_scenario_id": study["scenario_id"], "objects": object_count,
+                  "reviewer": reviewer["username"] if reviewer else None,
                   "url": f"/apps/workshop/{app['id']}?ontology={ontology_id}", "reused": False}
-        (Path(__file__).resolve().parents[1] / ".factory-twin-demo.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        MANIFEST.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

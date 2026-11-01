@@ -48,6 +48,7 @@ test-results/
 /output/
 /tmp/
 /backend/.factory-twin-demo.json
+/backend/.factory-twin-demo.users.json
 
 # Internal / agent-only files (不进行 git 同步)
 AGENTS.md
