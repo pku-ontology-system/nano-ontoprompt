@@ -7,15 +7,64 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.deps import get_current_user, get_db, require_editor
+from app.models.ontology import OntologyProject
 from app.models.user import User
 from app.services.v2.authorization_service import AuthorizationContext, AuthorizationError, redact_link_record, resolve_projection
 from app.services.v2.object_query.authorization import policies_from_projection, require_ontology_access
 from app.services.v2.object_query.errors import ObjectQueryError
 from app.services.v2.dynamic_ontology_service import impact_for_change
+from app.services.v2.dataset_authorization import require_dataset_access
 from app.services.v2.semantic_core_service import SemanticCoreError, apply_semantic_change, semantic_change_impact as canonical_change_impact, semantic_schema
 from app.schemas.v2.semantic_core import SemanticChangeRequest, SemanticSchemaContract
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
+
+
+def _require_semantic_scope(db: Session, ontology_id: str, user: User):
+    try:
+        return require_ontology_access(db, ontology_id, str(user.id), user.role)
+    except ObjectQueryError as exc:
+        raise HTTPException(status_code=404, detail="本体不存在或当前用户无权访问") from exc
+
+
+def _can_manage_semantics(db: Session, ontology_id: str, user: User) -> bool:
+    project = db.get(OntologyProject, ontology_id)
+    return bool(project and (user.role == "admin" or str(project.created_by) == str(user.id)))
+
+
+def _require_semantic_change_scope(db: Session, ontology_id: str, body: dict, user: User) -> None:
+    if _can_manage_semantics(db, ontology_id, user):
+        return
+    raw_kind = str(body.get("resource_kind") or body.get("target_kind") or body.get("kind") or "").strip().lower()
+    aliases = {"entity_type": "object_type", "entity": "object_type", "relationship": "link_type", "relation": "link_type", "attribute": "property", "rule": "logic_rule"}
+    kind = aliases.get(raw_kind, raw_kind)
+    if kind in {"logic_rule", "source_mapping"}:
+        raise HTTPException(status_code=404, detail="语义资源不存在或当前用户无权访问")
+
+    current_schema = semantic_schema(db, ontology_id)
+    visible_schema = _filter_semantic_schema(db, ontology_id, user, current_schema)
+    visible_ids: set[str] = set()
+    for item in visible_schema.get("all_resources") or []:
+        for field in ("id", "resource_id"):
+            if item.get(field):
+                visible_ids.add(str(item[field]))
+        for section in ("metadata", "constraints", "provenance"):
+            details = item.get(section) if isinstance(item.get(section), dict) else {}
+            for legacy_key in ("legacy_entity_id", "legacy_relation_id", "legacy_property_id"):
+                if details.get(legacy_key):
+                    visible_ids.add(str(details[legacy_key]))
+    operation = str(body.get("operation") or "").lower()
+    if operation in {"update", "delete"}:
+        target_id = str(body.get("resource_id") or body.get("target_id") or "")
+        if not target_id or target_id not in visible_ids:
+            raise HTTPException(status_code=404, detail="语义资源不存在或当前用户无权访问")
+
+    payload = body.get("payload") or body.get("resource") or {}
+    if isinstance(payload, dict):
+        for field in ("parent_resource_id", "source_resource_id", "target_resource_id", "value_type_resource_id", "struct_resource_id", "interface_resource_id", "mapped_resource_id"):
+            resource_id = payload.get(field)
+            if resource_id and str(resource_id) not in visible_ids:
+                raise HTTPException(status_code=404, detail="引用的语义资源不存在或当前用户无权访问")
 
 
 def _raise(exc: Exception) -> None:
@@ -134,10 +183,22 @@ def _filter_semantic_schema(db: Session, ontology_id: str, user: User, schema: d
         item for item in schema.get("source_mappings", [])
         if item.get("resource_id") in visible_property_ids and item.get("mapping_status") == "confirmed"
     ]
+    is_manager = _can_manage_semantics(db, ontology_id, user)
+    scoped_mappings = []
+    for item in visible_mappings:
+        dataset_id = str(item.get("source_dataset_id") or "")
+        if not dataset_id and not is_manager:
+            continue
+        if dataset_id:
+            try:
+                require_dataset_access(db, dataset_id, user)
+            except HTTPException:
+                continue
+        scoped_mappings.append(item)
     result = dict(schema)
     result["resources"] = visible_resources
     result["all_resources"] = [item for items in visible_resources.values() for item in items]
-    result["source_mappings"] = visible_mappings
+    result["source_mappings"] = scoped_mappings
     result["counts"] = {kind: len(items) for kind, items in visible_resources.items()}
     return result
 
@@ -145,6 +206,7 @@ def _filter_semantic_schema(db: Session, ontology_id: str, user: User, schema: d
 @router.get("/{ontology_id}/semantic-schema", response_model=SemanticSchemaContract)
 def get_semantic_schema(ontology_id: str, revision_id: str | None = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     try:
+        _require_semantic_scope(db, ontology_id, user)
         schema = semantic_schema(db, ontology_id, revision_id)
         return _filter_semantic_schema(db, ontology_id, user, schema) if isinstance(user, User) else schema
     except (SemanticCoreError, AuthorizationError) as exc:
@@ -152,8 +214,13 @@ def get_semantic_schema(ontology_id: str, revision_id: str | None = None, db: Se
 
 
 @router.post("/{ontology_id}/semantic-changes/impact")
-def semantic_change_impact(ontology_id: str, body: SemanticChangeRequest, db: Session = Depends(get_db), _=Depends(require_editor)):
+def semantic_change_impact(ontology_id: str, body: SemanticChangeRequest, db: Session = Depends(get_db), user: User = Depends(require_editor)):
+    _require_semantic_scope(db, ontology_id, user)
     body_data = body.model_dump(exclude_none=True) if hasattr(body, "model_dump") else dict(body)
+    try:
+        _require_semantic_change_scope(db, ontology_id, body_data, user)
+    except SemanticCoreError as exc:
+        _raise(exc)
     kind = str(body_data.get("resource_kind") or body_data.get("target_kind") or body_data.get("kind") or "").lower()
     if kind in {"object_type", "entity_type", "entity", "property", "attribute", "link_type", "relationship", "relation", "logic_rule", "rule", "interface", "interface_implementation", "shared_property", "value_type", "value_type_version", "struct", "struct_field", "source_mapping"} and body_data.get("resource_kind"):
         try:
@@ -170,8 +237,13 @@ def semantic_change_impact(ontology_id: str, body: SemanticChangeRequest, db: Se
 
 @router.post("/{ontology_id}/semantic-changes")
 def create_semantic_change(ontology_id: str, body: SemanticChangeRequest, db: Session = Depends(get_db), user: User = Depends(require_editor)):
+    _require_semantic_scope(db, ontology_id, user)
+    body_data = body.model_dump(exclude_none=True) if hasattr(body, "model_dump") else dict(body)
     try:
-        body_data = body.model_dump(exclude_none=True) if hasattr(body, "model_dump") else dict(body)
+        _require_semantic_change_scope(db, ontology_id, body_data, user)
+    except SemanticCoreError as exc:
+        _raise(exc)
+    try:
         return apply_semantic_change(db, ontology_id, body_data, user_id=user.id)
     except SemanticCoreError as exc:
         _raise(exc)

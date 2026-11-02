@@ -8,6 +8,7 @@ import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { ontologyApi, settingsApi, usersApi, promptApi } from '@/api/ontologies'
 import type { Prompt } from '@/types/ontology'
+import ServicePrincipalsPanel from '@/pages/settings/ServicePrincipalsPanel'
 import { Trash2, Plus, Pencil, X, Check, Sparkles, Search, Loader2, Boxes, DatabaseZap, Gauge, ServerCog, ShieldCheck, SlidersHorizontal } from 'lucide-react'
 import {
   EXTRACTION_RULES,
@@ -19,7 +20,7 @@ import {
   type ExtractionRuleState,
 } from '@/utils/extractionRules'
 
-type ActiveTab = 'general' | 'build_defaults' | 'model_assist' | 'evidence_quality' | 'data_sources' | 'data_permissions' | 'data_plane' | 'rules' | 'extraction_rules' | 'users' | 'prompts'
+type ActiveTab = 'general' | 'build_defaults' | 'model_assist' | 'evidence_quality' | 'data_sources' | 'data_permissions' | 'data_plane' | 'rules' | 'extraction_rules' | 'users' | 'service_principals' | 'prompts'
 type SettingsUser = { id: string; username: string; email: string; role: string; created_at: string }
 type ApiError = { detail?: string; message?: string }
 
@@ -229,6 +230,7 @@ export default function SettingsPage() {
     { key: 'rules', label: t('settings.rules') },
     { key: 'extraction_rules', label: t('settings.tab_extraction') },
     { key: 'users', label: t('settings.tab_users') },
+    { key: 'service_principals', label: '服务主体' },
     { key: 'prompts', label: '提示词模版' },
   ]
 
@@ -711,6 +713,8 @@ export default function SettingsPage() {
           </div>
         </div>
       )}
+
+      {activeTab === 'service_principals' && <ServicePrincipalsPanel />}
 
     </div>
   )

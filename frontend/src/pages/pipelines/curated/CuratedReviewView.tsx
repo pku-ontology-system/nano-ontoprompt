@@ -24,6 +24,7 @@ export default function CuratedReviewView({ reviewId, data, onComplete }: Props)
   const [pendingEdits, setPendingEdits] = useState<RowEdit[]>([])
   const [saving, setSaving] = useState(false)
   const [notes, setNotes] = useState('')
+  const [decisionError, setDecisionError] = useState('')
 
   const columns = data.length > 0 ? Object.keys(data[0]) : []
 
@@ -54,9 +55,21 @@ export default function CuratedReviewView({ reviewId, data, onComplete }: Props)
   }
 
   const handleDecision = async (action: 'approve' | 'reject') => {
-    if (pendingEdits.length > 0) await saveEdits()
-    await apiClientV2.post(`/curated/reviews/${reviewId}/${action}?notes=${encodeURIComponent(notes)}`)
-    onComplete(action === 'approve' ? 'approved' : 'rejected')
+    setDecisionError('')
+    try {
+      if (pendingEdits.length > 0) await saveEdits()
+      await apiClientV2.post(`/curated/reviews/${reviewId}/${action}?notes=${encodeURIComponent(notes)}`)
+      onComplete(action === 'approve' ? 'approved' : 'rejected')
+    } catch (error: unknown) {
+      const detail = typeof error === 'object' && error !== null && 'detail' in error
+        ? (error as { detail?: unknown }).detail
+        : null
+      setDecisionError(typeof detail === 'string'
+        ? detail
+        : typeof error === 'object' && error !== null && 'message' in error
+          ? String((error as { message: unknown }).message)
+          : '审核决定未保存，请检查审核人身份和审核状态')
+    }
   }
 
   return (
@@ -91,6 +104,12 @@ export default function CuratedReviewView({ reviewId, data, onComplete }: Props)
           <XCircle size={14} /> 拒绝
         </button>
       </div>
+
+      {decisionError && (
+        <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+          {decisionError}
+        </div>
+      )}
 
       {/* 可编辑数据表格 */}
       <div className="border rounded-lg overflow-auto max-h-96">

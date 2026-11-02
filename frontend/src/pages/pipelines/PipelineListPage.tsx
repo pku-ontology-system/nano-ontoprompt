@@ -1,10 +1,10 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Plus, Search, Play, GitBranch, Trash2,
   ExternalLink, X, Loader2
 } from 'lucide-react'
-import pipelinesApi from '@/api/v2/pipelines'
+import pipelinesApi, { waitForPipelineRun } from '@/api/v2/pipelines'
 import type { Pipeline } from '@/api/v2/pipelines'
 import { DOMAINS } from '@/types/ontology'
 
@@ -14,11 +14,14 @@ const STATUS_STYLE: Record<string, string> = {
   running:   'bg-amber-50 text-amber-600 border-amber-200',
   failed:    'bg-red-50 text-red-600 border-red-200',
   published: 'bg-green-50 text-green-600 border-green-200',
+  pending:   'bg-amber-50 text-amber-600 border-amber-200',
+  success:   'bg-green-50 text-green-600 border-green-200',
+  degraded:  'bg-amber-50 text-amber-700 border-amber-200',
 }
 
 const STATUS_LABEL: Record<string, string> = {
   draft: '草稿', editing: '编辑中', running: '运行中',
-  failed: '失败', published: '已发布',
+  pending: '排队中', failed: '失败', success: '完成', degraded: '完成（降级）', published: '已发布',
 }
 
 export default function PipelineListPage() {
@@ -28,6 +31,11 @@ export default function PipelineListPage() {
   const [search, setSearch] = useState('')
   const [filterDomain, setFilterDomain] = useState('')
   const [filterStatus, setFilterStatus] = useState('')
+  const [runningIds, setRunningIds] = useState<Record<string, string>>({})
+  const [runStatuses, setRunStatuses] = useState<Record<string, string>>({})
+  const [runError, setRunError] = useState('')
+  const runControllers = useRef(new Map<string, AbortController>())
+  const monitoredRunIds = useRef(new Set<string>())
 
   const [showCreate, setShowCreate] = useState(false)
 
@@ -40,6 +48,69 @@ export default function PipelineListPage() {
   }, [search, filterDomain, filterStatus])
 
   useEffect(() => { Promise.resolve().then(load) }, [load])
+
+  const watchRun = useCallback((pipelineId: string, runId: string) => {
+    if (monitoredRunIds.current.has(runId)) return
+    const controller = new AbortController()
+    monitoredRunIds.current.add(runId)
+    runControllers.current.set(runId, controller)
+    setRunningIds(previous => ({ ...previous, [pipelineId]: 'pending' }))
+    void waitForPipelineRun(runId, {
+      signal: controller.signal,
+      onUpdate: run => {
+        setRunStatuses(previous => ({ ...previous, [pipelineId]: run.status }))
+        setRunningIds(previous => ({ ...previous, [pipelineId]: run.status }))
+      },
+      onPollError: () => setRunError('暂时无法读取运行状态；Run 仍保存在服务端，页面会继续重试。'),
+    }).then(async finished => {
+      if (finished && !controller.signal.aborted) await load()
+    }).catch(() => {
+      if (!controller.signal.aborted) setRunError('运行状态读取失败，可刷新后从服务端 Run 记录恢复。')
+    }).finally(() => {
+      runControllers.current.delete(runId)
+      monitoredRunIds.current.delete(runId)
+      if (!controller.signal.aborted) {
+        setRunningIds(previous => {
+          const next = { ...previous }
+          delete next[pipelineId]
+          return next
+        })
+      }
+    })
+  }, [load])
+
+  useEffect(() => {
+    let cancelled = false
+    for (const pipeline of pipelines) {
+      if (!['pending', 'running'].includes(pipeline.last_run_status || '')) continue
+      void pipelinesApi.runs(pipeline.id).then(runs => {
+        const latest = Array.isArray(runs) ? runs[0] : null
+        if (!cancelled && latest && ['pending', 'running'].includes(latest.status)) {
+          watchRun(pipeline.id, latest.id)
+        }
+      }).catch(() => undefined)
+    }
+    return () => { cancelled = true }
+  }, [pipelines, watchRun])
+
+  useEffect(() => () => {
+    for (const controller of runControllers.current.values()) controller.abort()
+    runControllers.current.clear()
+    monitoredRunIds.current.clear()
+  }, [])
+
+  const handleRun = async (pipelineId: string) => {
+    if (runningIds[pipelineId]) return
+    setRunError('')
+    setRunStatuses(previous => ({ ...previous, [pipelineId]: 'pending' }))
+    try {
+      const started = await pipelinesApi.run(pipelineId)
+      setRunStatuses(previous => ({ ...previous, [pipelineId]: started.status }))
+      watchRun(pipelineId, started.run_id)
+    } catch {
+      setRunError('运行请求未能提交，请检查 Pipeline 定义和数据源版本后重试。')
+    }
+  }
 
   const handleDelete = async (pl: Pipeline) => {
     if (!window.confirm(`确认删除 Pipeline「${pl.name}」？删除后不会删除已生成的 Curated Dataset。`)) return
@@ -112,6 +183,8 @@ export default function PipelineListPage() {
         <button onClick={load} className="text-xs text-gray-500 hover:text-black px-2 py-1">重置</button>
       </div>
 
+      {runError && <p role="status" className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">{runError}</p>}
+
       {/* List */}
       {loading ? (
         <div className="text-gray-400 text-sm p-8 text-center">加载中...</div>
@@ -136,7 +209,10 @@ export default function PipelineListPage() {
               </tr>
             </thead>
             <tbody className="divide-y">
-              {filtered.map(pl => (
+              {filtered.map(pl => {
+                const visibleStatus = runStatuses[pl.id] || pl.last_run_status || pl.status
+                const isRunning = Boolean(runningIds[pl.id])
+                return (
                 <tr key={pl.id} className="hover:bg-gray-50 transition-colors">
                   <td className="px-4 py-3 font-mono text-xs text-gray-400 hover:text-black" title={pl.id}>
                     {pl.id.slice(0, 8)}
@@ -144,8 +220,8 @@ export default function PipelineListPage() {
                   <td className="px-4 py-3 font-medium">{pl.name}</td>
                   <td className="px-4 py-3 text-xs text-gray-500">{pl.domain || '通用'}</td>
                   <td className="px-4 py-3">
-                    <span className={`text-xs px-1.5 py-0.5 rounded border ${STATUS_STYLE[pl.status] || STATUS_STYLE.draft}`}>
-                      {STATUS_LABEL[pl.status] || pl.status}
+                    <span title={`管线生命周期状态：${STATUS_LABEL[pl.status] || pl.status}`} className={`text-xs px-1.5 py-0.5 rounded border ${STATUS_STYLE[visibleStatus] || STATUS_STYLE.draft}`}>
+                      {STATUS_LABEL[visibleStatus] || visibleStatus}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-xs text-gray-500">v{pl.version || 1}</td>
@@ -160,11 +236,12 @@ export default function PipelineListPage() {
                         <ExternalLink size={14} />
                       </button>
                       <button
-                        onClick={() => pipelinesApi.runSync(pl.id).then(load)}
-                        className="p-1.5 rounded hover:bg-gray-100 text-gray-500 hover:text-black transition-colors"
-                        title="运行"
+                        onClick={() => void handleRun(pl.id)}
+                        disabled={isRunning}
+                        className="p-1.5 rounded hover:bg-gray-100 text-gray-500 hover:text-black transition-colors disabled:opacity-50"
+                        title={isRunning ? (runningIds[pl.id] === 'pending' ? '排队中' : '运行中') : '运行'}
                       >
-                        <Play size={14} />
+                        {isRunning ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
                       </button>
                       <button
                         onClick={() => handleDelete(pl)}
@@ -176,7 +253,8 @@ export default function PipelineListPage() {
                     </div>
                   </td>
                 </tr>
-              ))}
+                )
+              })}
             </tbody>
           </table>
         </div>

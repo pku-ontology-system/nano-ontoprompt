@@ -6,10 +6,11 @@ import {
   ExternalLink, X, Loader2, Trash2,
 } from 'lucide-react'
 import pipelinesApi, { type Pipeline } from '@/api/v2/pipelines'
-import curatedApi from '@/api/v2/curated'
+import curatedApi, { curatedReviewsBlockingDeleteCount } from '@/api/v2/curated'
 import type { CuratedDataset } from '@/api/v2/curated'
 import CuratedDetailPanel from './CuratedDetailPanel'
 import ConfirmDialog from '@/components/ConfirmDialog'
+import { formatApiError } from '@/api/client'
 
 interface Row {
   pipelineId: string
@@ -28,12 +29,16 @@ const STATUS_ICON = (status: string) => {
 
 const STATUS_LABEL: Record<string, string> = {
   pending_review: '待审核',
+  pending:        '待独立审核',
+  in_review:      '审核中',
   approved:       '已审核',
   rejected:       '已拒绝',
 }
 
 const STATUS_STYLE: Record<string, string> = {
   pending_review: 'bg-yellow-50 text-yellow-700 border-yellow-200',
+  pending:        'bg-amber-50 text-amber-700 border-amber-200',
+  in_review:      'bg-amber-50 text-amber-700 border-amber-200',
   approved:       'bg-green-50 text-green-700 border-green-200',
   rejected:       'bg-red-50 text-red-600 border-red-200',
 }
@@ -57,6 +62,8 @@ export default function StructuredDataPage() {
   // Quick delete
   const [deleteRow, setDeleteRow] = useState<Row | null>(null)
   const [deleting, setDeleting] = useState(false)
+  const [cascadeDeleteCount, setCascadeDeleteCount] = useState<number | null>(null)
+  const [deleteError, setDeleteError] = useState('')
 
   const load = () => {
     setLoading(true)
@@ -124,6 +131,8 @@ export default function StructuredDataPage() {
     setCurated(prev => prev.filter(c => c.id !== id))
     setPanelRow(null)
     setDeleteRow(null)
+    setCascadeDeleteCount(null)
+    setDeleteError('')
   }
 
   const handleQuickApprove = async (e: React.MouseEvent, row: Row) => {
@@ -131,20 +140,28 @@ export default function StructuredDataPage() {
     if (!row.curatedId) return
     setApprovingId(row.curatedId)
     try {
-      await curatedApi.approve(row.curatedId)
-      handleStatusChange(row.curatedId, 'approved')
+      const review = await curatedApi.startReview(row.curatedId)
+      handleStatusChange(row.curatedId, review.status)
     } finally { setApprovingId(null) }
   }
 
   const handleQuickDelete = async () => {
     if (!deleteRow?.curatedId) return
+    const cascade = cascadeDeleteCount !== null
     setDeleting(true)
     try {
-      await curatedApi.delete(deleteRow.curatedId)
+      await curatedApi.delete(deleteRow.curatedId, { cascade })
       handleDeleted(deleteRow.curatedId)
-    } catch {
+    } catch (error) {
+      const reviewCount = curatedReviewsBlockingDeleteCount(error)
+      if (!cascade && reviewCount !== null) {
+        setCascadeDeleteCount(reviewCount)
+        setDeleteError('')
+      } else {
+        setDeleteError(formatApiError(error, '删除失败，请稍后重试。'))
+      }
+    } finally {
       setDeleting(false)
-      setDeleteRow(null)
     }
   }
 
@@ -239,13 +256,13 @@ export default function StructuredDataPage() {
                   </td>
                   <td className="px-4 py-3 text-right" onClick={e => e.stopPropagation()}>
                     <div className="flex items-center gap-1 justify-end">
-                      {/* 快捷批准 */}
-                      {row.curatedId && row.curatedStatus !== 'approved' && (
+                      {/* 发起独立审核 */}
+                      {row.curatedId && row.curatedStatus !== 'approved' && row.curatedStatus !== 'pending' && (
                         <button
                           onClick={e => handleQuickApprove(e, row)}
                           disabled={approvingId === row.curatedId}
                           className="p-1.5 rounded hover:bg-green-50 text-gray-400 hover:text-green-600 disabled:opacity-50"
-                          title="批准"
+                          title="发起独立审核"
                         >
                           {approvingId === row.curatedId
                             ? <Loader2 size={13} className="animate-spin" />
@@ -265,7 +282,11 @@ export default function StructuredDataPage() {
                       {/* 快捷删除 */}
                       {row.curatedId && (
                         <button
-                          onClick={() => setDeleteRow(row)}
+                          onClick={() => {
+                            setCascadeDeleteCount(null)
+                            setDeleteError('')
+                            setDeleteRow(row)
+                          }}
                           className="p-1.5 rounded hover:bg-red-50 text-gray-400 hover:text-red-500"
                           title="删除"
                         >
@@ -297,11 +318,20 @@ export default function StructuredDataPage() {
       {/* Quick delete confirm */}
       <ConfirmDialog
         open={!!deleteRow}
-        title="删除数据集"
-        message={`确认删除「${deleteRow?.curatedName}」？此操作不可撤销。`}
-        confirmLabel={deleting ? '删除中...' : '确认删除'}
+        title={cascadeDeleteCount === null ? '删除数据集' : '同时删除审核历史？'}
+        message={[
+          cascadeDeleteCount === null
+            ? `确认删除「${deleteRow?.curatedName}」？此操作不可撤销。`
+            : `该数据集关联 ${cascadeDeleteCount} 条审核记录。继续将同时删除审核记录及其行编辑历史，且无法恢复。确认继续吗？`,
+          deleteError,
+        ].filter(Boolean).join(' ')}
+        confirmLabel={deleting ? '删除中...' : cascadeDeleteCount === null ? '确认删除' : '同时删除审核历史'}
         onConfirm={handleQuickDelete}
-        onCancel={() => setDeleteRow(null)}
+        onCancel={() => {
+          setDeleteRow(null)
+          setCascadeDeleteCount(null)
+          setDeleteError('')
+        }}
       />
     </div>
   )

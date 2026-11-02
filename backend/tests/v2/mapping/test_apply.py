@@ -74,6 +74,33 @@ def test_apply_mapping_empty_data():
     assert result["total_rows"] == 0
 
 
+def test_rows_to_instances_upserts_stable_identity_and_advances_source_version():
+    from app.models.entity_instance import EntityInstance
+
+    db = MagicMock()
+    svc = MappingService(db)
+    mapping = make_mapping_obj()
+    row_v1 = {"order_id": "ORD-001", "customer_name": "Alice"}
+    row_v2 = {"order_id": "ORD-001", "customer_name": "Alice Chen"}
+
+    svc._rows_to_instances(mapping, "concept-order", [row_v1], source_version_id="version-1")
+    first = next(
+        call.args[0] for call in db.merge.call_args_list
+        if isinstance(call.args[0], EntityInstance)
+    )
+    db.merge.reset_mock()
+
+    svc._rows_to_instances(mapping, "concept-order", [row_v2], source_version_id="version-2")
+    second = next(
+        call.args[0] for call in db.merge.call_args_list
+        if isinstance(call.args[0], EntityInstance)
+    )
+
+    assert second.id == first.id
+    assert second.row_data["customerName"] == "Alice Chen"
+    assert second.source_version == "version-2"
+
+
 def test_create_mapping_saves_to_db():
     db = MagicMock()
     db.add = MagicMock()
@@ -106,6 +133,43 @@ def test_create_mapping_persists_primary_key_column():
     )
 
     assert mapping.field_mapping["__primary_key__"] == "order_id"
+
+
+def test_approved_mapping_schema_gate_reports_new_columns_without_mutating_mapping():
+    from app.models.entity_instance import EntityInstance
+
+    mapping = make_mapping_obj({"order_id": "id", "customer_name": "customerName"})
+    original = dict(mapping.field_mapping)
+    db = make_db(mapping)
+    db.query.return_value.filter.return_value.limit.return_value.all.return_value = []
+    svc = MappingService(db)
+
+    view, report = svc._approved_mapping_view(mapping, [
+        {"order_id": "ORD-001", "customer_name": "Alice", "new_source_field": "ignored"},
+        {"order_id": "ORD-002", "customer_name": "Bob", "new_source_field": "ignored"},
+    ])
+
+    assert view.field_mapping["__primary_key__"] == "order_id"
+    assert report["unmapped_columns"] == ["new_source_field"]
+    assert len(report["schema_fingerprint"]) == 64
+    assert mapping.field_mapping == original
+    db.query.assert_any_call(EntityInstance)
+
+
+def test_approved_mapping_schema_gate_rejects_missing_mapped_source_column():
+    mapping = make_mapping_obj()
+    svc = MappingService(make_db(mapping))
+
+    with pytest.raises(ValueError, match="SCHEMA_DRIFT_MISSING_COLUMNS.*customer_name"):
+        svc._approved_mapping_view(mapping, [{"order_id": "ORD-001"}])
+
+
+def test_approved_mapping_schema_gate_rejects_unstable_identity_key():
+    mapping = make_mapping_obj({"customer_name": "customerName", "__primary_key__": "__row_hash__"})
+    svc = MappingService(make_db(mapping))
+
+    with pytest.raises(ValueError, match="SCHEMA_GATE_UNSTABLE_PRIMARY_KEY"):
+        svc._approved_mapping_view(mapping, [{"customer_name": "Alice"}])
 
 
 def test_display_name_uses_order_line_identity():

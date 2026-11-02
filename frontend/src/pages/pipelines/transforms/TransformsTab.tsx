@@ -1,10 +1,11 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import {
   Play, Plus, GitBranch, CheckCircle, Clock, XCircle,
   ChevronDown, ChevronUp, Database, FileText, Layers,
-  Scissors, FileJson, Cpu, BarChart3
+  Scissors, FileJson, Cpu, BarChart3, AlertTriangle
 } from 'lucide-react'
 import { apiClientV2 } from '@/api/client'
+import pipelinesApi, { waitForPipelineRun, type RunDetail as PipelineRunDetail } from '@/api/v2/pipelines'
 
 interface PipelineRun {
   id: string
@@ -43,18 +44,73 @@ interface PipelineStatsMeta {
     processed?: number
     reason?: string
     method?: string
+    requested_method?: string | null
+    effective_method?: string | null
+    fallback_policy?: string | null
+    fallback_reason?: string | string[] | null
+    status?: string
   }
 }
 
 interface RunDetail {
   id: string
   status: string
+  dispatch_status?: string | null
+  dispatch_attempts?: number
+  execution_mode?: string | null
+  execution_digest?: string | null
+  pipeline_version_id?: string | null
+  source_versions?: Array<{
+    dataset_id: string | null
+    dataset_version_id: string | null
+    version_no: number | null
+    checksum: string | null
+  }>
+  llm_model_pin?: {
+    requested: boolean
+    model_config_id: string | null
+    model_config_digest: string | null
+    provider: string | null
+    model_name: string | null
+    prompt_provenance: Record<string, { prompt_id: string; prompt_digest: string }>
+    provider_model_artifact_reproducibility: string
+  } | null
   stats: {
     rows_in: number
     rows_out: number
     meta: PipelineStatsMeta
     curated_dataset_id: string | null
   } | null
+  llm_invocations?: Array<{
+    id: string
+    attempt_number: number | null
+    source_dataset_version_id: string | null
+    phase: string | null
+    provider: string | null
+    model_name: string
+    model_config_digest: string | null
+    prompt_id: string | null
+    prompt_digest: string | null
+    request_hash: string | null
+    response_hash: string | null
+    status: string
+    error_code: string | null
+    duration_ms: number | null
+    provider_model_artifact_reproducibility?: string
+    event_chain_status?: 'verified' | 'invalid' | 'unavailable'
+    events?: Array<{
+      id: string
+      sequence: number
+      event_type: string
+      status: string
+      error_code: string | null
+      request_hash: string | null
+      response_hash: string | null
+      previous_digest: string | null
+      event_digest: string
+      occurred_at: string | null
+    }>
+  }>
   error_log: string | null
 }
 
@@ -64,8 +120,36 @@ interface StepCard {
   key: string
   label: string
   icon: React.ReactNode
-  status: 'done' | 'skipped' | 'failed' | 'pending'
+  status: 'done' | 'skipped' | 'failed' | 'pending' | 'degraded'
   detail: string
+}
+
+function describeExtractionMethod(method?: string | null): string {
+  const labels: Record<string, string> = {
+    llm_auto: 'LLM 自动提取',
+    llm_schema: 'LLM 按字段提取',
+    llm_enrich: 'LLM 语义增强',
+    rule_based: '规则提取',
+    none: '未执行',
+    mixed: '多种方式',
+  }
+  return method
+    ? method.split('+').map(part => labels[part] || part).join(' + ')
+    : '未执行'
+}
+
+function describeExtractionReason(reason?: string | string[] | null): string {
+  const labels: Record<string, string> = {
+    model_unavailable: '没有可用的模型配置',
+    provider_call_failed: '模型服务调用失败',
+    empty_response: '模型返回空响应',
+    invalid_response: '模型返回了无效 JSON',
+    invalid_config: '语义增强字段配置无效',
+    no_markdown_text: '没有可提取的 Markdown 文本',
+    no_records_to_enrich: '没有可供增强的记录',
+  }
+  const items = Array.isArray(reason) ? reason : reason ? [reason] : []
+  return items.map(item => labels[item] || item).join('；')
 }
 
 function buildSteps(route: string, stats: RunDetail['stats'] | null): StepCard[] {
@@ -118,7 +202,7 @@ function buildSteps(route: string, stats: RunDetail['stats'] | null): StepCard[]
       icon: <Database size={13} />,
       status: stats.curated_dataset_id ? 'done' : 'failed',
       detail: stats.curated_dataset_id
-        ? `${stats.rows_out} 行 → Curated Dataset (${stats.curated_dataset_id.slice(0, 8)})`
+        ? `${stats.rows_out} 行 → 待审核 Curated Dataset (${stats.curated_dataset_id.slice(0, 8)})`
         : `生成失败`,
     })
 
@@ -157,7 +241,7 @@ function buildSteps(route: string, stats: RunDetail['stats'] | null): StepCard[]
         icon: <Database size={13} />,
         status: stats.curated_dataset_id ? 'done' : 'failed',
         detail: stats.curated_dataset_id
-          ? `${stats.rows_out} 行 → Curated Dataset (${stats.curated_dataset_id.slice(0, 8)})`
+          ? `${stats.rows_out} 行 → 待审核 Curated Dataset (${stats.curated_dataset_id.slice(0, 8)})`
           : '生成失败（序列化错误）',
       },
     ]
@@ -168,6 +252,23 @@ function buildSteps(route: string, stats: RunDetail['stats'] | null): StepCard[]
     const extract = meta.md_to_structured || {}
     const processedDocuments = doc.processed ?? 0
     const successfulExtractions = extract.success ?? 0
+    const extractionStatus = extract.status === 'failed' ? 'failed'
+      : extract.status === 'degraded' ? 'degraded'
+      : extract.skipped || extract.status === 'skipped' ? 'skipped'
+      : extract.status === 'success' ? 'done'
+      : successfulExtractions > 0 ? 'done' : 'failed'
+    const requestedMethod = extract.requested_method || extract.method || '结构化提取'
+    const effectiveMethod = extract.effective_method || extract.method || '未知'
+    const displayFallbackReasons = describeExtractionReason(extract.fallback_reason)
+    const requestedLabel = describeExtractionMethod(requestedMethod)
+    const effectiveLabel = describeExtractionMethod(effectiveMethod)
+    const extractionDetail = extract.status === 'degraded'
+      ? `请求 ${requestedLabel}，实际使用 ${effectiveLabel}；策略：${extract.fallback_policy || 'rule_based'}；原因：${displayFallbackReasons || 'LLM 不可用'}。输出需人工审核。`
+      : extract.status === 'failed'
+      ? `请求 ${requestedLabel}，Run 已停止；原因：${displayFallbackReasons || 'LLM 提取失败'}。`
+      : extract.status === 'skipped'
+      ? `请求 ${requestedLabel}，未执行：${displayFallbackReasons || extract.reason || '没有可提取的文本'}。`
+      : `请求 ${requestedLabel}，实际使用 ${effectiveLabel}；成功 ${successfulExtractions}/${extract.processed ?? 0} 条`
     return [
       {
         key: 'doc',
@@ -180,13 +281,13 @@ function buildSteps(route: string, stats: RunDetail['stats'] | null): StepCard[]
       },
       {
         key: 'extract',
-        label: 'LLM 结构化提取',
+        label: '结构化提取',
         icon: <Cpu size={13} />,
-        status: extract.skipped ? 'skipped' : successfulExtractions > 0 ? 'done' : 'failed',
+        status: extractionStatus,
         detail: extract.skipped
           ? `已跳过：${extract.reason || '无 target_schema'}（旧版本）`
-          : extract.method
-          ? `方法: ${extract.method}，成功 ${successfulExtractions}/${extract.processed ?? 0} 行`
+          : extract.requested_method || extract.method
+          ? extractionDetail
           : '未执行',
       },
       {
@@ -195,7 +296,7 @@ function buildSteps(route: string, stats: RunDetail['stats'] | null): StepCard[]
         icon: <Database size={13} />,
         status: stats.curated_dataset_id ? 'done' : 'failed',
         detail: stats.curated_dataset_id
-          ? `${stats.rows_out} 行 → Curated Dataset (${stats.curated_dataset_id.slice(0, 8)})`
+          ? `${stats.rows_out} 行 → 待审核 Curated Dataset (${stats.curated_dataset_id.slice(0, 8)})`
           : '生成失败',
       },
     ]
@@ -208,6 +309,7 @@ function buildSteps(route: string, stats: RunDetail['stats'] | null): StepCard[]
 
 const STEP_STATUS_STYLE: Record<string, string> = {
   done:    'bg-green-50 border-green-200 text-green-700',
+  degraded:'bg-amber-50 border-amber-200 text-amber-800',
   skipped: 'bg-gray-50 border-gray-200 text-gray-500',
   failed:  'bg-red-50 border-red-200 text-red-600',
   pending: 'bg-blue-50 border-blue-200 text-blue-600',
@@ -215,6 +317,7 @@ const STEP_STATUS_STYLE: Record<string, string> = {
 
 const STEP_STATUS_ICON: Record<string, React.ReactNode> = {
   done:    <CheckCircle size={12} className="text-green-500 flex-shrink-0" />,
+  degraded:<AlertTriangle size={12} className="text-amber-600 flex-shrink-0" />,
   skipped: <Clock size={12} className="text-gray-400 flex-shrink-0" />,
   failed:  <XCircle size={12} className="text-red-400 flex-shrink-0" />,
   pending: <Clock size={12} className="text-blue-400 flex-shrink-0" />,
@@ -238,6 +341,8 @@ export default function TransformsTab() {
   const [pipelines, setPipelines] = useState<Pipeline[]>([])
   const [loading, setLoading] = useState(true)
   const [running, setRunning] = useState<string | null>(null)
+  const [activeRun, setActiveRun] = useState<{ pipelineId: string; runId: string } | null>(null)
+  const runController = useRef<AbortController | null>(null)
   const [expanded, setExpanded] = useState<string | null>(null)
   const [runDetails, setRunDetails] = useState<Record<string, RunDetail | null>>({})
 
@@ -255,6 +360,29 @@ export default function TransformsTab() {
       .catch(() => setPipelines([]))
       .finally(() => setLoading(false))
   }, [])
+
+  useEffect(() => () => runController.current?.abort(), [])
+
+  useEffect(() => {
+    if (!activeRun) return
+    const controller = new AbortController()
+    runController.current = controller
+    void waitForPipelineRun(activeRun.runId, {
+      signal: controller.signal,
+      onUpdate: run => setRunDetails(previous => ({ ...previous, [activeRun.pipelineId]: run as RunDetail })),
+    }).then(run => {
+      if (!run || controller.signal.aborted) return
+      setRunDetails(previous => ({ ...previous, [activeRun.pipelineId]: run as RunDetail }))
+      setPipelines(previous => previous.map(pipeline => pipeline.id === activeRun.pipelineId
+        ? { ...pipeline, status: run.status } : pipeline))
+    }).finally(() => {
+      if (!controller.signal.aborted) {
+        setRunning(null)
+        setActiveRun(null)
+      }
+    })
+    return () => controller.abort()
+  }, [activeRun])
 
   useEffect(() => {
     if (!showCreate) return
@@ -286,10 +414,14 @@ export default function TransformsTab() {
     try {
       const runs = await apiClientV2.get<PipelineRun[] | { data?: PipelineRun[] }>(`/pipelines/${plId}/runs`)
       const runsArr: PipelineRun[] = Array.isArray(runs) ? runs : runs.data ?? []
-      const last = runsArr[runsArr.length - 1]
+      const last = runsArr[0]
       if (!last) { setRunDetails(p => ({ ...p, [plId]: null })); return }
-      const detail = await apiClientV2.get<RunDetail>(`/pipelines/runs/${last.id}`)
+      const detail = await pipelinesApi.getRun(last.id) as PipelineRunDetail as RunDetail
       setRunDetails(p => ({ ...p, [plId]: detail }))
+      if (['pending', 'running'].includes(detail.status)) {
+        setRunning(plId)
+        setActiveRun({ pipelineId: plId, runId: last.id })
+      }
     } catch {
       setRunDetails(p => ({ ...p, [plId]: null }))
     }
@@ -302,6 +434,7 @@ export default function TransformsTab() {
   }
 
   const handleRun = async (id: string) => {
+    if (running) return
     setRunning(id)
     setRunDetails(previous => {
       const next = { ...previous }
@@ -309,12 +442,13 @@ export default function TransformsTab() {
       return next
     })
     try {
-      await apiClientV2.post(`/pipelines/${id}/run-sync`)
-      setPipelines(prev => prev.map(p => p.id === id ? { ...p, status: 'success' } : p))
-      loadRunDetail(id)
+      const started = await pipelinesApi.run(id)
+      setPipelines(prev => prev.map(p => p.id === id ? { ...p, status: 'running' } : p))
+      setActiveRun({ pipelineId: id, runId: started.run_id })
     } catch {
-      setPipelines(prev => prev.map(p => p.id === id ? { ...p, status: 'failed' } : p))
-    } finally {
+      setRunDetails(prev => ({ ...prev, [id]: {
+        id: '', status: 'failed', stats: null, error_log: '运行请求未能提交，请检查服务状态后重试。',
+      } }))
       setRunning(null)
     }
   }
@@ -371,8 +505,8 @@ export default function TransformsTab() {
                         {detail.stats.rows_in}→{detail.stats.rows_out} 行
                       </span>
                     )}
-                    <span className={`text-xs ${pl.status === 'success' ? 'text-green-600' : pl.status === 'failed' ? 'text-red-500' : 'text-gray-400'}`}>
-                      {pl.status === 'success' ? '完成' : pl.status === 'failed' ? '失败' : '处理中'}
+                    <span className={`text-xs ${detail?.status === 'success' ? 'text-green-600' : detail?.status === 'degraded' ? 'text-amber-700' : detail?.status === 'failed' ? 'text-red-500' : 'text-gray-400'}`}>
+                      {detail?.status === 'success' ? '完成' : detail?.status === 'degraded' ? '完成（降级）' : detail?.status === 'failed' ? '失败' : detail?.status === 'pending' ? '排队中' : isRunning ? '处理中' : '未运行'}
                     </span>
                     <button
                       onClick={() => handleRun(pl.id)}
@@ -398,7 +532,7 @@ export default function TransformsTab() {
                       <p className="text-xs text-gray-400">加载步骤详情中...</p>
                     ) : !detail.stats ? (
                       <p className="text-xs text-gray-400">
-                        {detail.error_log ? `运行失败：${detail.error_log}` : '尚未运行，点击「运行」执行流水线'}
+                        {detail.error_log ? `运行失败：${detail.error_log}` : detail.status === 'pending' ? (detail.dispatch_status === 'pending' || detail.dispatch_status === 'dispatching' ? `Run 已持久化，正在派发/自动重试（第 ${detail.dispatch_attempts ?? 0} 次）。` : `Run 已持久化，派发状态：${detail.dispatch_status ?? '等待 worker'}。`) : detail.status === 'running' ? 'Run 正在由服务端 worker 执行。' : '尚未运行，点击「运行」执行流水线'}
                       </p>
                     ) : (
                       <div className="space-y-2">
@@ -430,6 +564,75 @@ export default function TransformsTab() {
                           ))}
                         </div>
 
+                        {detail.llm_model_pin?.requested && (
+                          <div className="rounded-lg border bg-white px-3 py-2 text-[11px] text-gray-600">
+                            <div className="font-medium text-gray-700">本次 Run 固定的模型与提示词</div>
+                            <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+                              <span>{detail.llm_model_pin.provider || '模型提供方未知'} · {detail.llm_model_pin.model_name || '模型未配置'}</span>
+                              {detail.llm_model_pin.model_config_id && <span>ModelConfig {detail.llm_model_pin.model_config_id.slice(0, 8)}</span>}
+                              {detail.llm_model_pin.model_config_digest && <span>配置摘要 {detail.llm_model_pin.model_config_digest.slice(0, 10)}</span>}
+                              <span>模型制品可复现性：{detail.llm_model_pin.provider_model_artifact_reproducibility}</span>
+                              {Object.values(detail.llm_model_pin.prompt_provenance || {}).map(prompt => (
+                                <span key={prompt.prompt_id}>Prompt {prompt.prompt_id} · {prompt.prompt_digest.slice(0, 10)}</span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {!!detail.llm_invocations?.length && (
+                          <div className="mt-2 rounded-lg border bg-white overflow-hidden">
+                            <div className="px-3 py-2 bg-gray-100 text-xs font-medium text-gray-600">
+                              LLM 调用证据（仅摘要，不保存提示词或响应正文）
+                            </div>
+                            <div className="divide-y">
+                              {detail.llm_invocations.slice(-8).map(attempt => (
+                                <div key={attempt.id} className="px-3 py-2 text-[11px] text-gray-600">
+                                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                                    <span className="font-medium text-gray-800">尝试 {attempt.attempt_number ?? '?'}</span>
+                                    <span>{attempt.provider || '未知提供方'} · {attempt.model_name}</span>
+                                    <span>{attempt.phase || '结构化提取'}</span>
+                                    <span className={attempt.status === 'completed' ? 'text-green-700' : attempt.status === 'running' ? 'text-amber-700' : 'text-red-600'}>
+                                      {attempt.status === 'completed' ? '完成' : attempt.status === 'running' ? (detail.status === 'running' ? '执行中' : '结果未知') : attempt.status === 'invalid_response' ? '响应格式无效' : attempt.status === 'empty_response' ? '空响应' : '失败'}
+                                      {attempt.error_code ? ` · ${attempt.error_code}` : ''}
+                                    </span>
+                                    {attempt.duration_ms != null && <span>{attempt.duration_ms} ms</span>}
+                                  </div>
+                                  <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-gray-400">
+                                    {attempt.source_dataset_version_id && <span>来源版本 {attempt.source_dataset_version_id.slice(0, 8)}</span>}
+                                    {attempt.prompt_id && <span>Prompt {attempt.prompt_id} · {attempt.prompt_digest?.slice(0, 10) || '无摘要'}</span>}
+                                    {attempt.model_config_digest && <span>ModelConfig {attempt.model_config_digest.slice(0, 10)}</span>}
+                                    {attempt.request_hash && <span>请求 {attempt.request_hash.slice(0, 10)}</span>}
+                                    {attempt.response_hash && <span>响应 {attempt.response_hash.slice(0, 10)}</span>}
+                                    <span>模型制品可复现性：{attempt.provider_model_artifact_reproducibility || 'unverified'}</span>
+                                  </div>
+                                  <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+                                    <span className={attempt.event_chain_status === 'verified' ? 'text-green-700' : attempt.event_chain_status === 'invalid' ? 'text-red-600' : 'text-gray-400'}>
+                                      {attempt.event_chain_status === 'verified' ? `不可变事件链已校验（${attempt.events?.length || 0} 条）` : attempt.event_chain_status === 'invalid' ? '不可变事件链校验失败' : '此调用没有不可变事件历史'}
+                                    </span>
+                                    {!!attempt.events?.length && (
+                                      <details className="min-w-0">
+                                        <summary className="cursor-pointer text-blue-700">查看调用事件</summary>
+                                        <div className="mt-1 grid gap-1 rounded bg-gray-50 p-2">
+                                          {attempt.events.map(event => (
+                                            <div key={event.id} className="flex flex-wrap gap-x-2 gap-y-0.5">
+                                              <span>#{event.sequence}</span>
+                                              <span>{event.event_type === 'started' ? '调用开始' : event.event_type === 'provider_result' ? 'Provider 返回' : '响应校验失败'}</span>
+                                              <span>{event.status}</span>
+                                              {event.error_code && <span>{event.error_code}</span>}
+                                              {event.occurred_at && <span>{new Date(event.occurred_at).toLocaleString()}</span>}
+                                              <span>hash {event.event_digest.slice(0, 12)}</span>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      </details>
+                                    )}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
                         {/* Schema 详情（Route A）*/}
                         {pl.route === 'A' && detail.stats.meta?.inferred_schema && (
                           <div className="mt-2 border rounded-lg overflow-hidden">
@@ -446,6 +649,24 @@ export default function TransformsTab() {
                             </div>
                           </div>
                         )}
+                      </div>
+                    )}
+                    {detail?.execution_digest && (
+                      <div className="mt-3 rounded-lg border bg-white px-3 py-2 text-[11px] text-gray-600">
+                        <div className="flex flex-wrap gap-x-4 gap-y-1">
+                          <span>运行模式：{detail.execution_mode === 'published' ? '已发布版本' : detail.execution_mode === 'preview' ? '草稿预览' : '兼容快照'}</span>
+                          {detail.pipeline_version_id && <span>Pipeline 版本：{detail.pipeline_version_id.slice(0, 8)}</span>}
+                          <span>输入摘要：{detail.execution_digest.slice(0, 12)}</span>
+                        </div>
+                        {detail.source_versions?.length ? (
+                          <div className="mt-1.5 flex flex-wrap gap-1.5">
+                            {detail.source_versions.map(source => (
+                              <span key={source.dataset_version_id || source.dataset_id} className="rounded border bg-gray-50 px-1.5 py-0.5">
+                                数据源 {source.dataset_id?.slice(0, 8) || '未知'} · v{source.version_no ?? '?'} · {source.checksum ? source.checksum.slice(0, 10) : '无校验和'}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
                       </div>
                     )}
                   </div>

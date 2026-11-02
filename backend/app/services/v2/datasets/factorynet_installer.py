@@ -50,6 +50,10 @@ def install_factorynet_dataset(db: Session) -> dict:
     if existing and existing.latest_version_id:
         version = db.query(DatasetVersion).filter(DatasetVersion.id == existing.latest_version_id).first()
         manifest = dict(existing.schema_json or {})
+        if manifest.get("access_scope") != "shared_read":
+            manifest["access_scope"] = "shared_read"
+            existing.schema_json = manifest
+            db.commit()
         if version and version.storage_uri and get_storage_service().object_exists(version.storage_uri):
             return {"id": FACTORYNET_SOURCE_ID, "dataset_id": existing.id, "version_id": version.id,
                     "installed": True, "records": version.rowcount if version else manifest.get("records"),
@@ -69,6 +73,7 @@ def install_factorynet_dataset(db: Session) -> dict:
                 "filename": FACTORYNET_FILE, "format": "parquet", "sha256": digest,
                 "records": records, "columns": columns, "row_groups": row_groups,
                 "temporal_source": True, "storage_recovery": "repaired_from_pinned_factorynet_source",
+                "access_scope": "shared_read",
             })
             existing.schema_json = manifest
             db.commit()
@@ -83,7 +88,7 @@ def install_factorynet_dataset(db: Session) -> dict:
         FACTORYNET_DATASET_NAME,
         "structured",
         data_class="temporal",
-        schema_json={"source_id": FACTORYNET_SOURCE_ID, "temporal_source": True},
+        schema_json={"source_id": FACTORYNET_SOURCE_ID, "temporal_source": True, "access_scope": "shared_read"},
     )
     version = svc.create_version(dataset.id, raw, rowcount=records)
     # DatasetService assigns ``latest_version_id`` before the generated UUID
@@ -104,6 +109,7 @@ def install_factorynet_dataset(db: Session) -> dict:
         "columns": columns,
         "row_groups": row_groups,
         "temporal_source": True,
+        "access_scope": "shared_read",
         "description": "CNC 三轴铣削的 FactoryNet S-E-F-C 工业时序文件",
     }
     dataset.schema_json = manifest

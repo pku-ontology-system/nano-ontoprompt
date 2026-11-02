@@ -1,8 +1,12 @@
 """ReviewService 单元测试"""
 import pytest
 from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from fastapi import HTTPException
 from app.services.v2.curated.review_service import ReviewService
+from app.services.v2.dataset_service import DatasetService, DatasetStorageError
 from app.models.v2.curated import CuratedDataset, CuratedReview, CuratedRowEdit
+from app.models.v2.dataset import Dataset
 import uuid
 
 
@@ -13,11 +17,13 @@ def make_db_with_dataset(status="pending_review"):
         pipeline_id=None, schema_json=None,
     )
     review = CuratedReview(
-        id="rev-1", curated_dataset_id="ds-1", status="pending"
+        id="rev-1", curated_dataset_id="ds-1", status="pending",
+        dataset_version_id="version-1",
     )
 
     def query_side_effect(model):
         mock_q = MagicMock()
+        mock_q.filter.return_value.with_for_update.return_value = mock_q.filter.return_value
         if model == CuratedDataset:
             mock_q.filter.return_value.first.return_value = ds
         elif model == CuratedReview:
@@ -43,10 +49,12 @@ def test_start_review_creates_record():
             obj.id = "new-rev-1"
     db.refresh.side_effect = refresh_side_effect
 
-    review = svc.start_review("ds-1")
+    with patch.object(DatasetService, "latest_version", return_value=SimpleNamespace(id="version-7")):
+        review = svc.start_review("ds-1")
     db.add.assert_called_once()
     db.commit.assert_called()
     assert ds.status == "in_review"
+    assert review.dataset_version_id == "version-7"
 
 
 def test_approve_updates_status():
@@ -57,6 +65,62 @@ def test_approve_updates_status():
     assert ds.status == "approved"
     assert review.notes == "数据看起来不错"
     assert review.decided_at is not None
+    assert review.dataset_version_id == "version-1"
+
+
+def test_start_review_allows_legacy_dataset_without_version_but_does_not_invent_one():
+    db, ds, _ = make_db_with_dataset()
+    svc = ReviewService(db)
+
+    with patch.object(DatasetService, "latest_version", side_effect=DatasetStorageError("ds-1", None, "no version")):
+        review = svc.start_review("ds-1")
+
+    assert review.dataset_version_id is None
+
+
+def test_start_review_rejects_preview_that_became_stale():
+    db, _, _ = make_db_with_dataset()
+    svc = ReviewService(db)
+
+    with patch.object(DatasetService, "latest_version", return_value=SimpleNamespace(id="version-8")):
+        with pytest.raises(HTTPException, match="Dataset changed after preview") as exc_info:
+            svc.start_review("ds-1", expected_dataset_version_id="version-7")
+
+    assert getattr(exc_info.value, "status_code", None) == 409
+    db.add.assert_not_called()
+
+
+def test_start_review_materializes_v2_curated_dataset_compatibility_row():
+    db = MagicMock()
+    source = Dataset(
+        id="ds-v2", name="from pipeline", kind="curated",
+        schema_json={"columns": ["id"]}, latest_version_id="version-9",
+    )
+
+    def query_side(model):
+        q = MagicMock()
+        if model == CuratedDataset:
+            q.filter.return_value.first.return_value = None
+        elif model == Dataset:
+            q.filter.return_value.first.return_value = source
+        return q
+
+    db.query.side_effect = query_side
+    db.add = MagicMock()
+    db.flush = MagicMock()
+    db.commit = MagicMock()
+    db.refresh = MagicMock()
+    svc = ReviewService(db)
+
+    with patch.object(DatasetService, "latest_version", return_value=SimpleNamespace(id="version-9")):
+        review = svc.start_review("ds-v2")
+
+    compatibility_row = next(
+        call.args[0] for call in db.add.call_args_list
+        if isinstance(call.args[0], CuratedDataset)
+    )
+    assert compatibility_row.latest_version_id == "version-9"
+    assert review.dataset_version_id == "version-9"
 
 
 def test_reject_updates_status():
@@ -85,6 +149,19 @@ def test_batch_edit_rows():
     results = svc.batch_edit_rows("rev-1", edits)
     assert len(results) == 2
     assert db.add.call_count == 2
+
+
+def test_batch_edit_rows_persists_editor_identity():
+    db, _, _ = make_db_with_dataset()
+    svc = ReviewService(db)
+
+    results = svc.batch_edit_rows(
+        "rev-1",
+        [{"row_pk": "1", "field_name": "name", "old_value": "A", "new_value": "B"}],
+        edited_by="editor-1",
+    )
+
+    assert results[0].edited_by == "editor-1"
 
 
 def test_apply_edits_to_snapshot():
@@ -125,3 +202,34 @@ def test_apply_edits_no_edits_returns_original():
     original = [{"id": "1", "name": "Alice"}]
     result = svc.apply_edits_to_snapshot("rev-1", original)
     assert result == original
+
+
+@pytest.mark.parametrize("row_pk", ["SUP-1", "0"])
+def test_apply_edits_matches_business_key_or_review_table_index(row_pk):
+    db = MagicMock()
+    edit = CuratedRowEdit(
+        review_id="rev-1", row_pk=row_pk,
+        field_name="supplier_name", old_value="Old", new_value="New",
+    )
+    db.query.return_value.filter.return_value.all.return_value = [edit]
+    svc = ReviewService(db)
+
+    result = svc.apply_edits_to_snapshot(
+        "rev-1", [{"supplier_id": "SUP-1", "supplier_name": "Old"}],
+        row_identity_column="supplier_id",
+    )
+
+    assert result == [{"supplier_id": "SUP-1", "supplier_name": "New"}]
+
+
+def test_apply_edits_rejects_rows_not_in_reviewed_snapshot():
+    db = MagicMock()
+    edit = CuratedRowEdit(
+        review_id="rev-1", row_pk="STALE", field_name="name",
+        old_value="Old", new_value="New",
+    )
+    db.query.return_value.filter.return_value.all.return_value = [edit]
+    svc = ReviewService(db)
+
+    with pytest.raises(ValueError, match="absent from its pinned dataset version"):
+        svc.apply_edits_to_snapshot("rev-1", [{"id": "CURRENT", "name": "Old"}])

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -22,6 +22,7 @@ import {
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { apiClient, apiClientV2, formatApiError } from "@/api/client";
 import { constructionApi } from "@/api/construction";
+import { ConstructionReviewQueue, type ConstructionReview } from "../ConstructionReviewQueue";
 import {
   MultimodalEvidenceWorkspace,
   type MultimodalEvidence,
@@ -113,6 +114,9 @@ type Run = {
 };
 type MappingTask = {
   id?: string;
+  model_invocations?: Array<{ id?: string; phase?: string; status?: string; provider?: string; model_name?: string; attempt?: number; duration_ms?: number; created_at?: string }>;
+  attempt_event_chain_status?: string;
+  attempt_events?: Array<{ id?: string; attempt_number?: number; sequence?: number; event_type?: string; status?: string; phase?: string; error_code?: string; event_digest?: string }>;
   status?: string;
   stage?: string;
   progress?: { pct?: number; stage?: string };
@@ -122,11 +126,25 @@ type MappingTask = {
     detail?: string;
     status?: string;
   }>;
+  input_summary?: {
+    dataset_version_id?: string;
+    dataset_version_no?: number;
+    dataset_checksum?: string;
+    schema_digest?: string;
+    input_digest?: string;
+    model_config_id?: string;
+    model_provider?: string;
+    model_name?: string;
+    model_config_digest?: string;
+    model_artifact_reproducibility?: string;
+    llm_contract?: { source_analysis_prompt_digest?: string; ontology_mapping_prompt_digest?: string; parser_version?: string; normalizer_version?: string };
+  };
   result?: { suggestions?: Record<string, unknown>[] };
   error?: string;
 };
 type ModelStatus = { configured?: boolean; upstream_authorized?: boolean; model_id?: string };
 type DraftResponse = { id?: string; privacy_level?: "standard" | "private" };
+type ConstructionBuildResponse = { review: ConstructionReview; run?: Run | null; status?: string };
 type MappingResponse = {
   mapping_task_id?: string;
   mapping?: { status?: string; error?: string; suggestions?: Record<string, unknown>[] };
@@ -412,6 +430,7 @@ export default function MultimodalDataPage() {
   const [mappingTaskId, setMappingTaskId] = useState("");
   const [mappingTask, setMappingTask] = useState<MappingTask | null>(null);
   const [run, setRun] = useState<Run | null>(null);
+  const [review, setReview] = useState<ConstructionReview | null>(null);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [mappingGenerated, setMappingGenerated] = useState(false);
@@ -423,6 +442,13 @@ export default function MultimodalDataPage() {
   const [evidence, setEvidence] = useState<MultimodalEvidence | null>(null);
   const [evidenceLoading, setEvidenceLoading] = useState(false);
   const [error, setError] = useState("");
+
+  const onReviewedRun = useCallback((next: Run) => {
+    setRun(next);
+    setStep(4);
+    setSearchParams({ run: next.id }, { replace: true });
+  }, [setSearchParams]);
+  const onSubmittedReview = useCallback((next: ConstructionReview) => setReview(next), []);
 
   const selectedDataset = useMemo(
     () => datasets.find((item) => item.id === selectedDatasetId),
@@ -902,7 +928,7 @@ export default function MultimodalDataPage() {
           suggestions: mappingSuggestions,
         },
       });
-      const created = await apiClientV2.post<Run>(
+      const created = await apiClientV2.post<ConstructionBuildResponse>(
         `/construction/drafts/${id}/build`,
         {
           mapping_confirmed: true,
@@ -910,9 +936,10 @@ export default function MultimodalDataPage() {
           model_id: privacy === "private" ? null : modelStatus?.model_id,
         },
       );
-      setRun(created);
+      setReview(created.review);
       setStep(4);
-      setSearchParams({ run: created.id }, { replace: true });
+      if (created.run) onReviewedRun(created.run);
+      else setRun(null);
     } catch (error: unknown) {
       setError(errorText(error) || "构建任务创建失败");
     } finally {
@@ -1050,6 +1077,8 @@ export default function MultimodalDataPage() {
           </button>
         </div>
       )}
+
+      <ConstructionReviewQueue submittedReview={review} onRun={onReviewedRun} onSubmittedReview={onSubmittedReview} />
 
       <div className="wb-stepper wb-surface">
         {STEPS.map((label, index) => (
@@ -1532,6 +1561,43 @@ export default function MultimodalDataPage() {
                   : "重新请求映射"}
             </button>
           </div>
+          {mappingTask?.input_summary?.dataset_version_id && (
+            <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-600">
+              <p>
+                固定来源版本 v{mappingTask.input_summary.dataset_version_no ?? "—"} ·{" "}
+                <span className="font-mono break-all">
+                  {mappingTask.input_summary.dataset_version_id}
+                </span>
+              </p>
+              <p className="mt-1 break-all">
+                数据 checksum {mappingTask.input_summary.dataset_checksum || "未提供"} · 结构摘要 {mappingTask.input_summary.schema_digest || "—"} · 输入摘要 {mappingTask.input_summary.input_digest || "—"}
+              </p>
+              {mappingTask.input_summary.model_config_digest && (
+                <p className="mt-1 break-all">固定模型配置 {mappingTask.input_summary.model_provider}/{mappingTask.input_summary.model_name} · ID {mappingTask.input_summary.model_config_id} · digest {mappingTask.input_summary.model_config_digest} · 制品可复现性 {mappingTask.input_summary.model_artifact_reproducibility || "未验证"}</p>
+              )}
+              {mappingTask.input_summary.llm_contract && (
+                <p className="mt-1 break-all">Prompt 摘要 {mappingTask.input_summary.llm_contract.source_analysis_prompt_digest?.slice(0, 12) || "—"} / {mappingTask.input_summary.llm_contract.ontology_mapping_prompt_digest?.slice(0, 12) || "—"} · {mappingTask.input_summary.llm_contract.parser_version || "parser"} · {mappingTask.input_summary.llm_contract.normalizer_version || "normalizer"}</p>
+              )}
+              {Boolean(mappingTask.model_invocations?.length) && (
+                <div className="mt-2 border-t border-slate-200 pt-2">
+                  <p className="font-medium">模型调用记录（最近 4 条）</p>
+                  {mappingTask.model_invocations?.slice(-4).map((item, index) => (
+                    <p key={item.id || index}>{item.phase || "phase"} · 第 {item.attempt || "—"} 次 · {item.status || "unknown"} · {item.model_name || "model"} · {item.duration_ms ?? "—"} ms</p>
+                  ))}
+                </div>
+              )}
+              {Boolean(mappingTask.attempt_events?.length) && (
+                <details className="mt-2 border-t border-slate-200 pt-2">
+                  <summary className="cursor-pointer font-medium">不可变尝试事件 · 链 {mappingTask.attempt_event_chain_status || "unavailable"}</summary>
+                  <div className="mt-2 space-y-1">
+                    {mappingTask.attempt_events?.slice(-12).map((item, index) => (
+                      <p key={item.id || index} className="break-all">尝试 {item.attempt_number} · {item.event_type}/{item.phase || "task"} · {item.status}{item.error_code ? ` · ${item.error_code}` : ""} · hash {item.event_digest?.slice(0, 12) || "—"}</p>
+                    ))}
+                  </div>
+                </details>
+              )}
+            </div>
+          )}
           {mappingGenerated ? (
             <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-3">
               {mappingSuggestions.map((item, index) => (
@@ -1624,8 +1690,8 @@ export default function MultimodalDataPage() {
         <section className="grid xl:grid-cols-[1fr_0.7fr] gap-4">
           <div className="wb-surface p-5 space-y-4">
             <div>
-              <div className="wb-section-kicker">05 / 确认构建</div>
-              <h2 className="wb-section-title">启动构建任务</h2>
+              <div className="wb-section-kicker">05 / 审核与构建</div>
+              <h2 className="wb-section-title">独立审核通过后启动构建</h2>
             </div>
             <div className="wb-summary-grid">
               <div>
@@ -1652,12 +1718,13 @@ export default function MultimodalDataPage() {
             </div>
             <div className="flex items-center justify-between border-t border-gray-100 pt-4">
               <span className="text-xs text-gray-500">
-                构建通过规则门禁后发布本体；标准模式 M3 失败会停在“等待模型”。
+                候选需由另一位有数据访问权限的 Editor 审核；批准后才写入本体。
               </span>
               <button
                 onClick={build}
                 disabled={
                   busy ||
+                  review?.status === "pending_review" ||
                   Boolean(
                     run &&
                     ["queued", "running", "waiting_for_model"].includes(
@@ -1668,7 +1735,7 @@ export default function MultimodalDataPage() {
                 className="wb-button-primary"
               >
                 <Play size={14} />
-                {busy ? "提交中" : "确认并构建"}
+                {busy ? "提交中" : review?.status === "pending_review" ? "等待独立审核" : "提交独立审核"}
               </button>
             </div>
             {run && (

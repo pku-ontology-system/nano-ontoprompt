@@ -107,6 +107,7 @@ def _repair_existing_cmapss_dataset(db: Session, dataset: Dataset, prepared: tup
         "rowcount": len(rows),
         "recovered_at": datetime.now(timezone.utc).isoformat(),
         "storage_recovery": "repaired_from_local_fd001_fixture",
+            "access_scope": "shared_read",
     })
     dataset.schema_json = schema
     db.commit()
@@ -123,6 +124,11 @@ def ensure_cmapss_fd001_demo(db: Session) -> Dataset | None:
             existing.data_class = "regular"; changed = True
         if existing.name != CMAPSS_FD001_NAME:
             existing.name = CMAPSS_FD001_NAME; changed = True
+        schema = dict(existing.schema_json or {})
+        if schema.get("access_scope") != "shared_read":
+            schema["access_scope"] = "shared_read"
+            existing.schema_json = schema
+            changed = True
         if changed: db.commit()
         version = db.query(DatasetVersion).filter(DatasetVersion.id == existing.latest_version_id).first() if existing.latest_version_id else None
         if version and version.storage_uri and get_storage_service().object_exists(version.storage_uri):
@@ -154,6 +160,7 @@ def ensure_cmapss_fd001_demo(db: Session) -> Dataset | None:
             "tables": {"equipment": {"rows": provenance["equipment_rows"], "role": "主体维表"}, "sensor_readings": {"rows": provenance["sensor_reading_rows"], "role": "关联读数与统计证据"}},
             "rowcount": len(rows),
             "data_class": "regular",
+            "access_scope": "shared_read",
         },
     )
     version = service.create_version(dataset.id, payload, rowcount=len(rows))
