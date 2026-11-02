@@ -9,3 +9,10 @@ def run_temporal_stream_task(run_id: str) -> dict:
     from app.services.v2.temporal_stream_service import run_temporal_stream
 
     return run_temporal_stream(run_id)
+
+
+@celery_app.task(name="v2.temporal_stream.reconcile")
+def reconcile_temporal_stream_task(batch_size: int = 50) -> dict:
+    from app.services.v2.temporal_stream_service import reconcile_temporal_stream_workers
+
+    return reconcile_temporal_stream_workers(batch_size=batch_size)

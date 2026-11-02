@@ -23,7 +23,9 @@ from app.models.v2.construction import ConstructionRun, EvidenceRef
 from app.models.v2.dataset import Dataset, DatasetVersion
 from app.models.v2.temporal_replay import TemporalReplay, TemporalReplayBatch
 from app.services.storage_service import get_storage_service
+from app.services.v2.construction_service import construction_run_error_code
 from app.services.v2.graph.falkordb_service import FalkorDBService
+from app.services.v2.temporal_error_safety import temporal_error_details
 from app.services.v2.temporal_service import (
     FactoryNetIncrementalState,
     TemporalConfig,
@@ -241,7 +243,10 @@ def build_factorynet_replay_batches(
     }
 
 
-def _serialize_batch(batch: TemporalReplayBatch) -> dict[str, Any]:
+def serialize_replay_batch(batch: TemporalReplayBatch) -> dict[str, Any]:
+    error_code, error_message = temporal_error_details(
+        batch.error, fallback_code="TEMPORAL_REPLAY_FAILED",
+    )
     return {
         "id": batch.id,
         "replay_id": batch.replay_id,
@@ -257,7 +262,8 @@ def _serialize_batch(batch: TemporalReplayBatch) -> dict[str, Any]:
         "issue_count": batch.issue_count,
         "latest_rows": batch.latest_rows or [],
         "payload_hash": batch.payload_hash,
-        "error": batch.error,
+        "error": error_message,
+        "error_code": error_code,
         "created_at": batch.created_at.isoformat() if batch.created_at else None,
         "started_at": batch.started_at.isoformat() if batch.started_at else None,
         "completed_at": batch.completed_at.isoformat() if batch.completed_at else None,
@@ -266,6 +272,9 @@ def _serialize_batch(batch: TemporalReplayBatch) -> dict[str, Any]:
 
 
 def serialize_replay(replay: TemporalReplay, *, latest_batch: TemporalReplayBatch | None = None) -> dict[str, Any]:
+    error_code, error_message = temporal_error_details(
+        replay.error, fallback_code="TEMPORAL_REPLAY_FAILED",
+    )
     progress = dict(replay.metrics or {})
     progress.update({
         "current_batch": replay.current_batch_index,
@@ -308,11 +317,12 @@ def serialize_replay(replay: TemporalReplay, *, latest_batch: TemporalReplayBatc
         "metrics": replay.metrics or {},
         "progress": progress,
         "config": replay.config or {},
-        "error": replay.error,
+        "error": error_message,
+        "error_code": error_code,
         "pause_requested": bool(replay.pause_requested),
         "step_requested": bool(replay.step_requested),
         "cancel_requested": bool(replay.cancel_requested),
-        "latest_batch": _serialize_batch(latest_batch) if latest_batch else None,
+        "latest_batch": serialize_replay_batch(latest_batch) if latest_batch else None,
         "latest_rows": (latest_batch.latest_rows or []) if latest_batch else [],
         "created_at": replay.created_at.isoformat() if replay.created_at else None,
         "started_at": replay.started_at.isoformat() if replay.started_at else None,
@@ -371,7 +381,7 @@ def _sync_construction_run(
         return
     metrics = dict(replay.metrics or {})
     run.status = status or run.status
-    run.error = error
+    run.error = construction_run_error_code(error)
     run.metrics = metrics
     run.progress = {
         "stage": "时序模拟",
@@ -544,11 +554,16 @@ def _write_batch(db: Session, replay: TemporalReplay, batch: TemporalReplayBatch
 
 def _mark_terminal(db: Session, replay: TemporalReplay, status: str, error: str | None = None) -> None:
     replay.status = status
-    replay.error = error
+    error_code, _ = temporal_error_details(error, fallback_code="TEMPORAL_REPLAY_FAILED")
+    replay.error = error_code
     replay.updated_at = _now()
     if status in TERMINAL_STATUSES:
         replay.completed_at = _now()
-    _sync_construction_run(db, replay, status=("completed" if status == "completed" else status), error=error)
+    _sync_construction_run(
+        db, replay,
+        status=("completed" if status == "completed" else status),
+        error=error_code,
+    )
     db.commit()
 
 
@@ -600,13 +615,21 @@ def run_temporal_replay(replay_id: str) -> dict[str, Any]:
             except Exception as exc:
                 db.rollback()
                 batch = db.query(TemporalReplayBatch).filter(TemporalReplayBatch.id == batch.id).first() or batch
-                batch.status = "failed"; batch.error = str(exc)[:2000]; batch.updated_at = _now()
+                error_code, error_message = temporal_error_details(
+                    exc, fallback_code="TEMPORAL_REPLAY_FAILED",
+                )
+                batch.status = "failed"; batch.error = error_code; batch.updated_at = _now()
                 replay = db.query(TemporalReplay).filter(TemporalReplay.id == replay_id).first()
                 if replay:
-                    replay.status = "failed"; replay.error = str(exc)[:2000]; replay.updated_at = _now(); replay.completed_at = _now()
-                    _sync_construction_run(db, replay, status="failed", error=str(exc)[:2000])
+                    replay.status = "failed"; replay.error = error_code; replay.updated_at = _now(); replay.completed_at = _now()
+                    _sync_construction_run(db, replay, status="failed", error=error_code)
                 db.commit()
-                return {"replay_id": replay_id, "status": "failed", "error": str(exc)}
+                return {
+                    "replay_id": replay_id,
+                    "status": "failed",
+                    "error": error_message,
+                    "error_code": error_code,
+                }
             db.refresh(replay)
             if replay.step_requested:
                 replay.step_requested = False

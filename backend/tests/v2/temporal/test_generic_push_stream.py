@@ -99,6 +99,88 @@ def test_generic_push_event_time_projects_state_and_rejects_late(db, admin_user,
     assert published["snapshot"]["event_count"] == 2
 
 
+def test_generic_push_delete_is_a_temporal_tombstone_and_upsert_can_restore(
+    db, admin_user, monkeypatch, isolated_stream_graph,
+):
+    ontology = OntologyProject(id="generic-delete-stream", name="Sensor", domain="test",
+                               data_class="temporal", created_by=admin_user.id)
+    db.add(ontology)
+    db.flush()
+    revision = OntologyRevision(id="generic-delete-revision", ontology_id=ontology.id,
+                                snapshot_json={"entities": [{"id": "machine-type", "name_en": "Machine"}]},
+                                is_current=True)
+    db.add(revision)
+    ontology.current_revision_id = revision.id
+    db.commit()
+    monkeypatch.setattr(streams, "dispatch_stream", lambda _run_id: "test")
+    replay = streams.create_stream_run(
+        db, ontology.id, source_mode="push", source_id="sensor-delete",
+        config={"mapping": {"entity_type": "Machine", "properties": {"temp": "temperature"}},
+                "time_kind": "event_time", "late_event_policy": "reject"},
+    )
+    isolated_stream_graph.append((ontology.id, replay.graph_namespace))
+
+    first, duplicate = streams.ingest_push_event(db, replay, {
+        "event_id": "upsert-1", "episode_id": "line-a", "entity_key": "machine-1",
+        "event_time": "2026-10-23T10:00:00Z", "source_sequence": 0,
+        "payload": {"temp": 21},
+    })
+    assert not duplicate
+    streams.process_one_event(db, replay, first)
+
+    deleted, duplicate = streams.ingest_push_event(db, replay, {
+        "event_id": "delete-1", "operation": "delete", "episode_id": "line-a",
+        "entity_key": "machine-1", "event_time": "2026-10-23T10:01:00Z",
+        "source_sequence": 1, "payload": {},
+    })
+    assert not duplicate
+    streams.process_one_event(db, replay, deleted)
+    assert streams._serialize_event(deleted)["operation"] == "delete"
+
+    current_after_delete = streams.stream_graph(db, replay, limit=20, relation_state="current")
+    assert current_after_delete["nodes"] == []
+    before_delete = streams.stream_graph(
+        db, replay, limit=20, at=float(first.ordinal), relation_state="current",
+    )
+    assert before_delete["nodes"][0]["properties"]["temperature"] == 21
+    at_delete = streams.stream_graph(
+        db, replay, limit=20, at=float(deleted.ordinal), relation_state="current",
+    )
+    assert at_delete["nodes"] == []
+
+    same_delete, duplicate = streams.ingest_push_event(db, replay, {
+        "event_id": "delete-1", "operation": "delete", "episode_id": "line-a",
+        "entity_key": "machine-1", "event_time": "2026-10-23T10:01:00Z",
+        "source_sequence": 1, "payload": {},
+    })
+    assert duplicate and same_delete.id == deleted.id
+    with pytest.raises(streams.StreamError) as error:
+        streams.ingest_push_event(db, replay, {
+            "event_id": "delete-1", "operation": "upsert", "episode_id": "line-a",
+            "entity_key": "machine-1", "event_time": "2026-10-23T10:01:00Z",
+            "source_sequence": 1, "payload": {"temp": 22},
+        })
+    assert error.value.code == "EVENT_PAYLOAD_CONFLICT"
+
+    restored, _ = streams.ingest_push_event(db, replay, {
+        "event_id": "upsert-2", "operation": "upsert", "episode_id": "line-a",
+        "entity_key": "machine-1", "event_time": "2026-10-23T10:02:00Z",
+        "source_sequence": 2, "payload": {"temp": 24},
+    })
+    streams.process_one_event(db, replay, restored)
+    current_after_restore = streams.stream_graph(db, replay, limit=20, relation_state="current")
+    assert current_after_restore["nodes"][0]["properties"]["temperature"] == 24
+
+    active_tombstones = db.query(TemporalFact).filter(
+        TemporalFact.replay_id == replay.id,
+        TemporalFact.subject_id == "machine-1",
+        TemporalFact.state_key == "__deleted__",
+        TemporalFact.status == "active",
+        TemporalFact.valid_to_ordinal.is_(None),
+    ).count()
+    assert active_tombstones == 0
+
+
 def test_generic_file_and_push_have_same_snapshot_hash(db, admin_user, monkeypatch, isolated_stream_graph):
     ontology = OntologyProject(id="generic-file-stream", name="Sensor", domain="test",
                                data_class="temporal", created_by=admin_user.id)

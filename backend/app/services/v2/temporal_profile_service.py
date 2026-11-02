@@ -23,6 +23,7 @@ from app.services import encryption_service
 from app.services.model_config_selector import llm_call_kwargs
 from app.services.storage_service import get_storage_service
 from app.services.v2.construction_service import serialize_run
+from app.services.v2.temporal_error_safety import temporal_error_details
 
 logger = logging.getLogger(__name__)
 PROFILE_PROMPT_VERSION = "temporal-profile-v1"
@@ -182,16 +183,16 @@ def run_profile(profile_id: str) -> None:
             return
         version = db.query(DatasetVersion).filter(DatasetVersion.id == profile.dataset_version_id).first()
         if not version or not version.storage_uri:
-            profile.status = "failed"; profile.error = "数据版本没有可读取的存储对象"; db.commit(); return
+            profile.status = "failed"; profile.error = "SOURCE_NOT_READY"; db.commit(); return
         from app.routers.v2.temporal import parse_temporal_bytes
         rows = parse_temporal_bytes(get_storage_service().get_object(version.storage_uri))
         profile.deterministic_profile = profile_rows(rows, checksum=version.checksum)
         config = _pick_m3_config(db)
         if not config:
-            profile.status = "failed"; profile.error = "MiniMax-M3 未配置"; db.commit(); return
+            profile.status = "failed"; profile.error = "MODEL_NOT_CONFIGURED"; db.commit(); return
         kwargs = llm_call_kwargs(config)
         if not kwargs or not kwargs.get("api_key"):
-            profile.status = "failed"; profile.error = "MiniMax-M3 凭据无法解密"; db.commit(); return
+            profile.status = "failed"; profile.error = "MODEL_CREDENTIAL_UNAVAILABLE"; db.commit(); return
         prompt = (
             "你是工业时序数据结构分析器。只返回 JSON，不要 markdown。\n"
             "只能引用输入中真实存在的列名，不能发明日期、设备或关系。\n"
@@ -244,19 +245,21 @@ def run_profile(profile_id: str) -> None:
         invocation.completed_at = datetime.now(timezone.utc)
         db.commit()
     except Exception as exc:
-        logger.warning("temporal profile failed: %s", exc)
+        error_code, _ = temporal_error_details(exc, fallback_code="TEMPORAL_PROFILE_FAILED")
+        error_code = error_code or "TEMPORAL_PROFILE_FAILED"
+        logger.warning("temporal profile failed (code=%s, exception=%s)", error_code, type(exc).__name__)
         try:
             db.rollback()
             if invocation is not None:
                 failed = db.query(ModelInvocation).filter(ModelInvocation.id == invocation.id).first()
                 if failed:
                     failed.status = "failed"
-                    failed.error = str(exc)[:1000]
+                    failed.error = error_code
                     failed.duration_ms = int((time.monotonic() - started) * 1000)
                     failed.completed_at = datetime.now(timezone.utc)
             profile = db.query(TemporalDatasetProfile).filter(TemporalDatasetProfile.id == profile_id).first()
             if profile:
-                profile.status = "failed"; profile.error = str(exc)[:2000]; db.commit()
+                profile.status = "failed"; profile.error = error_code; db.commit()
         except Exception:
             db.rollback()
     finally:
@@ -264,6 +267,10 @@ def run_profile(profile_id: str) -> None:
 
 
 def serialize_profile(profile: TemporalDatasetProfile) -> dict[str, Any]:
+    error_code, error_message = temporal_error_details(
+        profile.error,
+        fallback_code="TEMPORAL_PROFILE_FAILED",
+    )
     return {
         "id": profile.id,
         "dataset_id": profile.dataset_id,
@@ -276,7 +283,8 @@ def serialize_profile(profile: TemporalDatasetProfile) -> dict[str, Any]:
         "prompt_version": profile.prompt_version,
         "llm_used": bool(profile.llm_used),
         "response_hash": profile.response_hash,
-        "error": profile.error,
+        "error": error_message,
+        "error_code": error_code,
         "created_at": profile.created_at.isoformat() if profile.created_at else None,
         "updated_at": profile.updated_at.isoformat() if profile.updated_at else None,
     }

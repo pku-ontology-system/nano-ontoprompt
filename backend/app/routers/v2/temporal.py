@@ -23,7 +23,11 @@ from app.models.user import User
 from app.models.ontology import OntologyProject
 from app.models.v2.construction import ConstructionRun
 from app.models.v2.dataset import Dataset, DatasetVersion
-from app.services.v2.construction_service import create_run, serialize_run
+from app.services.v2.dataset_authorization import require_dataset_access
+from app.services.v2.object_query.authorization import require_ontology_access
+from app.services.v2.object_query.errors import ObjectQueryError
+from app.services.v2.construction_service import create_run, serialize_run, construction_run_error_code
+from app.services.v2.temporal_error_safety import temporal_error_details
 from app.services.v2.datasets.icews_adapter import (
     ICEWS_DATASET_NAME,
     ICEWS_DOI,
@@ -75,7 +79,7 @@ def _read_source_object(storage_uri: str | None) -> bytes:
     try:
         return get_storage_service().get_object(storage_uri)
     except Exception as exc:
-        raise HTTPException(424, detail={"error": "STORAGE_OBJECT_MISSING", "message": user_facing_storage_error(exc, storage_uri), "storage_uri": storage_uri}) from exc
+        raise HTTPException(424, detail={"error": "STORAGE_OBJECT_MISSING", "message": user_facing_storage_error(exc, storage_uri)}) from exc
 
 
 class TemporalRunCreate(BaseModel):
@@ -182,6 +186,38 @@ def _storage_object_available(version: DatasetVersion | None) -> bool:
         return get_storage_service().object_exists(version.storage_uri)
     except Exception:
         return False
+
+
+def _require_temporal_ontology_access(db: Session, ontology_id: str, user: User) -> None:
+    try:
+        require_ontology_access(db, ontology_id, str(user.id), user.role)
+    except ObjectQueryError:
+        raise HTTPException(404, "本体不存在或不可访问") from None
+
+
+def _temporal_source_datasets(db: Session, source_id: str) -> list[Dataset]:
+    if source_id == FACTORYNET_SOURCE_ID:
+        dataset = find_factorynet_dataset(db)
+        return [dataset] if dataset else []
+    if source_id == CMAPSS_SOURCE_ID:
+        sensor, equipment = _find_cmapss_parts(db)
+        return [sensor, equipment] if sensor is not None and equipment is not None else []
+    if source_id == ICEWS_SOURCE_ID:
+        dataset = find_icews_dataset(db)
+        return [dataset] if dataset else []
+    if source_id.startswith("dataset:"):
+        dataset = db.get(Dataset, source_id.split(":", 1)[1])
+        return [dataset] if dataset else []
+    return []
+
+
+def _require_temporal_source_access(db: Session, source_id: str, user: User, *, write: bool = False) -> list[Dataset]:
+    datasets = _temporal_source_datasets(db, source_id)
+    if not datasets:
+        raise HTTPException(404, "时序数据源不存在或不可访问")
+    for dataset in datasets:
+        require_dataset_access(db, dataset, user, write=write)
+    return datasets
 
 
 def _source_item(db: Session, source_id: str) -> dict[str, Any]:
@@ -308,7 +344,7 @@ def parse_temporal_bytes(raw: bytes) -> list[dict[str, Any]]:
             table = pq.read_table(io.BytesIO(raw))
             return [{**dict(row), "_source_row_index": index} for index, row in enumerate(table.to_pylist())]
         except Exception as exc:
-            raise ValueError(f"unable to parse Parquet dataset: {exc}") from exc
+            raise ValueError("Parquet 时序文件无法解析") from exc
     if raw[:2] == b"PK":
         try:
             import openpyxl
@@ -325,18 +361,24 @@ def parse_temporal_bytes(raw: bytes) -> list[dict[str, Any]]:
                 if any(value not in (None, "") for value in row)
             ]
         except Exception as exc:
-            raise ValueError(f"unable to parse XLSX dataset: {exc}") from exc
+            raise ValueError("XLSX 时序文件无法解析") from exc
     text = raw.decode("utf-8-sig", errors="replace")
     stripped = text.lstrip()
     if stripped.startswith("[") or stripped.startswith("{"):
-        data = json.loads(stripped)
+        try:
+            data = json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            raise ValueError("JSON 时序文件无法解析") from exc
         items = data if isinstance(data, list) else [data]
         return [{**dict(item), "_source_row_index": index} for index, item in enumerate(items) if isinstance(item, dict)]
     if "\n" in text and text.lstrip().splitlines() and text.lstrip().splitlines()[0].lstrip().startswith("{"):
         rows = []
         for index, line in enumerate(text.splitlines()):
             if line.strip():
-                value = json.loads(line)
+                try:
+                    value = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"JSON Lines 第 {index + 1} 条记录无法解析") from exc
                 if isinstance(value, dict):
                     rows.append({**value, "_source_row_index": index})
         return rows
@@ -355,7 +397,7 @@ def parse_temporal_bytes(raw: bytes) -> list[dict[str, Any]]:
 _parse_dataset_rows = parse_temporal_bytes
 
 
-def _existing_dataset_sources(db: Session) -> list[dict[str, Any]]:
+def _existing_dataset_sources(db: Session, user: User | None = None) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for dataset in db.query(Dataset).filter(Dataset.kind.in_(["structured", "semi"]), Dataset.data_class == "temporal").order_by(Dataset.created_at.desc()).all():
         manifest = dataset.schema_json or {}
@@ -363,6 +405,11 @@ def _existing_dataset_sources(db: Session) -> list[dict[str, Any]]:
             continue
         if dataset.name in {"sensor_readings", "equipment"} or manifest.get("cmapss_role"):
             continue
+        if user is not None:
+            try:
+                require_dataset_access(db, dataset, user)
+            except HTTPException:
+                continue
         item = _source_item(db, f"dataset:{dataset.id}")
         if item.get("installed"):
             items.append(item)
@@ -376,9 +423,16 @@ def adapters():
 
 
 @router.get("/sources")
-def sources(db: Session = Depends(get_db)):
+def sources(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """List built-in temporal packages and explicitly uploaded temporal files."""
-    return [_source_item(db, FACTORYNET_SOURCE_ID), _source_item(db, CMAPSS_SOURCE_ID), *_existing_dataset_sources(db)]
+    items = []
+    for source_id in (FACTORYNET_SOURCE_ID, CMAPSS_SOURCE_ID):
+        try:
+            _require_temporal_source_access(db, source_id, current_user)
+        except HTTPException:
+            continue
+        items.append(_source_item(db, source_id))
+    return [*items, *_existing_dataset_sources(db, current_user)]
 
 
 @router.post("/sources/factorynet_cnc/install", status_code=201)
@@ -386,11 +440,12 @@ def install_factorynet(_admin=Depends(require_admin), db: Session = Depends(get_
     try:
         return install_factorynet_dataset(db)
     except Exception as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        code, message = temporal_error_details("TEMPORAL_SOURCE_INSTALL_FAILED")
+        raise HTTPException(status_code=422, detail={"error": code, "message": message}) from exc
 
 
 @router.post("/sources/upload", status_code=201)
-async def upload_temporal_source(file: UploadFile = File(...), db: Session = Depends(get_db), _user: User = Depends(require_editor)):
+async def upload_temporal_source(file: UploadFile = File(...), db: Session = Depends(get_db), current_user: User = Depends(require_editor)):
     filename = file.filename or "temporal-upload"
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     allowed = {"csv", "tsv", "json", "jsonl", "xlsx", "xls", "parquet"}
@@ -402,7 +457,8 @@ async def upload_temporal_source(file: UploadFile = File(...), db: Session = Dep
     try:
         rows = parse_temporal_bytes(raw)
     except Exception as exc:
-        raise HTTPException(422, f"文件解析失败: {exc}") from exc
+        code, message = temporal_error_details("TEMPORAL_SOURCE_PARSE_FAILED")
+        raise HTTPException(422, detail={"error": code, "message": message}) from exc
     if not rows:
         raise HTTPException(422, "文件没有可用记录")
     import os
@@ -412,6 +468,7 @@ async def upload_temporal_source(file: UploadFile = File(...), db: Session = Dep
     dataset = svc.create_dataset(
         name=name, kind="structured", data_class="temporal",
         schema_json={"temporal_source": True, "source": "uploaded"},
+        created_by=str(current_user.id),
     )
     version = svc.create_version(dataset.id, raw, rowcount=len(rows))
     dataset.latest_version_id = version.id
@@ -428,7 +485,8 @@ async def upload_temporal_source(file: UploadFile = File(...), db: Session = Dep
 
 
 @router.post("/sources/{source_id}/analyses", status_code=202)
-def create_temporal_analysis(source_id: str, body: TemporalAnalysisRequest | None = None, background: BackgroundTasks = None, db: Session = Depends(get_db), _user: User = Depends(require_editor)):
+def create_temporal_analysis(source_id: str, body: TemporalAnalysisRequest | None = None, background: BackgroundTasks = None, db: Session = Depends(get_db), current_user: User = Depends(require_editor)):
+    _require_temporal_source_access(db, source_id, current_user, write=True)
     dataset_id = source_id.split(":", 1)[1] if source_id.startswith("dataset:") else None
     if source_id == FACTORYNET_SOURCE_ID:
         dataset = find_factorynet_dataset(db)
@@ -499,10 +557,11 @@ def create_temporal_analysis(source_id: str, body: TemporalAnalysisRequest | Non
 
 
 @router.get("/analyses/{profile_id}")
-def get_temporal_analysis(profile_id: str, db: Session = Depends(get_db)):
+def get_temporal_analysis(profile_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     profile = db.query(TemporalDatasetProfile).filter(TemporalDatasetProfile.id == profile_id).first()
     if not profile:
         raise HTTPException(404, "时序分析不存在")
+    require_dataset_access(db, profile.dataset_id, current_user)
     return serialize_profile(profile)
 
 
@@ -511,7 +570,8 @@ def install_icews(_admin=Depends(require_admin), db: Session = Depends(get_db)):
     try:
         return install_icews_dataset(db)
     except (ValueError, OSError, RuntimeError) as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        code, message = temporal_error_details("TEMPORAL_SOURCE_INSTALL_FAILED")
+        raise HTTPException(status_code=422, detail={"error": code, "message": message}) from exc
 
 
 @router.get("/sources/{source_id}/preview")
@@ -528,9 +588,11 @@ def source_preview(
     intensity_max: float | None = None,
     scenario: str | None = None,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     if source_id not in {ICEWS_SOURCE_ID, FACTORYNET_SOURCE_ID, CMAPSS_SOURCE_ID} and not source_id.startswith("dataset:"):
         raise HTTPException(404, "temporal source not found")
+    _require_temporal_source_access(db, source_id, current_user)
     if source_id == FACTORYNET_SOURCE_ID:
         dataset = find_factorynet_dataset(db)
         if not dataset or not dataset.latest_version_id:
@@ -607,7 +669,8 @@ def source_preview(
 
 
 @router.post("/sources/{source_id}/query")
-def query_temporal_source(source_id: str, body: TemporalQueryBody, db: Session = Depends(get_db)):
+def query_temporal_source(source_id: str, body: TemporalQueryBody, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    _require_temporal_source_access(db, source_id, current_user)
     item = _source_item(db, source_id)
     if not item.get("installed") or not item.get("dataset_id"):
         raise HTTPException(409, "时序数据源尚未安装")
@@ -646,17 +709,24 @@ def query_temporal_source(source_id: str, body: TemporalQueryBody, db: Session =
 
 
 @router.get("/catalog")
-def catalog(db: Session = Depends(get_db)):
+def catalog(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """Compatibility alias for the temporal source catalog."""
-    return [_source_item(db, FACTORYNET_SOURCE_ID), _source_item(db, CMAPSS_SOURCE_ID), *_existing_dataset_sources(db)]
+    items = []
+    for source_id in (FACTORYNET_SOURCE_ID, CMAPSS_SOURCE_ID):
+        try:
+            _require_temporal_source_access(db, source_id, current_user)
+        except HTTPException:
+            continue
+        items.append(_source_item(db, source_id))
+    return [*items, *_existing_dataset_sources(db, current_user)]
 
 
 @router.get("/catalog/{dataset_key}/preview")
-def catalog_preview(dataset_key: str, limit: int = Query(25, ge=1, le=100)):
+def catalog_preview(dataset_key: str, limit: int = Query(25, ge=1, le=100), current_user: User = Depends(get_current_user)):
     if dataset_key not in {ICEWS_SOURCE_ID, FACTORYNET_SOURCE_ID, CMAPSS_SOURCE_ID} and not dataset_key.startswith("dataset:"):
         raise HTTPException(404, "temporal source not found")
     with SessionLocal() as db:
-        return source_preview(dataset_key, offset=0, limit=limit, db=db)
+        return source_preview(dataset_key, offset=0, limit=limit, db=db, current_user=current_user)
 
 
 def _canonical_config(body: TemporalRunCreate, source_id: str, dataset_id: str | None) -> tuple[dict[str, Any], str]:
@@ -679,10 +749,11 @@ def _find_completed_run(db: Session, ontology_id: str, config_hash: str) -> Cons
     return next((run for run in runs if (run.config or {}).get("config_hash") == config_hash), None)
 
 
-def create_temporal_run(ontology_id: str, body: TemporalRunCreate, background: BackgroundTasks, db: Session):
+def create_temporal_run(ontology_id: str, body: TemporalRunCreate, background: BackgroundTasks, db: Session, user: User):
     ontology = db.query(OntologyProject).filter(OntologyProject.id == ontology_id).first()
     if not ontology:
         raise HTTPException(404, "Ontology not found")
+    _require_temporal_ontology_access(db, ontology_id, user)
     if ontology.data_class != "temporal":
         raise HTTPException(409, "只能追加到时序数据本体")
     source_id = _source_id(body)
@@ -714,6 +785,10 @@ def create_temporal_run(ontology_id: str, body: TemporalRunCreate, background: B
         dataset_id = source_id.split(":", 1)[1]
         if not db.query(Dataset.id).filter(Dataset.id == dataset_id).first():
             raise HTTPException(404, "Dataset source not found")
+    if dataset_id:
+        require_dataset_access(db, dataset_id, user)
+    if source_id == CMAPSS_SOURCE_ID and equipment:
+        require_dataset_access(db, equipment, user)
     config, config_hash = _canonical_config(body, source_id, dataset_id)
     config["config_hash"] = config_hash
     existing = _find_completed_run(db, ontology_id, config_hash)
@@ -734,7 +809,7 @@ def create_temporal_run(ontology_id: str, body: TemporalRunCreate, background: B
             background.add_task(run_temporal_construction, run.id)
     except Exception as exc:
         background.add_task(run_temporal_construction, run.id)
-        run.error = f"Celery unavailable; background fallback: {exc}"
+        run.error = construction_run_error_code("Celery unavailable; background fallback")
         db.commit()
     return serialize_run(run)
 
@@ -750,6 +825,7 @@ def create_temporal_run_atomic(body: TemporalAtomicRunCreate, background: Backgr
     dataset = dataset_for_profile
     if not dataset:
         raise HTTPException(404, "分析对应的数据集不存在")
+    require_dataset_access(db, dataset, current_user)
     if body.ontology_mode == "reuse":
         if not body.ontology_id:
             raise HTTPException(422, "请选择已有本体")
@@ -757,6 +833,7 @@ def create_temporal_run_atomic(body: TemporalAtomicRunCreate, background: Backgr
         existing_ontology = db.query(OntologyProject).filter(OntologyProject.id == ontology_id).first()
         if not existing_ontology:
             raise HTTPException(404, "目标本体不存在")
+        _require_temporal_ontology_access(db, ontology_id, current_user)
         if existing_ontology.data_class != "temporal":
             raise HTTPException(409, "只能追加到时序数据本体")
     else:
@@ -765,6 +842,10 @@ def create_temporal_run_atomic(body: TemporalAtomicRunCreate, background: Backgr
             raise HTTPException(422, "本体名称不能为空")
         duplicate = db.query(OntologyProject).filter(OntologyProject.name.ilike(name)).first()
         if duplicate:
+            try:
+                _require_temporal_ontology_access(db, duplicate.id, current_user)
+            except HTTPException:
+                raise HTTPException(status_code=409, detail={"error": "DUPLICATE_NAME", "message": "本体名称已存在，请修改名称"}) from None
             raise HTTPException(status_code=409, detail={"error": "DUPLICATE_NAME", "message": "本体名称已存在，请选择复用或修改名称", "existing_id": duplicate.id})
         ontology = OntologyProject(id=str(uuid.uuid4()), name=name, domain=body.ontology_domain,
                                    description=body.ontology_description or "由时序案例数据构建的工业本体",
@@ -772,21 +853,32 @@ def create_temporal_run_atomic(body: TemporalAtomicRunCreate, background: Backgr
         db.add(ontology); db.commit(); db.refresh(ontology)
         ontology_id = ontology.id
     config_body = TemporalRunCreate(**body.model_dump(exclude={"ontology_mode", "ontology_id", "ontology_name", "ontology_domain", "ontology_description"}))
-    result = create_temporal_run(ontology_id, config_body, background, db)
+    result = create_temporal_run(ontology_id, config_body, background, db, current_user)
     return {**result, "ontology_id": ontology_id, "profile_id": body.profile_id}
 
 
 @router.post("/ontologies/{ontology_id}/runs", status_code=202)
-def create_temporal_run_legacy(ontology_id: str, body: TemporalRunCreate, background: BackgroundTasks, db: Session = Depends(get_db), _user: User = Depends(require_editor)):
-    return create_temporal_run(ontology_id, body, background, db)
+def create_temporal_run_legacy(ontology_id: str, body: TemporalRunCreate, background: BackgroundTasks, db: Session = Depends(get_db), current_user: User = Depends(require_editor)):
+    return create_temporal_run(ontology_id, body, background, db, current_user)
 
 
 @router.get("/runs")
-def list_temporal_runs(ontology_id: str | None = None, limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_db)):
+def list_temporal_runs(ontology_id: str | None = None, limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     query = db.query(ConstructionRun).filter(ConstructionRun.mode == "temporal")
     if ontology_id:
+        _require_temporal_ontology_access(db, ontology_id, current_user)
         query = query.filter(ConstructionRun.ontology_id == ontology_id)
-    return [serialize_run(run) for run in query.order_by(ConstructionRun.created_at.desc()).limit(limit).all()]
+    runs = query.order_by(ConstructionRun.created_at.desc()).limit(limit * 4 if not ontology_id else limit).all()
+    result = []
+    for run in runs:
+        try:
+            _require_temporal_ontology_access(db, run.ontology_id, current_user)
+            result.append(serialize_run(run))
+        except HTTPException:
+            continue
+        if len(result) >= limit:
+            break
+    return result
 
 
 @router.get("/runs/{run_id}/graph")
@@ -800,6 +892,7 @@ def temporal_run_graph(
     seq_to: int | None = None,
     relation_state: str = Query("all", pattern="^(all|current)$"),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Paginated instance graph for the investigation workbench.
 
@@ -809,6 +902,7 @@ def temporal_run_graph(
     run = db.query(ConstructionRun).filter(ConstructionRun.id == run_id).first()
     if not run:
         raise HTTPException(404, "构建任务不存在")
+    _require_temporal_ontology_access(db, run.ontology_id, current_user)
     if run.status != "completed":
         raise HTTPException(409, "构建任务尚未完成")
     return get_falkordb().get_graph_data(
@@ -819,14 +913,14 @@ def temporal_run_graph(
 
 
 @ontology_router.post("/runs", status_code=202)
-def create_temporal_run_alias(ontology_id: str, body: TemporalRunCreate, background: BackgroundTasks, db: Session = Depends(get_db), _user: User = Depends(require_editor)):
-    return create_temporal_run(ontology_id, body, background, db)
+def create_temporal_run_alias(ontology_id: str, body: TemporalRunCreate, background: BackgroundTasks, db: Session = Depends(get_db), current_user: User = Depends(require_editor)):
+    return create_temporal_run(ontology_id, body, background, db, current_user)
 
 
 @ontology_router.get("/runs")
-def list_temporal_runs_alias(ontology_id: str, limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_db)):
+def list_temporal_runs_alias(ontology_id: str, limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """Ontology-scoped history route used by integrations and the wizard."""
-    return list_temporal_runs(ontology_id=ontology_id, limit=limit, db=db)
+    return list_temporal_runs(ontology_id=ontology_id, limit=limit, db=db, current_user=current_user)
 
 
 @ontology_router.get("/snapshot")
@@ -839,7 +933,9 @@ def snapshot(
     category: str | None = None,
     intensity_min: float | None = None, intensity_max: float | None = None,
     participant: str | None = None, limit: int = Query(200, ge=1, le=1000),
+    db: Session = Depends(get_db), current_user: User = Depends(get_current_user),
 ):
+    _require_temporal_ontology_access(db, ontology_id, current_user)
     return get_falkordb().temporal_snapshot(
         ontology_id, at=at, mode=mode, episode_id=episode_id, date_from=date_from, date_to=date_to,
         country=country, event_type=event_type, category=category,
@@ -849,17 +945,20 @@ def snapshot(
 
 
 @ontology_router.get("/timeline")
-def timeline(ontology_id: str, entity_id: str | None = None, category: str | None = None, episode_id: str | None = None, limit: int = Query(200, ge=1, le=1000)):
+def timeline(ontology_id: str, entity_id: str | None = None, category: str | None = None, episode_id: str | None = None, limit: int = Query(200, ge=1, le=1000), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    _require_temporal_ontology_access(db, ontology_id, current_user)
     return get_falkordb().temporal_timeline(ontology_id, entity_id=entity_id, category=category, episode_id=episode_id, limit=limit)
 
 
 @ontology_router.get("/diff")
-def diff(ontology_id: str, from_at: str, to_at: str, limit: int = Query(300, ge=1, le=1000)):
+def diff(ontology_id: str, from_at: str, to_at: str, limit: int = Query(300, ge=1, le=1000), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    _require_temporal_ontology_access(db, ontology_id, current_user)
     return get_falkordb().temporal_diff(ontology_id, from_at=from_at, to_at=to_at, limit=limit)
 
 
 @ontology_router.get("/growth")
-def growth(ontology_id: str, limit: int = Query(200, ge=1, le=1000)):
+def growth(ontology_id: str, limit: int = Query(200, ge=1, le=1000), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    _require_temporal_ontology_access(db, ontology_id, current_user)
     return get_falkordb().temporal_growth(ontology_id, limit=limit)
 
 
@@ -876,7 +975,9 @@ def snapshot_legacy(
     category: str | None = None,
     intensity_min: float | None = None, intensity_max: float | None = None,
     participant: str | None = None, limit: int = Query(200, ge=1, le=1000),
+    db: Session = Depends(get_db), current_user: User = Depends(get_current_user),
 ):
+    _require_temporal_ontology_access(db, ontology_id, current_user)
     return get_falkordb().temporal_snapshot(
         ontology_id, at=at, mode=mode, episode_id=episode_id, date_from=date_from, date_to=date_to,
         country=country, event_type=event_type, category=category,
@@ -886,15 +987,18 @@ def snapshot_legacy(
 
 
 @router.get("/ontologies/{ontology_id}/timeline")
-def timeline_legacy(ontology_id: str, entity_id: str | None = None, category: str | None = None, episode_id: str | None = None, limit: int = Query(200, ge=1, le=1000)):
+def timeline_legacy(ontology_id: str, entity_id: str | None = None, category: str | None = None, episode_id: str | None = None, limit: int = Query(200, ge=1, le=1000), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    _require_temporal_ontology_access(db, ontology_id, current_user)
     return get_falkordb().temporal_timeline(ontology_id, entity_id=entity_id, category=category, episode_id=episode_id, limit=limit)
 
 
 @router.get("/ontologies/{ontology_id}/diff")
-def diff_legacy(ontology_id: str, from_at: str, to_at: str, limit: int = Query(300, ge=1, le=1000)):
+def diff_legacy(ontology_id: str, from_at: str, to_at: str, limit: int = Query(300, ge=1, le=1000), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    _require_temporal_ontology_access(db, ontology_id, current_user)
     return get_falkordb().temporal_diff(ontology_id, from_at=from_at, to_at=to_at, limit=limit)
 
 
 @router.get("/ontologies/{ontology_id}/growth")
-def growth_legacy(ontology_id: str, limit: int = Query(200, ge=1, le=1000)):
+def growth_legacy(ontology_id: str, limit: int = Query(200, ge=1, le=1000), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    _require_temporal_ontology_access(db, ontology_id, current_user)
     return get_falkordb().temporal_growth(ontology_id, limit=limit)

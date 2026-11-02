@@ -17,30 +17,37 @@ import os
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
-from decimal import Decimal
+from collections import Counter
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Iterable
 
-from sqlalchemy import func
+from sqlalchemy import event as sqlalchemy_event, func, or_, update
 from sqlalchemy.orm import Session
 
 from app.models.entity import Entity
 from app.models.entity_instance import EntityInstance
 from app.models.ontology import OntologyProject
 from app.models.ontology_revision import OntologyRevision
+from app.models.relation import Relation
 from app.models.v2.construction import ConstructionRun, EvidenceRef
 from app.models.v2.action import OntologyActionType
 from app.models.v2.dataset import Dataset, DatasetVersion
 from app.models.v2.temporal_replay import (
     DataModelSnapshot,
     TemporalFact,
+    TemporalGraphProjectionJob,
     TemporalReplay,
     TemporalReplayBatch,
     TemporalStreamEvent,
+    TemporalProjectionAttempt,
 )
+from app.models.v2.temporal_instance_reconciliation import TemporalInstanceReconciliation
+from app.models.v2.semantic_core import OntologySemanticResourceVersion
 from app.services.storage_service import get_storage_service
 from app.services.v2.datasets.factorynet_installer import FACTORYNET_SOURCE_ID, find_factorynet_dataset
 from app.services.v2.graph.falkordb_service import FalkorDBService
+from app.services.v2.temporal_error_safety import temporal_error_details
 from app.services.v2.temporal_service import (
     FactoryNetIncrementalState,
     TemporalConfig,
@@ -56,8 +63,14 @@ DEFAULT_SPEED = 1.0
 MAX_SPEED = 20.0
 MAX_GRAPH_NODES = 500
 MAX_GRAPH_EDGES = 2000
+TEMPORAL_EVENT_HASH_VERSION = 2
 DYNAMIC_DISPOSITION_RULE_VERSION = "factorynet_velocity_residual_v1"
 DYNAMIC_DISPOSITION_THRESHOLD = 0.5
+STREAM_RUN_LEASE_SECONDS = 90
+STREAM_HEARTBEAT_SECONDS = 20
+STREAM_DISPATCH_LEASE_SECONDS = 90
+STREAM_MAX_DISPATCH_ATTEMPTS = 8
+STREAM_MAX_PROJECTION_ATTEMPTS = 3
 
 _worker_lock = threading.RLock()
 _active_stream_workers: set[str] = set()
@@ -74,6 +87,12 @@ class StreamError(ValueError):
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _aware(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
 
 def _finite_number(value: Any, field: str = "ordinal") -> float:
@@ -105,10 +124,104 @@ def _hash(value: Any) -> str:
     return hashlib.sha256(_json(value).encode("utf-8")).hexdigest()
 
 
-def _generic_payload_hash(payload: dict[str, Any], ordinal: float, entity_key: str, episode_id: str, source_sequence: int) -> str:
-    return _hash({"payload": payload, "ordinal": str(Decimal(str(ordinal))),
-                  "entity_key": entity_key, "episode_id": episode_id,
-                  "source_sequence": source_sequence})
+def _stored_contract_version(record: Any, field: str) -> int:
+    value = getattr(record, field, None)
+    return int(value) if value is not None else 1
+
+
+def _event_source_context(replay: TemporalReplay) -> dict[str, Any]:
+    config = dict(replay.config or {})
+    mapping = config.get("mapping")
+    return {
+        "source_id": str(replay.source_id or ""),
+        "source_mode": str(replay.source_mode or ""),
+        "dataset_id": replay.dataset_id,
+        "dataset_version_id": replay.dataset_version_id,
+        "source_checksum": config.get("source_checksum"),
+        "schema_revision_id": replay.schema_revision_id,
+        "time_kind": str(replay.time_kind or "ordinal"),
+        "mapping": mapping if isinstance(mapping, dict) else None,
+    }
+
+
+def temporal_event_envelope(
+    replay: TemporalReplay,
+    *,
+    event_key: str,
+    operation: str,
+    episode_id: str,
+    entity_key: str,
+    ordinal: Any,
+    source_sequence: int,
+    source_row_id: str,
+    payload: dict[str, Any],
+    source_ref: dict[str, Any],
+) -> dict[str, Any]:
+    """Return the normalized event identity used by new idempotency hashes."""
+    time_kind = str(replay.time_kind or "ordinal")
+    try:
+        decimal_ordinal = Decimal(str(ordinal))
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise StreamError("ordinal 必须是数值", "INVALID_EVENT") from exc
+    if not decimal_ordinal.is_finite():
+        raise StreamError("ordinal 必须是有限数值", "INVALID_EVENT")
+    try:
+        # TemporalStreamEvent.ordinal is Numeric(24, 9); hash the value that
+        # the durable row can represent so a read-after-write duplicate check
+        # produces the same envelope as the original insert.
+        ordinal_value = format(
+            decimal_ordinal.quantize(
+                Decimal("0.000000001"), rounding=ROUND_HALF_UP,
+            ),
+            "f",
+        )
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise StreamError("ordinal 超出时序事件支持的精度", "INVALID_EVENT") from exc
+    reference = dict(source_ref or {})
+    time_value = reference.get("event_time") if time_kind == "event_time" else ordinal_value
+    return {
+        "hash_version": TEMPORAL_EVENT_HASH_VERSION,
+        "source": _event_source_context(replay),
+        "event_id": str(event_key),
+        "operation": str(operation or "upsert"),
+        "episode_id": str(episode_id),
+        "entity_key": str(entity_key),
+        "source_sequence": int(source_sequence),
+        "source_row_id": str(source_row_id or ""),
+        "time": {
+            "kind": time_kind,
+            "value": time_value,
+            "ordinal": ordinal_value,
+            "timezone": reference.get("time_zone") if time_kind == "event_time" else None,
+        },
+        "payload_digest": _hash(payload or {}),
+        "source_ref": reference,
+    }
+
+
+def temporal_event_envelope_hash(replay: TemporalReplay, **event_fields: Any) -> str:
+    return _hash(temporal_event_envelope(replay, **event_fields))
+
+
+def temporal_event_envelope_matches(
+    replay: TemporalReplay,
+    existing: TemporalStreamEvent,
+    **incoming_fields: Any,
+) -> bool:
+    """Compare the complete normalized event envelope with persisted fields."""
+    stored_fields = {
+        "event_key": existing.event_key,
+        "operation": existing.operation or "upsert",
+        "episode_id": existing.episode_id,
+        "entity_key": existing.entity_key,
+        "ordinal": existing.ordinal,
+        "source_sequence": existing.source_sequence,
+        "source_row_id": existing.source_row_id or existing.event_key,
+        "payload": existing.payload or {},
+        "source_ref": existing.source_ref or {},
+    }
+    return temporal_event_envelope(replay, **stored_fields) == temporal_event_envelope(
+        replay, **incoming_fields)
 
 
 def _float_or_none(value: Any) -> float | None:
@@ -118,6 +231,94 @@ def _float_or_none(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def temporal_snapshot_content_digest(
+    replay: TemporalReplay,
+    events: list[TemporalStreamEvent],
+    facts: list[TemporalFact],
+    through: float | None = None,
+    *,
+    manifest: dict[str, Any] | None = None,
+) -> str:
+    """Hash the authoritative event/fact state covered by a published snapshot."""
+    event_digest = [
+        {
+            "event_id": event.event_key,
+            "operation": event.operation or "upsert",
+            "episode_id": event.episode_id,
+            "entity_key": event.entity_key,
+            "ordinal": str(event.ordinal),
+            "source_sequence": event.source_sequence,
+            "source_row_id": event.source_row_id,
+            "source_ref": event.source_ref or {},
+            "payload_hash_version": _stored_contract_version(event, "payload_hash_version"),
+            "payload_hash": event.payload_hash,
+            "payload_digest": _hash(event.payload or {}),
+        }
+        for event in events
+    ]
+    fact_digest = [
+        {
+            "subject_id": fact.subject_id,
+            "predicate": fact.predicate,
+            "object_id": fact.object_id,
+            "object_value": fact.object_value,
+            "state_key": fact.state_key,
+            "from": str(fact.valid_from_ordinal),
+            "to": str(fact.valid_to_ordinal) if fact.valid_to_ordinal is not None else None,
+            "status": fact.status,
+        }
+        for fact in facts
+    ]
+    content = {
+        "ontology_id": replay.ontology_id,
+        "source": _event_source_context(replay),
+        "schema_revision_id": replay.schema_revision_id,
+        "through": _float_or_none(replay.watermark_ordinal) if through is None else through,
+        "events": event_digest,
+        "facts": fact_digest,
+    }
+    if manifest is not None:
+        content["manifest"] = manifest
+    return _hash(content)
+
+
+def temporal_snapshot_manifest(
+    replay: TemporalReplay,
+    *,
+    watermark_ordinal: Any,
+    watermark_sequence: int | None,
+    event_count: int,
+    node_count: int,
+    edge_count: int,
+    fact_count: int,
+    evidence_count: int,
+) -> dict[str, Any]:
+    """Build the v2 snapshot manifest included in the content digest."""
+    ordinal = None
+    if watermark_ordinal is not None:
+        try:
+            ordinal = format(Decimal(str(watermark_ordinal)), "f")
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise StreamError("snapshot watermark ordinal 无效", "INVALID_SNAPSHOT_MANIFEST") from exc
+    return {
+        "snapshot_hash_version": 2,
+        "ontology_id": replay.ontology_id,
+        "schema_revision_id": replay.schema_revision_id,
+        "dataset_version_id": replay.dataset_version_id,
+        "watermark": {
+            "ordinal": ordinal,
+            "sequence": int(watermark_sequence) if watermark_sequence is not None else None,
+        },
+        "counts": {
+            "events": int(event_count),
+            "nodes": int(node_count),
+            "edges": int(edge_count),
+            "facts": int(fact_count),
+            "evidence": int(evidence_count),
+        },
+    }
 
 
 def _decimal_or_none(value: Any) -> Decimal | None:
@@ -160,10 +361,14 @@ def _source_order(row: dict[str, Any], fallback: int = 0) -> tuple[int, int | st
 
 def _serialize_event(event: TemporalStreamEvent) -> dict[str, Any]:
     source_ref = event.source_ref or {}
+    error_code, error_message = temporal_error_details(
+        event.error, fallback_code="TEMPORAL_EVENT_INVALID",
+    )
     return {
         "id": event.id,
         "event_id": event.event_key,
         "event_key": event.event_key,
+        "operation": event.operation or "upsert",
         "replay_id": event.replay_id,
         "episode_id": event.episode_id,
         "entity_key": event.entity_key,
@@ -175,10 +380,40 @@ def _serialize_event(event: TemporalStreamEvent) -> dict[str, Any]:
         "event_time": source_ref.get("event_time"),
         "ingestion_time": event.ingested_at.isoformat() if event.ingested_at else None,
         "payload_hash": event.payload_hash,
+        "payload_hash_version": _stored_contract_version(event, "payload_hash_version"),
         "status": event.status,
-        "error": event.error,
+        "error": error_message,
+        "error_code": error_code,
+        "graph_projection_status": event.graph_projection_status or "unknown",
+        "graph_projected_at": event.graph_projected_at.isoformat() if event.graph_projected_at else None,
+        "retry_generation": int(event.retry_generation or 0),
+        "next_attempt_at": event.next_attempt_at.isoformat() if event.next_attempt_at else None,
         "ingested_at": event.ingested_at.isoformat() if event.ingested_at else None,
         "committed_at": event.committed_at.isoformat() if event.committed_at else None,
+    }
+
+
+def serialize_projection_attempt(attempt: TemporalProjectionAttempt) -> dict[str, Any]:
+    error_code, error_message = temporal_error_details(
+        attempt.error_code or attempt.error_message,
+        fallback_code="TEMPORAL_PROJECTION_FAILED",
+    )
+    return {
+        "id": attempt.id,
+        "replay_id": attempt.replay_id,
+        "event_id": attempt.event_id,
+        "attempt_no": attempt.attempt_no,
+        "retry_generation": attempt.retry_generation,
+        "attempt_type": attempt.attempt_type,
+        "status": attempt.status,
+        "requested_by": attempt.requested_by,
+        "request_key": attempt.request_key,
+        "reason": attempt.reason,
+        "error_code": error_code,
+        "error_message": error_message,
+        "created_at": attempt.created_at.isoformat() if attempt.created_at else None,
+        "started_at": attempt.started_at.isoformat() if attempt.started_at else None,
+        "finished_at": attempt.finished_at.isoformat() if attempt.finished_at else None,
     }
 
 
@@ -210,12 +445,14 @@ def _serialize_snapshot(snapshot: DataModelSnapshot) -> dict[str, Any]:
         "dataset_version_id": snapshot.dataset_version_id,
         "graph_namespace": snapshot.graph_namespace,
         "through_ordinal": float(snapshot.through_ordinal) if snapshot.through_ordinal is not None else None,
+        "watermark_sequence": snapshot.watermark_sequence,
         "event_count": snapshot.event_count,
         "node_count": snapshot.node_count,
         "edge_count": snapshot.edge_count,
         "fact_count": snapshot.fact_count,
         "evidence_count": snapshot.evidence_count,
         "snapshot_hash": snapshot.snapshot_hash,
+        "snapshot_hash_version": _stored_contract_version(snapshot, "snapshot_hash_version"),
         "status": snapshot.status,
         "created_at": snapshot.created_at.isoformat() if snapshot.created_at else None,
         "published_at": snapshot.published_at.isoformat() if snapshot.published_at else None,
@@ -224,6 +461,9 @@ def _serialize_snapshot(snapshot: DataModelSnapshot) -> dict[str, Any]:
 
 def serialize_stream(replay: TemporalReplay, *, db: Session | None = None) -> dict[str, Any]:
     """Return a JSON-safe stream status payload shared by every endpoint."""
+    error_code, error_message = temporal_error_details(
+        replay.error, fallback_code="TEMPORAL_STREAM_FAILED",
+    )
     live_mode = replay.source_mode == "simulated_live"
     metrics = dict(replay.metrics or {})
     total = int(replay.total_events or replay.selected_rows or 0)
@@ -313,9 +553,15 @@ def serialize_stream(replay: TemporalReplay, *, db: Session | None = None) -> di
         "pause_requested": bool(replay.pause_requested),
         "step_requested": bool(replay.step_requested),
         "cancel_requested": bool(replay.cancel_requested),
+        "base_snapshot_id": replay.base_snapshot_id,
         "published_snapshot_id": replay.published_snapshot_id,
         "published_at": replay.published_at.isoformat() if replay.published_at else None,
-        "error": replay.error,
+        "heartbeat_at": replay.heartbeat_at.isoformat() if replay.heartbeat_at else None,
+        "worker_lease_expires_at": replay.worker_lease_expires_at.isoformat() if replay.worker_lease_expires_at else None,
+        "next_attempt_at": replay.next_attempt_at.isoformat() if replay.next_attempt_at else None,
+        "dispatch_attempts": int(replay.dispatch_attempts or 0),
+        "error": error_message,
+        "error_code": error_code,
         "created_at": replay.created_at.isoformat() if replay.created_at else None,
         "started_at": replay.started_at.isoformat() if replay.started_at else None,
         "completed_at": replay.completed_at.isoformat() if replay.completed_at else None,
@@ -380,6 +626,40 @@ def _resolve_generic_source(db: Session, source_id: str, dataset_id: str | None,
     return dataset, version, _load_rows(db, version)
 
 
+def _generic_link_specs(mapping: dict[str, Any]) -> list[dict[str, str]]:
+    """Normalize the optional, schema-pinned self-link mappings for a source."""
+    configured = mapping.get("links", [])
+    if not isinstance(configured, list) or len(configured) > 64:
+        raise StreamError("mapping.links 必须是最多 64 项的列表", "INVALID_SOURCE_MAPPING")
+    specs: list[dict[str, str]] = []
+    seen_fields: set[str] = set()
+    for item in configured:
+        if not isinstance(item, dict):
+            raise StreamError("每个关系映射必须声明 source_field 和 link_type_id", "INVALID_SOURCE_MAPPING")
+        source_field = item.get("source_field")
+        link_type_id = item.get("link_type_id")
+        if (not isinstance(source_field, str) or not source_field.strip() or source_field.strip().startswith("_") or len(source_field) > 80
+                or not isinstance(link_type_id, str) or not link_type_id.strip() or len(link_type_id) > 200):
+            raise StreamError("关系映射需提供 source_field 和固定版本的 link_type_id", "INVALID_SOURCE_MAPPING")
+        source_field = source_field.strip()
+        link_type_id = link_type_id.strip()
+        if source_field in seen_fields:
+            raise StreamError(f"关系映射字段重复：{source_field}", "INVALID_SOURCE_MAPPING")
+        seen_fields.add(source_field)
+        normalized = {"source_field": source_field, "link_type_id": link_type_id}
+        relation_type = item.get("relation_type")
+        if relation_type is not None:
+            if not isinstance(relation_type, str) or not relation_type.strip() or len(relation_type) > 100:
+                raise StreamError("已解析的关系标签无效", "INVALID_SOURCE_MAPPING")
+            normalized["relation_type"] = relation_type.strip()
+        if item.get("semantic_resource_id") is not None:
+            if str(item["semantic_resource_id"]) != link_type_id:
+                raise StreamError("关系资源 ID 与固定 link_type_id 不一致", "INVALID_SOURCE_MAPPING")
+            normalized["semantic_resource_id"] = link_type_id
+        specs.append(normalized)
+    return specs
+
+
 def _ensure_factorynet_schema(db: Session, ontology_id: str) -> None:
     """Ensure the deterministic FactoryNet vocabulary exists.
 
@@ -392,7 +672,10 @@ def _ensure_factorynet_schema(db: Session, ontology_id: str) -> None:
     required = {"Machine", "Episode", "Observation", "ProcessPhase", "ToolCondition", "SensorChannel", "InspectionResult"}
     present = {
         str(item.name_en or item.canonical_id or "")
-        for item in db.query(Entity).filter(Entity.ontology_id == ontology_id).all()
+        for item in db.query(Entity).filter(
+            Entity.ontology_id == ontology_id,
+            Entity.is_source_deleted.is_(False),
+        ).all()
     }
     if not required.issubset(present):
         ensure_schema(db, ontology_id)
@@ -516,23 +799,67 @@ def create_stream_run(
     if source_mode not in {"file_replay", "push", "simulated_live"}:
         raise StreamError("source_mode 必须是 file_replay、push 或 simulated_live", "INVALID_SOURCE_MODE")
     generic_source = source_id != FACTORYNET_SOURCE_ID
+    config_for_run = dict(config or {})
     if generic_source:
-        mapping = (config or {}).get("mapping")
+        raw_mapping = config_for_run.get("mapping")
         if not isinstance(source_id, str) or not source_id.strip() or len(source_id) > 120:
             raise StreamError("source_id 必须是非空来源标识", "INVALID_SOURCE_ID")
-        if source_mode not in {"push", "file_replay"} or not isinstance(mapping, dict) or not isinstance(mapping.get("entity_type"), str) or not mapping["entity_type"].strip() or not isinstance(mapping.get("properties"), dict) or not mapping["properties"] or (source_mode == "file_replay" and not isinstance(mapping.get("entity_key_field"), str)):
+        if source_mode not in {"push", "file_replay"} or not isinstance(raw_mapping, dict) or not isinstance(raw_mapping.get("entity_type"), str) or not raw_mapping["entity_type"].strip() or not isinstance(raw_mapping.get("properties"), dict) or not raw_mapping["properties"] or (source_mode == "file_replay" and not isinstance(raw_mapping.get("entity_key_field"), str)):
             raise StreamError("通用来源需显式声明 mapping.entity_type、mapping.properties，文件来源还需 entity_key_field", "INVALID_SOURCE_MAPPING")
+        mapping = dict(raw_mapping)
         if any(not isinstance(source, str) or not source.strip() or not isinstance(target, str) or not target.strip() or target.startswith("_") for source, target in mapping["properties"].items()):
             raise StreamError("属性映射必须使用非空字段名，且目标字段不能以 _ 开头", "INVALID_SOURCE_MAPPING")
         revision = db.query(OntologyRevision).filter(OntologyRevision.id == project.current_revision_id, OntologyRevision.ontology_id == project.id).first() if project.current_revision_id else None
         if revision is None:
             raise StreamError("通用来源需要已发布的 schema revision", "SCHEMA_REVISION_REQUIRED")
-        entities = (revision.snapshot_json or {}).get("entities") or []
-        if not any(mapping["entity_type"] in {entity.get("id"), entity.get("name_en"), entity.get("name_cn"), entity.get("canonical_id")} for entity in entities if isinstance(entity, dict)):
+        revision_snapshot = revision.snapshot_json or {}
+        entities = revision_snapshot.get("entities") or []
+        mapped_entity = next((entity for entity in entities if isinstance(entity, dict)
+                              and mapping["entity_type"] in {entity.get("id"), entity.get("name_en"), entity.get("name_cn"), entity.get("canonical_id")}), None)
+        if mapped_entity is None:
             raise StreamError("mapping.entity_type 不属于固定 schema revision", "INVALID_SOURCE_MAPPING")
-        if (config or {}).get("late_event_policy", "reject") != "reject":
+        link_specs = _generic_link_specs(mapping)
+        if set(mapping["properties"]).intersection(spec["source_field"] for spec in link_specs):
+            raise StreamError("同一源字段不能同时映射为属性和关系", "INVALID_SOURCE_MAPPING")
+        mapped_entity_id = str(mapped_entity.get("id") or "")
+        mapped_entity_row = db.query(Entity).filter(
+            Entity.ontology_id == project.id,
+            Entity.id == mapped_entity_id,
+            Entity.is_source_deleted.is_(False),
+        ).first()
+        if not link_specs:
+            config_for_run["mapping"] = mapping
+        if link_specs and (mapped_entity_row is None or not mapped_entity_row.semantic_resource_id):
+            raise StreamError("关系映射需要有固定语义资源 ID 的映射对象类型", "INVALID_SOURCE_MAPPING")
+        resolved_link_specs: list[dict[str, str]] = []
+        for spec in link_specs:
+            link_version = db.query(OntologySemanticResourceVersion).filter(
+                OntologySemanticResourceVersion.ontology_id == project.id,
+                OntologySemanticResourceVersion.revision_id == revision.id,
+                OntologySemanticResourceVersion.resource_id == spec["link_type_id"],
+                OntologySemanticResourceVersion.kind == "link_type",
+            ).first()
+            expected_type_resource_id = str(mapped_entity_row.semantic_resource_id) if mapped_entity_row else ""
+            if (link_version is None
+                    or link_version.source_resource_id != expected_type_resource_id
+                    or link_version.target_resource_id != expected_type_resource_id):
+                raise StreamError(
+                    f"关系资源 {spec['link_type_id']} 不属于当前 schema revision 的 {mapping['entity_type']} 自关系",
+                    "INVALID_SOURCE_MAPPING",
+                )
+            if not str(link_version.api_name or "").strip() or len(str(link_version.api_name)) > 160:
+                raise StreamError(f"关系资源 {spec['link_type_id']} 的 API 名称不符合 TemporalFact 长度限制", "INVALID_SOURCE_MAPPING")
+            resolved_link_specs.append({
+                **spec,
+                "relation_type": str(link_version.api_name),
+                "semantic_resource_id": str(link_version.resource_id),
+            })
+        if resolved_link_specs:
+            mapping["links"] = resolved_link_specs
+            config_for_run["mapping"] = mapping
+        if config_for_run.get("late_event_policy", "reject") != "reject":
             raise StreamError("当前仅支持拒绝迟到事件", "UNSUPPORTED_LATE_EVENT_POLICY")
-        if (config or {}).get("time_kind", "ordinal") not in {"ordinal", "event_time"}:
+        if config_for_run.get("time_kind", "ordinal") not in {"ordinal", "event_time"}:
             raise StreamError("time_kind 必须是 ordinal 或 event_time", "INVALID_TIME_KIND")
     speed = _finite_number(speed, "speed")
     if speed <= 0 or speed > MAX_SPEED:
@@ -608,7 +935,7 @@ def create_stream_run(
         end_ordinal = selected[-1][1]
     replay_id = str(uuid.uuid4())
     namespace = f"stream_{uuid.uuid4().hex}"
-    cfg = dict(config or {})
+    cfg = dict(config_for_run)
     explicit_interval = cfg.get("explicit_event_interval_ms") or cfg.get("event_interval_ms")
     try:
         explicit_interval = max(1, min(int(explicit_interval), 60000)) if explicit_interval is not None else None
@@ -663,6 +990,7 @@ def create_stream_run(
         total_events=0 if live_mode else len(selected),
         committed_events=0,
         current_event_index=-1,
+        base_snapshot_id=project.current_data_snapshot_id,
         metrics={"events_received": 0, **({} if live_mode else {"events_total": len(selected), "events_committed": 0, "queue": len(selected)}), "nodes_written": 0, "edges_written": 0, "facts_written": 0, "state_transitions": 0, "model_calls": 0},
         config=cfg,
         state={"builder": {}, "episodes": {}, "latest_event": None},
@@ -673,31 +1001,50 @@ def create_stream_run(
     )
     db.add(replay)
     db.flush()
+    if not generic_source:
+        _ensure_factorynet_schema(db, ontology_id)
+        schema_revision = ensure_schema_revision(db, project)
+        replay.schema_revision_id = schema_revision.id
+        db.flush()
     if not live_mode:
         for source_sequence, (row, ordinal, source_row_id) in enumerate(selected):
             episode = _episode(row)
             event_id = f"{source_id}:{episode}:{source_row_id}"
             payload = {key: value for key, value in row.items() if not str(key).startswith("_")}
+            entity_key = (str(row[mapping["entity_key_field"]]) if generic_source
+                          else str(row.get("entity_key") or row.get("machine_type") or episode))
+            temporal_source_ref: dict[str, str] = {}
+            if generic_source and replay.time_kind == "event_time":
+                event_time = _parse_event_time(row[time_column])
+                temporal_source_ref = {
+                    "event_time": event_time.isoformat(),
+                    "time_zone": str(event_time.tzinfo),
+                }
+            source_ref = {"dataset_id": replay.dataset_id,
+                          "dataset_version_id": replay.dataset_version_id,
+                          "source_row_id": source_row_id,
+                          "source_file": cfg.get("source_file"),
+                          **temporal_source_ref}
+            payload_hash = temporal_event_envelope_hash(
+                replay, event_key=event_id, operation="upsert", episode_id=episode,
+                entity_key=entity_key, ordinal=ordinal, source_sequence=source_sequence,
+                source_row_id=source_row_id, payload=payload, source_ref=source_ref,
+            )
             db.add(TemporalStreamEvent(
                 id=str(uuid.uuid4()),
                 replay_id=replay.id,
                 event_key=event_id,
                 episode_id=episode,
-                entity_key=str(row[mapping["entity_key_field"]]) if generic_source else str(row.get("entity_key") or row.get("machine_type") or episode),
+                entity_key=entity_key,
                 ordinal=Decimal(str(ordinal)),
                 source_sequence=source_sequence,
                 source_row_id=source_row_id,
                 payload=payload,
-                source_ref={"dataset_id": replay.dataset_id, "dataset_version_id": replay.dataset_version_id,
-                            "source_row_id": source_row_id, "source_file": cfg.get("source_file"),
-                            **({"event_time": _parse_event_time(row[time_column]).isoformat()} if generic_source and replay.time_kind == "event_time" else {})},
-                payload_hash=(_generic_payload_hash(payload, ordinal, str(row[mapping["entity_key_field"]]), episode, source_sequence)
-                              if generic_source else _hash(payload)),
+                source_ref=source_ref,
+                payload_hash=payload_hash,
+                payload_hash_version=TEMPORAL_EVENT_HASH_VERSION,
                 status="queued",
             ))
-    if not generic_source:
-        _ensure_factorynet_schema(db, ontology_id)
-        ensure_schema_revision(db, project)
     replay.schema_revision_id = project.current_revision_id
     db.commit()
     db.refresh(replay)
@@ -816,6 +1163,262 @@ def _maybe_create_dynamic_incident(db: Session, replay: TemporalReplay,
     return incident
 
 
+def _factorynet_observation_instance_id(ontology_id: str, episode_id: str, source_row_id: Any) -> str:
+    """Return the stable Object instance ID shared by replay and live ingestion."""
+    identity = f"{episode_id}:{source_row_id}"
+    digest = hashlib.sha256(f"{ontology_id}:Observation:{identity}".encode("utf-8")).hexdigest()[:20]
+    return f"temporal:{ontology_id}:Observation:{digest}"
+
+
+def _materialize_factorynet_observation(
+    db: Session,
+    replay: TemporalReplay,
+    event: TemporalStreamEvent,
+    row: dict[str, Any],
+    source_sequence: int,
+) -> EntityInstance:
+    """Upsert the canonical Object row for a streamed FactoryNet observation."""
+    entity_id = f"schema:{replay.ontology_id}:Observation"
+    entity = db.get(Entity, entity_id)
+    if entity is None:
+        raise StreamError(
+            "当前本体版本缺少 Observation 对象类型，无法落库观测实例",
+            "OBSERVATION_OBJECT_TYPE_MISSING",
+        )
+    source_row_id = event.source_row_id or source_sequence
+    identity = f"{event.episode_id}:{source_row_id}"
+    instance_id = _factorynet_observation_instance_id(replay.ontology_id, event.episode_id, source_row_id)
+    item = db.get(EntityInstance, instance_id)
+    row_data = {key: value for key, value in row.items() if key != "_replay_event_seq"}
+    source_version = str((replay.config or {}).get("source_checksum") or replay.dataset_version_id or "factorynet")[:120]
+    if item is None:
+        item = EntityInstance(
+            id=instance_id,
+            ontology_id=replay.ontology_id,
+            entity_id=entity_id,
+            row_identity=identity[:200],
+            row_data=row_data,
+            revision_id=replay.schema_revision_id,
+            object_type_resource_id=entity.semantic_resource_id,
+            source_version=source_version,
+        )
+        db.add(item)
+    else:
+        item.entity_id = entity_id
+        item.row_identity = identity[:200]
+        item.row_data = row_data
+        item.revision_id = item.revision_id or replay.schema_revision_id
+        item.object_type_resource_id = entity.semantic_resource_id or item.object_type_resource_id
+        item.source_version = source_version
+        item.is_deleted = False
+        item.deleted_at = None
+    return item
+
+
+def _normalize_factorynet_reconciliation_event(
+    replay: TemporalReplay,
+    event: TemporalStreamEvent,
+) -> dict[str, Any] | None:
+    """Rebuild the same source-row payload used by live event projection."""
+    payload = dict(event.payload or {})
+    if not payload:
+        return None
+    sequence = int(event.source_sequence or 0)
+    payload.setdefault("episode_id", event.episode_id)
+    payload.setdefault("_source_row_index", event.source_row_id or sequence)
+    time_column = replay.time_column or "time_s"
+    payload[time_column] = payload.get(time_column, float(event.ordinal))
+    normalized, issues = normalize_temporal_rows(
+        [payload], TemporalConfig(time_kind="ordinal", sequence_column=time_column)
+    )
+    if issues or not normalized:
+        return None
+    return normalized[0]
+
+
+def _factorynet_reconciliation_page(
+    db: Session,
+    replay: TemporalReplay,
+    *,
+    offset: int,
+    limit: int,
+) -> tuple[int, list[TemporalStreamEvent], dict[str, tuple[TemporalStreamEvent, dict[str, Any]]], set[str], int]:
+    total = db.query(TemporalStreamEvent).filter(
+        TemporalStreamEvent.replay_id == replay.id,
+        TemporalStreamEvent.status == "committed",
+    ).count()
+    events = db.query(TemporalStreamEvent).filter(
+        TemporalStreamEvent.replay_id == replay.id,
+        TemporalStreamEvent.status == "committed",
+    ).order_by(
+        TemporalStreamEvent.ordinal.asc(),
+        TemporalStreamEvent.source_sequence.asc(),
+        TemporalStreamEvent.id.asc(),
+    ).offset(offset).limit(limit).all()
+    candidates: dict[str, tuple[TemporalStreamEvent, dict[str, Any]]] = {}
+    invalid_events = 0
+    for event in events:
+        row = _normalize_factorynet_reconciliation_event(replay, event)
+        if row is None:
+            invalid_events += 1
+            continue
+        instance_id = _factorynet_observation_instance_id(
+            replay.ontology_id,
+            event.episode_id,
+            event.source_row_id or event.source_sequence,
+        )
+        # Events are ordered by source time, so a repeated source identity is
+        # materialized from its latest observation in this page.
+        candidates[instance_id] = (event, row)
+    candidate_ids = list(candidates)
+    existing_ids: set[str] = set()
+    for start in range(0, len(candidate_ids), 1000):
+        chunk = candidate_ids[start:start + 1000]
+        existing_ids.update(
+            row_id for (row_id,) in db.query(EntityInstance.id)
+            .filter(EntityInstance.ontology_id == replay.ontology_id, EntityInstance.id.in_(chunk))
+            .all()
+        )
+    return total, events, candidates, existing_ids, invalid_events
+
+
+def _require_reconcilable_factorynet_run(replay: TemporalReplay) -> None:
+    if replay.source_id != FACTORYNET_SOURCE_ID:
+        raise StreamError("当前对账入口只支持 FactoryNet Observation", "RECONCILIATION_SOURCE_UNSUPPORTED")
+    if replay.status not in STREAM_TERMINAL_STATUSES:
+        raise StreamError("动态运行仍可能接收事件，请在运行终止后再对账", "RUN_NOT_TERMINAL")
+
+
+def preview_factorynet_observation_reconciliation(
+    db: Session,
+    replay: TemporalReplay,
+    *,
+    offset: int = 0,
+    limit: int = 5000,
+) -> dict[str, Any]:
+    _require_reconcilable_factorynet_run(replay)
+    total, events, candidates, existing_ids, invalid_events = _factorynet_reconciliation_page(
+        db, replay, offset=offset, limit=limit
+    )
+    return {
+        "run_id": replay.id,
+        "status": replay.status,
+        "offset": offset,
+        "limit": limit,
+        "total_committed_events": total,
+        "scanned_events": len(events),
+        "unique_observations": len(candidates),
+        "existing_instances": len(existing_ids),
+        "missing_instances": max(0, len(candidates) - len(existing_ids)),
+        "invalid_events": invalid_events,
+        "has_more": offset + len(events) < total,
+        "next_offset": offset + len(events) if offset + len(events) < total else None,
+        "schema_revision_id": replay.schema_revision_id,
+        "dataset_version_id": replay.dataset_version_id,
+    }
+
+
+def apply_factorynet_observation_reconciliation(
+    db: Session,
+    replay: TemporalReplay,
+    *,
+    requested_by: str,
+    idempotency_key: str,
+    offset: int = 0,
+    limit: int = 5000,
+) -> dict[str, Any]:
+    """Idempotently materialize a bounded, audited page of terminal-run observations."""
+    locked = db.query(TemporalReplay).filter(TemporalReplay.id == replay.id).with_for_update().first()
+    if locked is None:
+        raise StreamError("动态运行不存在", "RUN_NOT_FOUND")
+    _require_reconcilable_factorynet_run(locked)
+    request_json = {
+        "offset": offset,
+        "limit": limit,
+        "schema_revision_id": locked.schema_revision_id,
+        "dataset_version_id": locked.dataset_version_id,
+    }
+    prior = db.query(TemporalInstanceReconciliation).filter(
+        TemporalInstanceReconciliation.replay_id == locked.id,
+        TemporalInstanceReconciliation.idempotency_key == idempotency_key,
+    ).first()
+    if prior is not None:
+        if prior.request_json != request_json:
+            raise StreamError("幂等键已用于不同的对账页", "IDEMPOTENCY_KEY_REUSED")
+        return {**(prior.result_json or {}), "idempotent": True}
+
+    total, events, candidates, existing_ids, invalid_events = _factorynet_reconciliation_page(
+        db, locked, offset=offset, limit=limit
+    )
+    entity_id = f"schema:{locked.ontology_id}:Observation"
+    entity = db.get(Entity, entity_id)
+    if candidates and entity is None:
+        raise StreamError(
+            "当前本体版本缺少 Observation 对象类型，无法执行历史对账",
+            "OBSERVATION_OBJECT_TYPE_MISSING",
+        )
+    candidate_ids = list(candidates)
+    existing_rows = db.query(EntityInstance).filter(
+        EntityInstance.ontology_id == locked.ontology_id,
+        EntityInstance.id.in_(candidate_ids),
+    ).all() if candidate_ids else []
+    existing_by_id = {row.id: row for row in existing_rows}
+    created = 0
+    updated = 0
+    for instance_id, (event, row_data) in candidates.items():
+        current = existing_by_id.get(instance_id)
+        before = None if current is None else (
+            current.entity_id, current.row_identity, current.row_data,
+            current.revision_id, current.object_type_resource_id,
+            current.source_version, current.is_deleted,
+        )
+        materialized = _materialize_factorynet_observation(
+            db, locked, event, row_data, int(event.source_sequence or 0)
+        )
+        if current is None:
+            created += 1
+        else:
+            after = (
+                materialized.entity_id, materialized.row_identity, materialized.row_data,
+                materialized.revision_id, materialized.object_type_resource_id,
+                materialized.source_version, materialized.is_deleted,
+            )
+            if before != after:
+                updated += 1
+
+    reconciliation_id = str(uuid.uuid4())
+    result = {
+        "reconciliation_id": reconciliation_id,
+        "run_id": locked.id,
+        "status": "applied",
+        "offset": offset,
+        "limit": limit,
+        "total_committed_events": total,
+        "scanned_events": len(events),
+        "unique_observations": len(candidates),
+        "existing_instances_before": len(existing_ids),
+        "created_instances": created,
+        "updated_instances": updated,
+        "invalid_events": invalid_events,
+        "schema_revision_id": locked.schema_revision_id,
+        "dataset_version_id": locked.dataset_version_id,
+        "has_more": offset + len(events) < total,
+        "next_offset": offset + len(events) if offset + len(events) < total else None,
+        "idempotent": False,
+    }
+    db.add(TemporalInstanceReconciliation(
+        id=reconciliation_id,
+        ontology_id=locked.ontology_id,
+        replay_id=locked.id,
+        requested_by=requested_by,
+        idempotency_key=idempotency_key,
+        request_json=request_json,
+        result_json={key: value for key, value in result.items() if key != "idempotent"},
+    ))
+    db.commit()
+    return result
+
+
 def _fact_id(replay_id: str, subject: str, predicate: str, obj: str | None, state_key: str, valid_from: Any) -> str:
     return "fact:" + hashlib.sha256(_json([replay_id, subject, predicate, obj, state_key, str(valid_from)]).encode("utf-8")).hexdigest()
 
@@ -909,14 +1512,35 @@ def _state_object(row: dict[str, Any], kind: str) -> tuple[str, str] | None:
 
 
 def _process_generic_event(db: Session, replay: TemporalReplay, event: TemporalStreamEvent, *, commit: bool) -> dict[str, Any]:
-    """Project an explicitly mapped push event without FactoryNet inference."""
+    """Project an explicitly mapped push event, including temporal tombstones."""
     mapping = dict((replay.config or {}).get("mapping") or {})
     property_map = mapping.get("properties") or {}
     if not isinstance(property_map, dict) or not property_map:
         raise StreamError("通用来源需要 mapping.properties", "INVALID_SOURCE_MAPPING")
     payload = dict(event.payload or {})
+    operation = str(event.operation or "upsert")
+    if operation not in {"upsert", "delete"}:
+        raise StreamError("operation 必须是 upsert 或 delete", "UNSUPPORTED_OPERATION")
     values = {str(target): payload[source] for source, target in property_map.items() if source in payload}
-    if not values:
+    link_updates: list[tuple[str, str, str | None]] = []
+    if operation == "upsert":
+        for spec in _generic_link_specs(mapping):
+            source_field = spec["source_field"]
+            relation_type = spec.get("relation_type")
+            link_type_id = spec.get("semantic_resource_id")
+            if not relation_type or not link_type_id:
+                raise StreamError("关系映射缺少固定版本的语义关系资源", "INVALID_SOURCE_MAPPING")
+            if source_field not in payload:
+                continue
+            raw_target = payload[source_field]
+            if raw_target in (None, ""):
+                target_id = None
+            elif isinstance(raw_target, (str, int)) and not isinstance(raw_target, bool):
+                target_id = str(raw_target).strip() or None
+            else:
+                raise StreamError(f"关系字段 {source_field} 必须是单个对象 ID 或空值", "INVALID_EVENT")
+            link_updates.append((source_field, relation_type, target_id))
+    if operation == "upsert" and not values and not link_updates:
         raise StreamError("事件没有匹配映射的属性", "INVALID_EVENT")
     ordinal = _finite_number(event.ordinal)
     sequence = int(event.source_sequence)
@@ -926,16 +1550,82 @@ def _process_generic_event(db: Session, replay: TemporalReplay, event: TemporalS
     entity_type = str(mapping["entity_type"])
     evidence = _evidence_for_event(db, replay, event, payload)
     facts: list[TemporalFact] = []
-    for key, value in values.items():
-        _close_state_fact(db, replay, entity_id, key, ordinal, graph)
-        facts.append(_add_fact(db, replay, subject_id=entity_id, predicate=key,
-                               object_id=None, object_value={"value": value}, state_key=key,
-                               ordinal=ordinal, event=event, evidence=evidence, graph=graph))
+    if operation == "delete":
+        active_state_keys = [str(key) for (key,) in db.query(TemporalFact.state_key).filter(
+            TemporalFact.replay_id == replay.id,
+            TemporalFact.subject_id == entity_id,
+            TemporalFact.status == "active",
+            TemporalFact.valid_to_ordinal.is_(None),
+            TemporalFact.state_key != "",
+        ).distinct().all()]
+        for state_key in active_state_keys:
+            _close_state_fact(db, replay, entity_id, state_key, ordinal, graph)
+        tombstone = _add_fact(db, replay, subject_id=entity_id, predicate="DELETED",
+                              object_id=None, object_value={"value": True}, state_key="__deleted__",
+                              ordinal=ordinal, event=event, evidence=evidence, graph=graph)
+        facts.append(tombstone)
+        node_values = {"_deleted": True, "_deleted_at_ordinal": ordinal}
+    else:
+        # A later upsert can recreate a deleted object.  Closing the tombstone
+        # keeps as-of reads before the new event intact while restoring the
+        # object to the current projection.
+        _close_state_fact(db, replay, entity_id, "__deleted__", ordinal, graph)
+        for key, value in values.items():
+            _close_state_fact(db, replay, entity_id, key, ordinal, graph)
+            facts.append(_add_fact(db, replay, subject_id=entity_id, predicate=key,
+                                   object_id=None, object_value={"value": value}, state_key=key,
+                                   ordinal=ordinal, event=event, evidence=evidence, graph=graph))
+        for source_field, relation_type, target_id in link_updates:
+            state_key = f"link:{source_field}"
+            _close_state_fact(db, replay, entity_id, state_key, ordinal, graph)
+            if target_id is not None:
+                facts.append(_add_fact(
+                    db, replay, subject_id=entity_id, predicate=relation_type,
+                    object_id=target_id, object_value=None, state_key=state_key,
+                    ordinal=ordinal, event=event, evidence=evidence, graph=graph,
+                ))
+        node_values = {**values, "_deleted": False}
     node = {"id": entity_id, "entity_type": entity_type, "properties": {
-        **values, "_replay_id": replay.id, "_event_id": event.id,
+        **node_values, "_replay_id": replay.id, "_event_id": event.id,
         "event_ordinal": ordinal, "_graph_namespace": namespace,
     }}
     nodes_written = _graph_upsert_instances(graph, replay.ontology_id, [node], namespace)
+    # Generic relationships are reconstructed from PostgreSQL facts on reads.
+    # FalkorDB is only a projection, so retry the incoming edges here too: a
+    # source event can precede the event that materializes its target object.
+    active_relationships = db.query(TemporalFact).filter(
+        TemporalFact.replay_id == replay.id,
+        ((TemporalFact.subject_id == entity_id) | (TemporalFact.object_id == entity_id)),
+        TemporalFact.object_id.is_not(None),
+        TemporalFact.valid_from_ordinal <= Decimal(str(ordinal)),
+        (TemporalFact.valid_to_ordinal.is_(None)) | (TemporalFact.valid_to_ordinal > Decimal(str(ordinal))),
+        TemporalFact.status == "active",
+    ).order_by(TemporalFact.valid_from_ordinal.asc(), TemporalFact.id.asc()).all()
+    link_resource_by_state_key = {
+        f"link:{spec['source_field']}": spec["semantic_resource_id"]
+        for spec in _generic_link_specs(mapping)
+        if spec.get("semantic_resource_id")
+    }
+    graph_edges = []
+    for fact in active_relationships:
+        if not fact.object_id:
+            continue
+        edge_properties = {
+            "_fact_id": fact.id,
+            "_event_id": fact.source_event_id,
+            "evidence_ref_id": fact.evidence_ref_id,
+            "event_ordinal": float(fact.valid_from_ordinal),
+            "valid_from_ordinal": float(fact.valid_from_ordinal),
+            "_replay_id": replay.id,
+            "_graph_namespace": namespace,
+        }
+        semantic_resource_id = link_resource_by_state_key.get(fact.state_key)
+        if semantic_resource_id:
+            edge_properties["semantic_resource_id"] = semantic_resource_id
+        graph_edges.append({"id": fact.id, "source": fact.subject_id,
+                            "target": fact.object_id, "type": fact.predicate,
+                            "properties": edge_properties})
+    edges_written = _graph_upsert_relations(graph, replay.ontology_id, graph_edges, namespace)
     replay.state = {**(replay.state or {}), "latest_event": {
         "id": event.id, "event_key": event.event_key, "ordinal": ordinal,
         "source_sequence": sequence, "entity_key": entity_id,
@@ -950,17 +1640,20 @@ def _process_generic_event(db: Session, replay: TemporalReplay, event: TemporalS
     metrics.update({"events_committed": replay.committed_events,
                     "queue": max(0, int(replay.total_events or 0) - replay.committed_events),
                     "nodes_written": int(metrics.get("nodes_written", 0)) + nodes_written,
+                    "edges_written": int(metrics.get("edges_written", 0)) + edges_written,
                     "facts_written": int(metrics.get("facts_written", 0)) + len(facts),
                     "last_event_id": event.id, "last_event_ordinal": ordinal})
     replay.metrics = metrics
     event.status = "committed"
+    event.graph_projection_status = "projected" if graph and graph.available else "pending"
+    event.graph_projected_at = _now() if graph and graph.available else None
     event.committed_at = _now()
     replay.updated_at = _now()
     if commit:
         db.commit()
         db.refresh(replay)
     return {"event": _serialize_event(event), "facts": [_serialize_fact(item) for item in facts],
-            "nodes_written": nodes_written, "edges_written": 0, "state_transitions": len(facts)}
+            "nodes_written": nodes_written, "edges_written": edges_written, "state_transitions": len(facts)}
 
 
 def process_one_event(db: Session, replay: TemporalReplay, event: TemporalStreamEvent, *, commit: bool = True) -> dict[str, Any]:
@@ -978,6 +1671,8 @@ def process_one_event(db: Session, replay: TemporalReplay, event: TemporalStream
             raise StreamError("事件早于或等于当前水位，不能在本版本重算", "LATE_EVENT_NOT_SUPPORTED", watermark_ordinal=watermark, watermark_sequence=replay.watermark_sequence)
     if replay.source_id != FACTORYNET_SOURCE_ID:
         return _process_generic_event(db, replay, event, commit=commit)
+    if str(event.operation or "upsert") != "upsert":
+        raise StreamError("FactoryNet observation events only support upsert", "UNSUPPORTED_OPERATION")
     payload = dict(event.payload or {})
     payload.setdefault("episode_id", event.episode_id)
     payload.setdefault("_source_row_index", event.source_row_id or sequence)
@@ -987,9 +1682,9 @@ def process_one_event(db: Session, replay: TemporalReplay, event: TemporalStream
     if issues or not normalized:
         message = issues[0].get("error") if issues else "记录没有有效 Ordinal"
         event.status = "failed"
-        event.error = str(message)
+        event.error = "INVALID_EVENT"
         replay.status = "failed"
-        replay.error = str(message)
+        replay.error = "INVALID_EVENT"
         if commit:
             db.commit()
         raise StreamError(str(message), "INVALID_EVENT")
@@ -998,6 +1693,9 @@ def process_one_event(db: Session, replay: TemporalReplay, event: TemporalStream
     builder = FactoryNetIncrementalState.from_dict(state_payload.get("builder") or {})
     row["_replay_event_seq"] = builder.sequence_by_episode.get(event.episode_id, 0)
     nodes, structural_edges, builder = build_factorynet_instances_incremental([row], builder, sequence_column=time_column)
+    episode_node = f"FactoryNet:Episode:{event.episode_id}"
+    observation_node = f"FactoryNet:Observation:{event.episode_id}:{event.source_row_id or sequence}"
+    observation_instance = _materialize_factorynet_observation(db, replay, event, row, sequence)
     graph = FalkorDBService()
     evidence = _evidence_for_event(db, replay, event, payload)
     incident = _maybe_create_dynamic_incident(db, replay, event, evidence, payload, ordinal)
@@ -1006,6 +1704,10 @@ def process_one_event(db: Session, replay: TemporalReplay, event: TemporalStream
     for node in nodes:
         props = dict(node.get("properties") or {})
         props.update({"_replay_id": replay.id, "_event_id": event.id, "event_ordinal": ordinal, "_graph_namespace": namespace})
+        if str(node.get("id")) == observation_node:
+            props["object_ref_id"] = observation_instance.id
+            if observation_instance.object_type_resource_id:
+                props["object_type_resource_id"] = observation_instance.object_type_resource_id
         graph_nodes.append({**node, "properties": props})
     graph_edges: list[dict[str, Any]] = []
     facts: list[TemporalFact] = []
@@ -1017,8 +1719,6 @@ def process_one_event(db: Session, replay: TemporalReplay, event: TemporalStream
         graph_edges.append({**edge, "properties": props})
         facts.append(fact)
 
-    episode_node = f"FactoryNet:Episode:{event.episode_id}"
-    observation_node = f"FactoryNet:Observation:{event.episode_id}:{event.source_row_id or sequence}"
     if incident is not None:
         incident_props = {key: value for key, value in (incident.row_data or {}).items()
                           if value is None or isinstance(value, (str, int, float, bool))}
@@ -1086,6 +1786,8 @@ def process_one_event(db: Session, replay: TemporalReplay, event: TemporalStream
     metrics.update({"events_total": replay.total_events, "events_committed": replay.committed_events, "events_received": replay.committed_events, "queue": max(0, replay.total_events - replay.committed_events), "nodes_written": int(metrics.get("nodes_written", 0)) + graph_nodes_written, "edges_written": int(metrics.get("edges_written", 0)) + graph_edges_written, "facts_written": int(metrics.get("facts_written", 0)) + len(facts) + 1 + transitions, "state_transitions": int(metrics.get("state_transitions", 0)) + transitions, "last_event_id": event.id, "last_event_ordinal": ordinal, "last_payload_hash": event.payload_hash})
     replay.metrics = metrics
     event.status = "committed"
+    event.graph_projection_status = "projected" if graph and graph.available else "pending"
+    event.graph_projected_at = _now() if graph and graph.available else None
     event.committed_at = _now()
     event.error = None
     # Keep the legacy batch checkpoint truthful when this event came from the
@@ -1175,24 +1877,33 @@ def _next_simulated_live_event(db: Session, replay: TemporalReplay) -> TemporalS
     row, ordinal, source_row_id = candidates[cursor]
     episode = _episode(row)
     payload = {key: value for key, value in row.items() if not str(key).startswith("_")}
+    entity_key = str(row.get("entity_key") or row.get("machine_type") or episode)
+    event_key = f"factorynet:{episode}:{source_row_id}"
+    source_ref = {
+        "dataset_id": replay.dataset_id,
+        "dataset_version_id": replay.dataset_version_id,
+        "source_row_id": source_row_id,
+        "source_file": config.get("source_file"),
+        "source_mode": "simulated_live",
+    }
+    payload_hash = temporal_event_envelope_hash(
+        replay, event_key=event_key, operation="upsert", episode_id=episode,
+        entity_key=entity_key, ordinal=ordinal, source_sequence=cursor,
+        source_row_id=source_row_id, payload=payload, source_ref=source_ref,
+    )
     event = TemporalStreamEvent(
         id=str(uuid.uuid4()),
         replay_id=replay.id,
-        event_key=f"factorynet:{episode}:{source_row_id}",
+        event_key=event_key,
         episode_id=episode,
-        entity_key=str(row.get("entity_key") or row.get("machine_type") or episode),
+        entity_key=entity_key,
         ordinal=Decimal(str(ordinal)),
         source_sequence=cursor,
         source_row_id=source_row_id,
         payload=payload,
-        source_ref={
-            "dataset_id": replay.dataset_id,
-            "dataset_version_id": replay.dataset_version_id,
-            "source_row_id": source_row_id,
-            "source_file": config.get("source_file"),
-            "source_mode": "simulated_live",
-        },
-        payload_hash=_hash(payload),
+        source_ref=source_ref,
+        payload_hash=payload_hash,
+        payload_hash_version=TEMPORAL_EVENT_HASH_VERSION,
         status="queued",
     )
     db.add(event)
@@ -1210,166 +1921,641 @@ def _next_simulated_live_event(db: Session, replay: TemporalReplay) -> TemporalS
     return event
 
 
+class TemporalStreamLeaseLost(RuntimeError):
+    """Raised when a stream worker no longer owns its durable lease."""
+
+
+class _TemporalStreamHeartbeat:
+    def __init__(self, db: Session, replay_id: str, token: str, generation: int):
+        self.db = db
+        self.replay_id = replay_id
+        self.token = token
+        self.generation = generation
+        self._stop = threading.Event()
+        self._lost = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._before_commit = self._fence_commit
+
+    def _where(self, now: datetime):
+        return (
+            TemporalReplay.id == self.replay_id,
+            TemporalReplay.status.in_(("running", "pausing")),
+            TemporalReplay.worker_token == self.token,
+            TemporalReplay.worker_generation == self.generation,
+            TemporalReplay.worker_lease_expires_at > now,
+        )
+
+    def _renew_on_connection(self, db: Session) -> None:
+        if self._lost.is_set():
+            raise TemporalStreamLeaseLost(f"Temporal stream {self.replay_id} lease was lost")
+        now = _now()
+        result = db.connection().execute(
+            update(TemporalReplay).where(*self._where(now)).values(
+                heartbeat_at=now,
+                worker_lease_expires_at=now + timedelta(seconds=STREAM_RUN_LEASE_SECONDS),
+            )
+        )
+        if result.rowcount != 1:
+            self._lost.set()
+            raise TemporalStreamLeaseLost(f"Temporal stream {self.replay_id} lease was lost")
+
+    def _fence_commit(self, session: Session) -> None:
+        self._renew_on_connection(session)
+
+    def start(self) -> "_TemporalStreamHeartbeat":
+        sqlalchemy_event.listen(self.db, "before_commit", self._before_commit)
+        self._thread = threading.Thread(
+            target=self._heartbeat_loop,
+            name=f"temporal-stream-heartbeat-{self.replay_id[:8]}",
+            daemon=True,
+        )
+        self._thread.start()
+        return self
+
+    def assert_owned(self) -> None:
+        self._renew_on_connection(self.db)
+
+    def _heartbeat_loop(self) -> None:
+        from app.database import SessionLocal
+
+        while not self._stop.wait(STREAM_HEARTBEAT_SECONDS):
+            now = _now()
+            try:
+                with SessionLocal() as heartbeat_db:
+                    renewed = heartbeat_db.query(TemporalReplay).filter(
+                        *self._where(now)
+                    ).update({
+                        "heartbeat_at": now,
+                        "worker_lease_expires_at": now + timedelta(seconds=STREAM_RUN_LEASE_SECONDS),
+                    }, synchronize_session=False)
+                    heartbeat_db.commit()
+                if renewed != 1:
+                    self._lost.set()
+                    return
+            except Exception:
+                # The business transaction's next commit performs a fencing
+                # update; a transient heartbeat outage cannot authorize stale work.
+                continue
+
+    def close(self) -> None:
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=2)
+        try:
+            sqlalchemy_event.remove(self.db, "before_commit", self._before_commit)
+        except Exception:
+            pass
+
+
+def _release_stream_lease(replay: TemporalReplay) -> None:
+    replay.worker_token = None
+    replay.heartbeat_at = None
+    replay.worker_lease_expires_at = None
+
+
+def _claim_stream_worker(replay_id: str) -> tuple[str | None, int | None, str | None]:
+    from app.database import SessionLocal
+
+    now = _now()
+    with SessionLocal() as db:
+        replay = db.query(TemporalReplay).filter(
+            TemporalReplay.id == replay_id,
+        ).with_for_update().first()
+        if replay is None:
+            return None, None, "missing"
+        if replay.status in {"published", "completed", "failed", "cancelled"}:
+            return None, None, replay.status
+        lease_until = _aware(replay.worker_lease_expires_at)
+        if replay.status in {"running", "pausing"} and lease_until and lease_until > now:
+            return None, None, "already_running"
+        if replay.status not in {"created", "queued", "paused", "running", "pausing"}:
+            return None, None, replay.status
+        retry_at = _aware(replay.next_attempt_at)
+        if retry_at and retry_at > now:
+            return None, None, "retry_wait"
+
+        old_token = replay.worker_token
+        if old_token:
+            abandoned = db.query(TemporalProjectionAttempt).filter(
+                TemporalProjectionAttempt.replay_id == replay.id,
+                TemporalProjectionAttempt.worker_token == old_token,
+                TemporalProjectionAttempt.status == "started",
+            ).with_for_update().all()
+            for attempt in abandoned:
+                attempt.status = "abandoned"
+                attempt.error_code = "worker_lease_expired"
+                attempt.error_message = "The worker lease expired before this projection committed"
+                attempt.finished_at = now
+                event_row = db.get(TemporalStreamEvent, attempt.event_id)
+                if event_row and event_row.status == "processing":
+                    event_row.status = "queued"
+        token = str(uuid.uuid4())
+        replay.worker_generation = int(replay.worker_generation or 0) + 1
+        replay.worker_token = token
+        replay.heartbeat_at = now
+        replay.worker_lease_expires_at = now + timedelta(seconds=STREAM_RUN_LEASE_SECONDS)
+        replay.dispatch_lease_until = None
+        replay.next_attempt_at = None
+        replay.status = "running"
+        replay.started_at = replay.started_at or now
+        replay.updated_at = now
+        db.commit()
+        return token, int(replay.worker_generation), None
+
+
+def _start_projection_attempt(
+    db: Session,
+    replay: TemporalReplay,
+    event_row: TemporalStreamEvent,
+    token: str,
+) -> TemporalProjectionAttempt | None:
+    db.flush()
+    attempts = db.query(TemporalProjectionAttempt).filter(
+        TemporalProjectionAttempt.event_id == event_row.id,
+        TemporalProjectionAttempt.retry_generation == int(event_row.retry_generation or 0),
+    ).order_by(TemporalProjectionAttempt.attempt_no.asc()).with_for_update().all()
+    authorized = next((item for item in attempts if item.status == "authorized" and item.attempt_type == "manual"), None)
+    if authorized is not None:
+        attempt = authorized
+        attempt.status = "started"
+        attempt.worker_token = token
+        attempt.started_at = _now()
+        attempt.error_code = None
+        attempt.error_message = None
+    else:
+        used = sum(1 for item in attempts if item.status != "authorized")
+        if used >= STREAM_MAX_PROJECTION_ATTEMPTS:
+            latest = next((item for item in reversed(attempts) if item.error_message), None)
+            message = latest.error_message if latest else "事件投影多次失败，请检查错误码和数据版本。"
+            event_row.status = "failed"
+            event_row.error = "PROJECTION_ATTEMPTS_EXHAUSTED"
+            replay.status = "failed"
+            replay.error = "PROJECTION_ATTEMPTS_EXHAUSTED"
+            replay.completed_at = _now()
+            _release_stream_lease(replay)
+            replay.updated_at = _now()
+            db.commit()
+            return None
+        attempt_no = int(db.query(func.max(TemporalProjectionAttempt.attempt_no)).filter(
+            TemporalProjectionAttempt.event_id == event_row.id,
+        ).scalar() or 0) + 1
+        attempt = TemporalProjectionAttempt(
+            id=str(uuid.uuid4()), replay_id=replay.id, event_id=event_row.id,
+            attempt_no=attempt_no, retry_generation=int(event_row.retry_generation or 0),
+            attempt_type="automatic", status="started", worker_token=token,
+            created_at=_now(), started_at=_now(),
+        )
+        db.add(attempt)
+    event_row.status = "processing"
+    event_row.error = None
+    event_row.next_attempt_at = None
+    replay.next_attempt_at = None
+    replay.status = "running"
+    replay.error = None
+    replay.updated_at = _now()
+    db.commit()
+    return attempt
+
+
+def _record_projection_failure(
+    replay_id: str,
+    event_id: str,
+    attempt_id: str,
+    token: str,
+    exc: Exception,
+) -> str:
+    from app.database import SessionLocal
+
+    now = _now()
+    raw_code = exc.code if isinstance(exc, StreamError) else "projection_error"
+    code, message = temporal_error_details(raw_code, fallback_code="TEMPORAL_PROJECTION_FAILED")
+    with SessionLocal() as db:
+        replay = db.query(TemporalReplay).filter(TemporalReplay.id == replay_id).with_for_update().first()
+        event_row = db.query(TemporalStreamEvent).filter(
+            TemporalStreamEvent.id == event_id,
+            TemporalStreamEvent.replay_id == replay_id,
+        ).with_for_update().first()
+        attempt = db.query(TemporalProjectionAttempt).filter(
+            TemporalProjectionAttempt.id == attempt_id,
+            TemporalProjectionAttempt.worker_token == token,
+            TemporalProjectionAttempt.status == "started",
+        ).with_for_update().first()
+        if (replay is None or event_row is None or attempt is None
+                or replay.status not in {"running", "pausing"}
+                or replay.worker_token != token
+                or not _aware(replay.worker_lease_expires_at)
+                or _aware(replay.worker_lease_expires_at) <= now):
+            return "superseded"
+        attempt.status = "failed"
+        attempt.error_code = code
+        attempt.error_message = message
+        attempt.finished_at = now
+        db.flush()
+        generation_count = db.query(func.count(TemporalProjectionAttempt.id)).filter(
+            TemporalProjectionAttempt.event_id == event_row.id,
+            TemporalProjectionAttempt.retry_generation == int(event_row.retry_generation or 0),
+            TemporalProjectionAttempt.status != "authorized",
+        ).scalar() or 0
+        retryable = not isinstance(exc, StreamError) or raw_code in {"STORAGE_OBJECT_MISSING", "SOURCE_NOT_READY"}
+        if retryable and int(generation_count) < STREAM_MAX_PROJECTION_ATTEMPTS:
+            delay_seconds = min(5 * (2 ** max(0, int(generation_count) - 1)), 60)
+            retry_at = now + timedelta(seconds=delay_seconds)
+            event_row.status = "queued"
+            event_row.error = code
+            event_row.next_attempt_at = retry_at
+            replay.status = "queued"
+            replay.error = code
+            replay.next_attempt_at = retry_at
+            replay.completed_at = None
+            result = "retry_wait"
+        else:
+            event_row.status = "failed"
+            event_row.error = code
+            event_row.next_attempt_at = None
+            replay.status = "failed"
+            replay.error = code
+            replay.next_attempt_at = None
+            replay.completed_at = now
+            result = "failed"
+        _release_stream_lease(replay)
+        replay.updated_at = now
+        db.commit()
+        return result
+
+
+def _record_stream_failure(replay_id: str, token: str, exc: Exception) -> str:
+    from app.database import SessionLocal
+
+    now = _now()
+    raw_code = exc.code if isinstance(exc, StreamError) else "stream_worker_error"
+    code, _ = temporal_error_details(raw_code, fallback_code="TEMPORAL_STREAM_FAILED")
+    with SessionLocal() as db:
+        replay = db.query(TemporalReplay).filter(TemporalReplay.id == replay_id).with_for_update().first()
+        if (replay is None or replay.worker_token != token
+                or replay.status not in {"running", "pausing"}
+                or not _aware(replay.worker_lease_expires_at)
+                or _aware(replay.worker_lease_expires_at) <= now):
+            return "superseded"
+        replay.status = "failed"
+        replay.error = code
+        replay.completed_at = now
+        replay.next_attempt_at = None
+        _release_stream_lease(replay)
+        replay.updated_at = now
+        db.commit()
+        return "failed"
+
+
 def run_temporal_stream(replay_id: str) -> dict[str, Any]:
-    """Resume a stream and commit one event per loop iteration."""
+    """Process a stream under a persisted, heartbeated, fenced worker lease."""
     with _worker_lock:
         if replay_id in _active_stream_workers:
             return {"run_id": replay_id, "status": "already_running"}
         _active_stream_workers.add(replay_id)
     from app.database import SessionLocal
+
     db = SessionLocal()
+    lease: _TemporalStreamHeartbeat | None = None
     try:
+        token, generation, stopped = _claim_stream_worker(replay_id)
+        if token is None:
+            replay = db.query(TemporalReplay).filter(TemporalReplay.id == replay_id).first()
+            return serialize_stream(replay, db=db) if replay else {"run_id": replay_id, "status": stopped or "missing"}
+        lease = _TemporalStreamHeartbeat(db, replay_id, token, int(generation or 0)).start()
         replay = db.query(TemporalReplay).filter(TemporalReplay.id == replay_id).first()
-        if not replay:
+        if replay is None:
             return {"run_id": replay_id, "status": "missing"}
-        if replay.status == "published":
-            return serialize_stream(replay, db=db)
-        if replay.status in {"failed", "cancelled"}:
-            return serialize_stream(replay, db=db)
-        replay.status = "running"
-        replay.started_at = replay.started_at or _now()
-        replay.pause_requested = False if replay.status == "created" else replay.pause_requested
-        replay.updated_at = _now()
-        db.commit()
         while True:
             db.refresh(replay)
-            if replay.cancel_requested:
-                replay.status = "cancelled"
-                replay.error = "用户取消动态运行"
-                replay.completed_at = _now()
-                db.commit()
-                return serialize_stream(replay, db=db)
-            if replay.pause_requested or replay.cancel_requested:
-                # _next_simulated_live_event creates the queued event and
-                # advances a pending cursor in this transaction.  If a
-                # control request arrived during that small window, discard
-                # the materialization so resume cannot create a duplicate.
+            if replay.cancel_requested or replay.pause_requested:
                 db.rollback()
                 replay = db.query(TemporalReplay).filter(TemporalReplay.id == replay_id).first()
-                if not replay:
+                if replay is None:
                     return {"run_id": replay_id, "status": "missing"}
                 if replay.cancel_requested:
                     replay.status = "cancelled"
-                    replay.error = "用户取消动态运行"
+                    replay.error = "TEMPORAL_REPLAY_CANCELLED"
                     replay.completed_at = _now()
                 else:
                     replay.status = "paused"
+                _release_stream_lease(replay)
                 replay.updated_at = _now()
                 db.commit()
                 return serialize_stream(replay, db=db)
-            event = _next_simulated_live_event(db, replay) if replay.source_mode == "simulated_live" else _next_event(db, replay.id)
-            if event is None:
-                if replay.source_mode in {"push"}:
-                    # Push streams stay open between batches.  A producer can
-                    # append another event later; the ingest endpoint will
-                    # move the run back to queued and dispatch the worker.
+
+            # A failed simulated-live event must be retried before another
+            # source row is materialized; otherwise its pending cursor repeats.
+            stream_event = _next_event(db, replay.id)
+            event_row = stream_event or (
+                _next_simulated_live_event(db, replay)
+                if replay.source_mode == "simulated_live" else None
+            )
+            if event_row is None:
+                if replay.source_mode == "push":
                     replay.status = "paused"
-                    replay.error = "等待推送事件"
-                    replay.updated_at = _now()
-                    db.commit()
-                    return serialize_stream(replay, db=db)
-                replay.status = "completed"
-                replay.current_event_index = max(-1, int(replay.total_events or 0) - 1)
-                replay.current_batch_index = replay.current_event_index
-                replay.completed_at = _now()
+                    replay.error = "TEMPORAL_REPLAY_WAITING_FOR_EVENT"
+                    replay.completed_at = None
+                else:
+                    replay.status = "completed"
+                    replay.current_event_index = max(-1, int(replay.total_events or 0) - 1)
+                    replay.current_batch_index = replay.current_event_index
+                    replay.completed_at = _now()
+                _release_stream_lease(replay)
                 replay.updated_at = _now()
                 db.commit()
                 return serialize_stream(replay, db=db)
-            # A pause/cancel request may have been committed by the control
-            # endpoint while the next live event was being prepared.  Refresh
-            # only the control flags before committing that event.  Rolling
-            # back here discards the uncommitted queued event and its pending
-            # cursor, so a later resume cannot replay or silently skip it.
-            # Read the two control flags without autoflushing the queued
-            # event.  The control endpoint uses a separate transaction, so a
-            # fresh column query sees its committed request while this event
-            # is still safely rollback-able.
+
+            retry_at = _aware(event_row.next_attempt_at)
+            if retry_at and retry_at > _now():
+                replay.status = "queued"
+                replay.next_attempt_at = retry_at
+                _release_stream_lease(replay)
+                replay.updated_at = _now()
+                db.commit()
+                return serialize_stream(replay, db=db)
+
             with db.no_autoflush:
-                control_flags = db.query(
+                flags = db.query(
                     TemporalReplay.pause_requested,
                     TemporalReplay.cancel_requested,
                 ).filter(TemporalReplay.id == replay_id).first()
-            pause_requested = bool(control_flags[0]) if control_flags else False
-            cancel_requested = bool(control_flags[1]) if control_flags else False
-            if pause_requested or cancel_requested:
+            if flags and (bool(flags[0]) or bool(flags[1])):
                 db.rollback()
                 replay = db.query(TemporalReplay).filter(TemporalReplay.id == replay_id).first()
-                if not replay:
+                if replay is None:
                     return {"run_id": replay_id, "status": "missing"}
+                replay.status = "cancelled" if replay.cancel_requested else "paused"
                 if replay.cancel_requested:
-                    replay.status = "cancelled"
-                    replay.error = "用户取消动态运行"
+                    replay.error = "TEMPORAL_REPLAY_CANCELLED"
                     replay.completed_at = _now()
-                else:
-                    replay.status = "paused"
+                _release_stream_lease(replay)
                 replay.updated_at = _now()
                 db.commit()
                 return serialize_stream(replay, db=db)
+
             replay.status = "running"
-            db.commit()
+            attempt = _start_projection_attempt(db, replay, event_row, token)
+            if attempt is None:
+                db.refresh(replay)
+                return serialize_stream(replay, db=db)
             try:
-                process_one_event(db, replay, event, commit=False)
+                lease.assert_owned()
+                process_one_event(db, replay, event_row, commit=False)
                 if replay.source_mode == "simulated_live":
                     config = dict(replay.config or {})
                     pending_cursor = config.pop("source_cursor_pending", None)
                     if pending_cursor is not None:
                         config["source_cursor"] = int(pending_cursor)
                     replay.config = config
+                attempt.status = "committed"
+                attempt.finished_at = _now()
+                attempt.error_code = None
+                attempt.error_message = None
                 db.commit()
                 db.refresh(replay)
-            except StreamError as exc:
+            except TemporalStreamLeaseLost:
                 db.rollback()
-                replay = db.query(TemporalReplay).filter(TemporalReplay.id == replay_id).first()
-                if replay:
-                    replay.status = "failed"
-                    replay.error = f"{exc.code}: {exc}"
-                    replay.completed_at = _now()
-                    db.commit()
-                return serialize_stream(replay, db=db) if replay else {"run_id": replay_id, "status": "failed", "error": str(exc)}
+                return {"run_id": replay_id, "status": "superseded"}
             except Exception as exc:
                 db.rollback()
+                lease.close()
+                lease = None
+                _record_projection_failure(replay_id, event_row.id, attempt.id, token, exc)
+                db.expire_all()
                 replay = db.query(TemporalReplay).filter(TemporalReplay.id == replay_id).first()
-                if replay:
-                    replay.status = "failed"
-                    replay.error = str(exc)[:2000]
-                    replay.completed_at = _now()
-                    db.commit()
-                return serialize_stream(replay, db=db) if replay else {"run_id": replay_id, "status": "failed", "error": str(exc)}
+                return serialize_stream(replay, db=db) if replay else {
+                    "run_id": replay_id, "status": "failed",
+                    "error": "时序流任务未能完成，请检查错误码并重试。",
+                    "error_code": "TEMPORAL_STREAM_FAILED",
+                }
+
             db.refresh(replay)
             if replay.step_requested:
                 replay.step_requested = False
                 replay.pause_requested = True
                 replay.status = "paused"
+                _release_stream_lease(replay)
                 replay.updated_at = _now()
                 db.commit()
                 return serialize_stream(replay, db=db)
             if replay.pause_requested:
                 replay.status = "paused"
+                _release_stream_lease(replay)
                 replay.updated_at = _now()
                 db.commit()
                 return serialize_stream(replay, db=db)
             delay = max(0.01, min(60.0, float(replay.event_interval_ms or 1000) / 1000.0))
             if delay:
                 time.sleep(delay)
+    except TemporalStreamLeaseLost:
+        db.rollback()
+        return {"run_id": replay_id, "status": "superseded"}
+    except Exception as exc:
+        db.rollback()
+        if lease is not None:
+            lease.close()
+            lease = None
+        if "token" in locals() and token:
+            _record_stream_failure(replay_id, token, exc)
+        replay = db.query(TemporalReplay).filter(TemporalReplay.id == replay_id).first()
+        return serialize_stream(replay, db=db) if replay else {
+            "run_id": replay_id, "status": "failed",
+            "error": "时序流任务未能完成，请检查错误码并重试。",
+            "error_code": "TEMPORAL_STREAM_FAILED",
+        }
     finally:
+        if lease is not None:
+            lease.close()
         db.close()
         with _worker_lock:
             _active_stream_workers.discard(replay_id)
 
 
 def dispatch_stream(replay_id: str) -> str:
-    if os.getenv("CELERY_ENABLED", "").lower() in {"1", "true", "yes"}:
-        try:
+    """Dispatch a queued run with a persisted lease and bounded backoff."""
+    from app.database import SessionLocal
+
+    now = _now()
+    with SessionLocal() as db:
+        replay = db.query(TemporalReplay).filter(TemporalReplay.id == replay_id).with_for_update().first()
+        if replay is None:
+            return "missing"
+        if replay.status != "queued":
+            return str(replay.status)
+        retry_at = _aware(replay.next_attempt_at)
+        dispatch_lease = _aware(replay.dispatch_lease_until)
+        if retry_at and retry_at > now:
+            return "retry_wait"
+        if dispatch_lease and dispatch_lease > now:
+            return "dispatch_pending"
+        if int(replay.dispatch_attempts or 0) >= STREAM_MAX_DISPATCH_ATTEMPTS:
+            replay.status = "failed"
+            replay.error = "dispatch_attempts_exhausted"
+            replay.completed_at = now
+            replay.updated_at = now
+            db.commit()
+            return "failed"
+        replay.dispatch_attempts = int(replay.dispatch_attempts or 0) + 1
+        attempt_no = replay.dispatch_attempts
+        task_id = f"temporal-stream-{replay.id}-{attempt_no}"
+        replay.dispatch_lease_until = now + timedelta(seconds=STREAM_DISPATCH_LEASE_SECONDS)
+        replay.updated_at = now
+        db.commit()
+
+    try:
+        if os.getenv("CELERY_ENABLED", "").strip().lower() in {"1", "true", "yes"}:
             from app.tasks.v2.temporal_stream import run_temporal_stream_task
-            run_temporal_stream_task.delay(replay_id)
+            run_temporal_stream_task.apply_async(args=[replay_id], task_id=task_id)
             return "celery"
-        except Exception:
-            pass
-    threading.Thread(target=run_temporal_stream, args=(replay_id,), name=f"temporal-stream-{replay_id[:8]}", daemon=True).start()
-    return "thread"
+        thread = threading.Thread(
+            target=run_temporal_stream,
+            args=(replay_id,),
+            name=f"temporal-stream-{replay_id[:8]}",
+            daemon=True,
+        )
+        thread.start()
+        return "thread"
+    except Exception as exc:
+        with SessionLocal() as db:
+            replay = db.query(TemporalReplay).filter(TemporalReplay.id == replay_id).with_for_update().first()
+            if replay and replay.status == "queued" and int(replay.dispatch_attempts or 0) == attempt_no:
+                replay.dispatch_lease_until = None
+                if attempt_no >= STREAM_MAX_DISPATCH_ATTEMPTS:
+                    replay.status = "failed"
+                    replay.error = "dispatch_attempts_exhausted"
+                    replay.completed_at = _now()
+                    state = "failed"
+                else:
+                    replay.error = "dispatch_failed"
+                    replay.next_attempt_at = _now() + timedelta(seconds=min(10 * (2 ** (attempt_no - 1)), 300))
+                    state = "dispatch_failed"
+                replay.updated_at = _now()
+                db.commit()
+                return state
+        return "superseded"
+
+
+def reconcile_temporal_stream_workers(batch_size: int = 50) -> dict[str, Any]:
+    """Recover expired workers and redeliver queued runs whose retry is due."""
+    from app.database import SessionLocal
+
+    batch_size = max(1, min(int(batch_size), 200))
+    now = _now()
+    with SessionLocal() as db:
+        expired = db.query(TemporalReplay).filter(
+            TemporalReplay.status.in_(("running", "pausing")),
+            or_(TemporalReplay.worker_lease_expires_at.is_(None), TemporalReplay.worker_lease_expires_at <= now),
+        ).order_by(TemporalReplay.updated_at.asc(), TemporalReplay.id.asc()).limit(batch_size).with_for_update().all()
+        for replay in expired:
+            old_token = replay.worker_token
+            if old_token:
+                attempts = db.query(TemporalProjectionAttempt).filter(
+                    TemporalProjectionAttempt.replay_id == replay.id,
+                    TemporalProjectionAttempt.worker_token == old_token,
+                    TemporalProjectionAttempt.status == "started",
+                ).with_for_update().all()
+                for attempt in attempts:
+                    attempt.status = "abandoned"
+                    attempt.error_code, attempt.error_message = temporal_error_details("worker_lease_expired")
+                    attempt.finished_at = now
+                    event_row = db.get(TemporalStreamEvent, attempt.event_id)
+                    if event_row and event_row.status == "processing":
+                        event_row.status = "queued"
+            if replay.cancel_requested:
+                replay.status = "cancelled"
+                replay.error = "TEMPORAL_REPLAY_CANCELLED"
+                replay.completed_at = now
+            elif replay.pause_requested:
+                replay.status = "paused"
+            else:
+                replay.status = "queued"
+                replay.next_attempt_at = now
+            _release_stream_lease(replay)
+            replay.updated_at = now
+        db.commit()
+        due_ids = [row.id for row in db.query(TemporalReplay.id).filter(
+            TemporalReplay.status == "queued",
+            or_(TemporalReplay.next_attempt_at.is_(None), TemporalReplay.next_attempt_at <= now),
+            or_(TemporalReplay.dispatch_lease_until.is_(None), TemporalReplay.dispatch_lease_until <= now),
+        ).order_by(TemporalReplay.created_at.asc(), TemporalReplay.id.asc()).limit(batch_size).all()]
+    states: Counter[str] = Counter()
+    for replay_id in due_ids:
+        states[dispatch_stream(replay_id)] += 1
+    return {"expired_workers": len(expired), "due_runs": len(due_ids), "dispatch_states": dict(states)}
+
+
+def temporal_graph_projection_health(db: Session, replay: TemporalReplay) -> dict[str, Any]:
+    """Compare a replay's SQL fact envelope with its isolated graph counts."""
+    subject_ids = db.query(TemporalFact.subject_id.label("node_id")).filter(
+        TemporalFact.replay_id == replay.id,
+    )
+    object_ids = db.query(TemporalFact.object_id.label("node_id")).filter(
+        TemporalFact.replay_id == replay.id,
+        TemporalFact.object_id.is_not(None),
+    )
+    node_ids = subject_ids.union(object_ids).subquery()
+    expected_nodes = int(db.query(func.count()).select_from(node_ids).scalar() or 0)
+    expected_edges = int(db.query(func.count(TemporalFact.id)).filter(
+        TemporalFact.replay_id == replay.id,
+        TemporalFact.object_id.is_not(None),
+    ).scalar() or 0)
+    committed_events = int(db.query(func.count(TemporalStreamEvent.id)).filter(
+        TemporalStreamEvent.replay_id == replay.id,
+        TemporalStreamEvent.status == "committed",
+    ).scalar() or 0)
+    projected_events = int(db.query(func.count(TemporalStreamEvent.id)).filter(
+        TemporalStreamEvent.replay_id == replay.id,
+        TemporalStreamEvent.status == "committed",
+        TemporalStreamEvent.graph_projection_status == "projected",
+    ).scalar() or 0)
+    pending_events = max(0, committed_events - projected_events)
+
+    graph = FalkorDBService()
+    actual = graph.projection_counts(replay.ontology_id, replay.graph_namespace) if graph.available else None
+    latest_rebuild = db.query(TemporalGraphProjectionJob).filter(
+        TemporalGraphProjectionJob.replay_id == replay.id,
+    ).order_by(TemporalGraphProjectionJob.created_at.desc()).first()
+    if not graph.available:
+        status = "unavailable"
+    elif latest_rebuild and latest_rebuild.status in {"queued", "running"}:
+        status = "rebuilding"
+    elif latest_rebuild and latest_rebuild.status == "failed":
+        status = "rebuild_failed"
+    elif actual is None:
+        status = "missing_graph" if expected_nodes or expected_edges else "empty"
+    elif int(actual.get("nodes", 0)) == expected_nodes and int(actual.get("edges", 0)) == expected_edges and pending_events == 0:
+        status = "content_verified" if latest_rebuild and latest_rebuild.status == "completed" and latest_rebuild.content_digest else "count_match"
+    else:
+        status = "lag_or_count_mismatch"
+    rebuild_payload = None
+    if latest_rebuild:
+        from app.services.v2.temporal_graph_projection import serialize_temporal_graph_projection_job
+
+        rebuild_payload = serialize_temporal_graph_projection_job(latest_rebuild)
+    return {
+        "run_id": replay.id,
+        "source_of_truth": "postgresql_temporal_facts",
+        "graph_namespace": replay.graph_namespace,
+        "status": status,
+        "committed_events": committed_events,
+        "events_marked_projected": projected_events,
+        "events_pending_or_unknown": pending_events,
+        "sql_expected_nodes": expected_nodes,
+        "sql_expected_edges": expected_edges,
+        "graph_counts": actual,
+        "count_match_is_not_content_proof": True,
+        "last_rebuild": rebuild_payload,
+        "last_rebuild_content_verified": bool(latest_rebuild and latest_rebuild.status == "completed" and latest_rebuild.content_digest),
+        "checked_at": _now().isoformat(),
+    }
 
 
 def update_stream_control(db: Session, replay: TemporalReplay, action: str, speed: float | None = None) -> tuple[TemporalReplay, bool]:
+    replay = db.query(TemporalReplay).filter(
+        TemporalReplay.id == replay.id,
+    ).populate_existing().with_for_update().first()
+    if replay is None:
+        raise StreamError("动态运行不存在", "RUN_NOT_FOUND")
     if action not in {"start", "pause", "resume", "step", "cancel"}:
         raise StreamError("action 必须是 start、pause、resume、step 或 cancel", "INVALID_CONTROL")
     if speed is not None:
@@ -1380,77 +2566,257 @@ def update_stream_control(db: Session, replay: TemporalReplay, action: str, spee
         replay.event_interval_ms = max(1, int(round(1000 / speed)))
     if replay.status == "published" and action != "cancel":
         raise StreamError("已发布运行不能继续控制", "RUN_PUBLISHED")
+    if action in {"start", "resume", "step"} and replay.status in {"running", "pausing"}:
+        lease_until = _aware(replay.worker_lease_expires_at)
+        if lease_until and lease_until > _now():
+            raise StreamError("当前运行已有持久 worker 正在处理", "RUN_ALREADY_ACTIVE")
+    if action in {"start", "resume", "step"} and db.query(TemporalStreamEvent.id).filter(
+        TemporalStreamEvent.replay_id == replay.id,
+        TemporalStreamEvent.status == "failed",
+    ).first():
+        raise StreamError("存在失败事件；请通过带原因和幂等键的人工重放接口重新授权", "MANUAL_REPLAY_REQUIRED")
     if action == "start":
         replay.cancel_requested = False; replay.pause_requested = False; replay.step_requested = False; replay.status = "queued"
+        replay.dispatch_attempts = 0
+        replay.dispatch_lease_until = None
+        replay.next_attempt_at = None
+        replay.error = None
         dispatch = True
     elif action == "resume":
         replay.cancel_requested = False; replay.pause_requested = False; replay.step_requested = False; replay.status = "queued"
-        # A failed event is retained for audit.  Resuming explicitly requeues
-        # those events so transient storage/model errors can be retried without
-        # creating a second run or losing the already committed watermark.
-        failed_events = db.query(TemporalStreamEvent).filter(
-            TemporalStreamEvent.replay_id == replay.id,
-            TemporalStreamEvent.status == "failed",
-        ).all()
-        for event in failed_events:
-            event.status = "queued"
-            event.error = None
+        replay.dispatch_lease_until = None
+        replay.next_attempt_at = None
         replay.error = None
         dispatch = True
     elif action == "step":
         replay.cancel_requested = False; replay.pause_requested = False; replay.step_requested = True; replay.status = "queued"
+        replay.dispatch_lease_until = None
+        replay.next_attempt_at = None
         dispatch = True
     elif action == "pause":
+        was_active = replay.status in {"running", "pausing"}
         replay.pause_requested = True
-        replay.status = "pausing" if replay.status == "running" else "paused"
+        replay.status = "pausing" if was_active else "paused"
+        if not was_active:
+            replay.dispatch_lease_until = None
         dispatch = False
     else:
+        was_active = replay.status in {"running", "pausing"}
         replay.cancel_requested = True; replay.pause_requested = False; replay.step_requested = False
-        replay.status = "pausing" if replay.status == "running" else "cancelled"
+        replay.status = "pausing" if was_active else "cancelled"
+        if not was_active:
+            _release_stream_lease(replay)
+            replay.dispatch_lease_until = None
+            replay.completed_at = _now()
         dispatch = False
     replay.updated_at = _now()
     db.commit(); db.refresh(replay)
     return replay, dispatch
 
 
+def authorize_temporal_event_retry(
+    db: Session,
+    replay: TemporalReplay,
+    event_ref: str,
+    *,
+    requested_by: str,
+    reason: str,
+    request_key: str,
+) -> tuple[TemporalProjectionAttempt, bool]:
+    """Authorize one auditable manual retry for a terminally failed event."""
+    normalized_reason = str(reason or "").strip()
+    normalized_key = str(request_key or "").strip()
+    if len(normalized_reason) < 8:
+        raise StreamError("人工重放原因至少需要 8 个字符", "RETRY_REASON_REQUIRED")
+    if not normalized_key or len(normalized_key) > 120:
+        raise StreamError("人工重放幂等键长度必须在 1 到 120 之间", "INVALID_RETRY_REQUEST_KEY")
+
+    locked_replay = db.query(TemporalReplay).filter(
+        TemporalReplay.id == replay.id,
+    ).populate_existing().with_for_update().first()
+    if locked_replay is None:
+        raise StreamError("动态运行不存在", "RUN_NOT_FOUND")
+    event_row = db.query(TemporalStreamEvent).filter(
+        TemporalStreamEvent.replay_id == locked_replay.id,
+        or_(TemporalStreamEvent.id == event_ref, TemporalStreamEvent.event_key == event_ref),
+    ).with_for_update().first()
+    if event_row is None:
+        raise StreamError("动态事件不存在", "EVENT_NOT_FOUND")
+
+    existing = db.query(TemporalProjectionAttempt).filter(
+        TemporalProjectionAttempt.replay_id == locked_replay.id,
+        TemporalProjectionAttempt.request_key == normalized_key,
+    ).first()
+    if existing is not None:
+        if (existing.event_id != event_row.id
+                or existing.attempt_type != "manual"
+                or existing.reason != normalized_reason
+                or existing.requested_by != requested_by):
+            raise StreamError("幂等键已用于其他重放请求", "IDEMPOTENCY_KEY_REUSED")
+        return existing, True
+    if event_row.status != "failed":
+        raise StreamError("只有终态失败事件可以人工重放", "EVENT_NOT_TERMINAL_FAILED")
+    if locked_replay.status in {"published", "cancelled"}:
+        raise StreamError("已发布或已取消的运行不能人工重放", "RUN_PUBLISHED")
+
+    attempt_no = int(db.query(func.max(TemporalProjectionAttempt.attempt_no)).filter(
+        TemporalProjectionAttempt.event_id == event_row.id,
+    ).scalar() or 0) + 1
+    retry_generation = int(event_row.retry_generation or 0) + 1
+    now = _now()
+    attempt = TemporalProjectionAttempt(
+        id=str(uuid.uuid4()),
+        replay_id=locked_replay.id,
+        event_id=event_row.id,
+        attempt_no=attempt_no,
+        retry_generation=retry_generation,
+        attempt_type="manual",
+        status="authorized",
+        request_key=normalized_key,
+        requested_by=requested_by,
+        reason=normalized_reason,
+        created_at=now,
+    )
+    db.add(attempt)
+    event_row.retry_generation = retry_generation
+    event_row.status = "queued"
+    event_row.error = None
+    event_row.next_attempt_at = None
+    locked_replay.status = "queued"
+    locked_replay.pause_requested = False
+    locked_replay.cancel_requested = False
+    locked_replay.step_requested = False
+    locked_replay.error = None
+    locked_replay.completed_at = None
+    locked_replay.dispatch_attempts = 0
+    locked_replay.dispatch_lease_until = None
+    locked_replay.next_attempt_at = None
+    locked_replay.updated_at = now
+    db.commit()
+    db.refresh(attempt)
+    return attempt, False
+
+
 def ingest_push_event(db: Session, replay: TemporalReplay, body: dict[str, Any]) -> tuple[TemporalStreamEvent, bool]:
+    locked_replay = db.query(TemporalReplay).filter(
+        TemporalReplay.id == replay.id,
+    ).populate_existing().with_for_update().first()
+    if locked_replay is None:
+        raise StreamError("动态运行不存在", "RUN_NOT_FOUND")
+    replay = locked_replay
     if replay.source_mode != "push":
         raise StreamError("文件回放运行不能接收推送事件", "SOURCE_MODE_MISMATCH")
     if replay.status in {"published", "cancelled"}:
         raise StreamError("当前运行已结束，不能接收新事件", "RUN_PUBLISHED" if replay.status == "published" else "RUN_CANCELLED")
+    operation = str(body.get("operation") or "upsert")
+    if operation not in {"upsert", "delete"}:
+        raise StreamError("operation 必须是 upsert 或 delete", "UNSUPPORTED_OPERATION")
+    if replay.source_id == FACTORYNET_SOURCE_ID and operation != "upsert":
+        raise StreamError("FactoryNet observation events only support upsert", "UNSUPPORTED_OPERATION")
     required = ["event_id", "episode_id", "entity_key", "source_sequence", "event_time" if replay.time_kind == "event_time" else "ordinal"]
     missing = [key for key in required if body.get(key) in (None, "")]
     if missing:
         raise StreamError(f"缺少事件字段：{', '.join(missing)}", "INVALID_EVENT")
     event_id = str(body["event_id"])
-    payload = body.get("payload") if isinstance(body.get("payload"), dict) else {}
+    payload_value = body.get("payload", {})
+    if payload_value is None:
+        payload_value = {}
+    if not isinstance(payload_value, dict):
+        raise StreamError("payload 必须是对象", "INVALID_EVENT")
+    payload = payload_value
+    source_ref_value = body.get("source_ref", {})
+    if source_ref_value is None:
+        source_ref_value = {}
+    if not isinstance(source_ref_value, dict):
+        raise StreamError("source_ref 必须是对象", "INVALID_EVENT")
+    source_ref = dict(source_ref_value)
     if replay.time_kind == "event_time":
         event_time = _parse_event_time(body["event_time"])
         ordinal = event_time.timestamp()
     else:
         ordinal = _finite_number(body["ordinal"])
     try:
-        source_sequence = int(body["source_sequence"])
-    except (TypeError, ValueError) as exc:
+        raw_source_sequence = body["source_sequence"]
+        sequence_decimal = Decimal(str(raw_source_sequence))
+        if (isinstance(raw_source_sequence, bool)
+                or not sequence_decimal.is_finite()
+                or sequence_decimal != sequence_decimal.to_integral_value()):
+            raise ValueError("source_sequence must be an integer")
+        source_sequence = int(sequence_decimal)
+    except (InvalidOperation, TypeError, ValueError) as exc:
         raise StreamError("source_sequence 必须是整数", "INVALID_EVENT") from exc
     if source_sequence < 0:
         raise StreamError("source_sequence 不能小于 0", "INVALID_EVENT")
-    payload_hash = (_hash(payload) if replay.source_id == FACTORYNET_SOURCE_ID else
-                    _generic_payload_hash(payload, ordinal, str(body["entity_key"]), str(body["episode_id"]), source_sequence))
+    episode_id = str(body["episode_id"])
+    entity_key = str(body["entity_key"])
+    source_row_id = str(source_ref.get("source_row_id") or event_id)
+    source_ref["source_row_id"] = source_row_id
+    if replay.time_kind == "event_time":
+        source_ref["event_time"] = event_time.isoformat()
+        source_ref["time_zone"] = str(event_time.tzinfo)
+    event_fields = {
+        "event_key": event_id,
+        "operation": operation,
+        "episode_id": episode_id,
+        "entity_key": entity_key,
+        "ordinal": ordinal,
+        "source_sequence": source_sequence,
+        "source_row_id": source_row_id,
+        "payload": payload,
+        "source_ref": source_ref,
+    }
+    payload_hash = temporal_event_envelope_hash(replay, **event_fields)
     existing = db.query(TemporalStreamEvent).filter(TemporalStreamEvent.replay_id == replay.id, TemporalStreamEvent.event_key == event_id).first()
     if existing:
-        if existing.payload_hash == payload_hash:
+        existing_version = _stored_contract_version(existing, "payload_hash_version")
+        existing_fields = {
+            "event_key": existing.event_key,
+            "operation": existing.operation or "upsert",
+            "episode_id": existing.episode_id,
+            "entity_key": existing.entity_key,
+            "ordinal": existing.ordinal,
+            "source_sequence": existing.source_sequence,
+            "source_row_id": existing.source_row_id or existing.event_key,
+            "payload": existing.payload or {},
+            "source_ref": existing.source_ref or {},
+        }
+        # v1 push rows stored the caller's source_ref verbatim (plus normalized
+        # event_time/time_zone), before source_row_id was copied into it. Keep
+        # that persisted representation for compatibility comparisons.
+        legacy_source_ref = dict(source_ref_value)
+        if replay.time_kind == "event_time":
+            legacy_source_ref["event_time"] = event_time.isoformat()
+            legacy_source_ref["time_zone"] = str(event_time.tzinfo)
+        legacy_event_fields = {**event_fields, "source_ref": legacy_source_ref}
+        if existing_version == 1:
+            exact_envelope_match = temporal_event_envelope_matches(
+                replay, existing, **legacy_event_fields,
+            )
+            stored_hash_valid = True
+        elif existing_version == TEMPORAL_EVENT_HASH_VERSION:
+            exact_envelope_match = temporal_event_envelope_matches(
+                replay, existing, **event_fields,
+            )
+            stored_hash_valid = temporal_event_envelope_hash(
+                replay, **existing_fields,
+            ) == existing.payload_hash
+        else:
+            exact_envelope_match = False
+            stored_hash_valid = False
+        if exact_envelope_match and stored_hash_valid:
             return existing, True
-        raise StreamError("相同 event_id 的载荷不同", "EVENT_PAYLOAD_CONFLICT", event_id=event_id)
+        raise StreamError("相同 event_id 的完整事件 envelope 不同", "EVENT_PAYLOAD_CONFLICT", event_id=event_id)
     watermark = _float_or_none(replay.watermark_ordinal)
     if watermark is not None and (ordinal, source_sequence) <= (watermark, int(replay.watermark_sequence or -1)):
         raise StreamError("事件早于或等于当前水位，不能在本版本重算", "LATE_EVENT_NOT_SUPPORTED", watermark_ordinal=watermark, watermark_sequence=replay.watermark_sequence)
     event = TemporalStreamEvent(
         id=str(uuid.uuid4()), replay_id=replay.id, event_key=event_id,
-        episode_id=str(body["episode_id"]), entity_key=str(body["entity_key"]),
+        operation=operation,
+        episode_id=episode_id, entity_key=entity_key,
         ordinal=Decimal(str(ordinal)), source_sequence=source_sequence,
-        source_row_id=str((body.get("source_ref") or {}).get("source_row_id") or event_id),
-        payload=payload, source_ref={**(body.get("source_ref") or {}), **({"event_time": event_time.isoformat(), "time_zone": str(event_time.tzinfo)} if replay.time_kind == "event_time" else {})}, payload_hash=payload_hash, status="queued",
+        source_row_id=source_row_id,
+        payload=payload, source_ref=source_ref, payload_hash=payload_hash,
+        payload_hash_version=TEMPORAL_EVENT_HASH_VERSION, status="queued",
     )
     db.add(event)
     replay.total_events = int(replay.total_events or 0) + 1
@@ -1487,8 +2853,9 @@ def _sql_stream_graph(
     if replay.source_id != FACTORYNET_SOURCE_ID:
         facts = db.query(TemporalFact).filter(TemporalFact.replay_id == replay.id).all()
         if at is not None:
-            facts = [fact for fact in facts if float(fact.valid_from_ordinal) <= at
-                     and (fact.valid_to_ordinal is None or float(fact.valid_to_ordinal) > at)]
+            point = Decimal(str(at))
+            facts = [fact for fact in facts if fact.valid_from_ordinal <= point
+                     and (fact.valid_to_ordinal is None or fact.valid_to_ordinal > point)]
         elif relation_state == "current":
             facts = [fact for fact in facts if fact.status == "active"]
         if episode_id:
@@ -1502,15 +2869,57 @@ def _sql_stream_graph(
                 "entity_type": (replay.config or {}).get("mapping", {}).get("entity_type"),
                 "labels": ["Instance"], "properties": {}, "node_kind": "instance"})
             if isinstance(fact.object_value, dict):
-                node["properties"][fact.predicate] = fact.object_value.get("value")
+                if fact.state_key == "__deleted__":
+                    node["properties"]["_deleted"] = bool(fact.object_value.get("value"))
+                else:
+                    node["properties"][fact.predicate] = fact.object_value.get("value")
         nodes = list(by_entity.values())
+        if relation_state == "current":
+            nodes = [node for node in nodes if not node["properties"].get("_deleted", False)]
         if entity_type:
             nodes = [node for node in nodes if node["entity_type"] == entity_type]
         total = len(nodes)
         page = nodes[offset:offset + limit]
+        visible_node_ids = {str(node["id"]) for node in nodes}
+        page_node_ids = {str(node["id"]) for node in page}
+        link_resource_by_state_key = {
+            f"link:{spec['source_field']}": spec.get("semantic_resource_id") or spec.get("link_type_id")
+            for spec in _generic_link_specs(dict((replay.config or {}).get("mapping") or {}))
+        }
+        all_edges = []
+        for fact in sorted(facts, key=lambda item: (item.valid_from_ordinal, item.id)):
+            if not fact.object_id or fact.subject_id not in visible_node_ids or fact.object_id not in visible_node_ids:
+                continue
+            edge_properties = {
+                "_fact_id": fact.id,
+                "_event_id": fact.source_event_id,
+                "evidence_ref_id": fact.evidence_ref_id,
+                "event_ordinal": float(fact.valid_from_ordinal),
+                "valid_from_ordinal": float(fact.valid_from_ordinal),
+                "valid_to_ordinal": float(fact.valid_to_ordinal) if fact.valid_to_ordinal is not None else None,
+                "_replay_id": replay.id,
+                "_graph_namespace": replay.graph_namespace,
+            }
+            semantic_resource_id = link_resource_by_state_key.get(fact.state_key)
+            if semantic_resource_id:
+                edge_properties["semantic_resource_id"] = semantic_resource_id
+            all_edges.append({
+                "id": fact.id,
+                "source": fact.subject_id,
+                "target": fact.object_id,
+                "type": fact.predicate,
+                "label": fact.predicate,
+                "properties": edge_properties,
+                "valid_from_ordinal": float(fact.valid_from_ordinal),
+                "valid_to_ordinal": float(fact.valid_to_ordinal) if fact.valid_to_ordinal is not None else None,
+                "edge_kind": "instance",
+            })
+        page_edges = [edge for edge in all_edges
+                      if str(edge["source"]) in page_node_ids and str(edge["target"]) in page_node_ids]
         return {"available": True, "graph_backend": "postgres-temporal-facts",
-                "graph_namespace": replay.graph_namespace, "nodes": page, "edges": [],
-                "total_instances": total, "total_edges": 0, "returned": len(page),
+                "graph_namespace": replay.graph_namespace, "nodes": page, "edges": page_edges,
+                "type_counts": dict(Counter(str(node.get("entity_type") or "Entity") for node in nodes)),
+                "total_instances": total, "total_edges": len(all_edges), "returned": len(page),
                 "offset": offset, "next_offset": offset + len(page) if offset + len(page) < total else None,
                 "sample_limit": limit, "relation_state": relation_state, "at": at, "mode": mode}
     events = db.query(TemporalStreamEvent).filter(
@@ -1523,6 +2932,23 @@ def _sql_stream_graph(
     ).all()
     if episode_id:
         events = [event for event in events if str(event.episode_id) == str(episode_id)]
+    observation_instance_ids = {
+        _factorynet_observation_instance_id(
+            replay.ontology_id,
+            event.episode_id,
+            event.source_row_id or event.source_sequence,
+        )
+        for event in events
+    }
+    materialized_observation_ids: set[str] = set()
+    observation_id_list = list(observation_instance_ids)
+    for start in range(0, len(observation_id_list), 1000):
+        chunk = observation_id_list[start:start + 1000]
+        materialized_observation_ids.update(
+            row_id for (row_id,) in db.query(EntityInstance.id)
+            .filter(EntityInstance.ontology_id == replay.ontology_id, EntityInstance.id.in_(chunk))
+            .all()
+        )
     facts_q = db.query(TemporalFact).filter(TemporalFact.replay_id == replay.id)
     if at is not None:
         facts_q = facts_q.filter(TemporalFact.valid_from_ordinal <= Decimal(str(at))).filter((TemporalFact.valid_to_ordinal.is_(None)) | (TemporalFact.valid_to_ordinal > Decimal(str(at))))
@@ -1554,8 +2980,13 @@ def _sql_stream_graph(
                 continue
             if mode == "cumulative" and ordinal > at:
                 continue
-        obs_id = f"FactoryNet:Observation:{event.episode_id}:{event.source_row_id or event.source_sequence}"
-        node_map.setdefault(obs_id, {"id": obs_id, "entity_type": "Observation", "labels": ["Instance"], "event_seq": event.source_sequence, "event_ordinal": ordinal, "properties": {**(event.payload or {}), "episode_id": event.episode_id, "source_row_id": event.source_row_id}, "node_kind": "instance"})
+        source_row_id = event.source_row_id or event.source_sequence
+        obs_id = f"FactoryNet:Observation:{event.episode_id}:{source_row_id}"
+        properties = {**(event.payload or {}), "episode_id": event.episode_id, "source_row_id": event.source_row_id}
+        object_ref_id = _factorynet_observation_instance_id(replay.ontology_id, event.episode_id, source_row_id)
+        if object_ref_id in materialized_observation_ids:
+            properties["object_ref_id"] = object_ref_id
+        node_map.setdefault(obs_id, {"id": obs_id, "entity_type": "Observation", "labels": ["Instance"], "event_seq": event.source_sequence, "event_ordinal": ordinal, "properties": properties, "node_kind": "instance"})
         ep_id = f"FactoryNet:Episode:{event.episode_id}"
         node_map.setdefault(ep_id, {"id": ep_id, "entity_type": "Episode", "labels": ["Instance"], "properties": {"episode_id": event.episode_id}, "node_kind": "instance"})
     edge_rows: list[dict[str, Any]] = []
@@ -1572,7 +3003,58 @@ def _sql_stream_graph(
     page = nodes[offset: offset + limit]
     ids = {node["id"] for node in page}
     edges = [edge for edge in edge_rows if edge["source"] in ids and edge["target"] in ids]
-    return {"available": True, "graph_backend": "postgres-temporal-facts", "graph_namespace": replay.graph_namespace, "nodes": page, "edges": edges, "total_instances": total, "total_edges": len(edge_rows), "returned": len(page), "offset": offset, "next_offset": offset + len(page) if offset + len(page) < total else None, "sample_limit": limit, "relation_state": relation_state, "at": at, "mode": mode}
+    return {"available": True, "graph_backend": "postgres-temporal-facts", "graph_namespace": replay.graph_namespace, "nodes": page, "edges": edges, "type_counts": dict(Counter(str(node.get("entity_type") or "Entity") for node in nodes)), "total_instances": total, "total_edges": len(edge_rows), "returned": len(page), "offset": offset, "next_offset": offset + len(page) if offset + len(page) < total else None, "sample_limit": limit, "relation_state": relation_state, "at": at, "mode": mode}
+
+
+def _attach_factorynet_object_refs(
+    db: Session,
+    replay: TemporalReplay,
+    graph_data: dict[str, Any],
+) -> dict[str, Any]:
+    """Enrich the rebuildable graph projection from authoritative Object rows."""
+    nodes = graph_data.get("nodes") or []
+    node_ref_ids: dict[int, str] = {}
+    for index, node in enumerate(nodes):
+        if str(node.get("entity_type") or "").lower() != "observation":
+            continue
+        props = node.get("properties") or {}
+        episode_id = props.get("episode_id")
+        source_row_id = props.get("source_row_id") or props.get("_source_row_index")
+        if episode_id is None or source_row_id is None:
+            prefix = "FactoryNet:Observation:"
+            node_id = str(node.get("id") or "")
+            if not node_id.startswith(prefix):
+                continue
+            identity = node_id[len(prefix):]
+            episode_id, separator, source_row_id = identity.rpartition(":")
+            if not separator or not episode_id:
+                continue
+        node_ref_ids[index] = _factorynet_observation_instance_id(
+            replay.ontology_id, str(episode_id), source_row_id
+        )
+    ref_ids = list(set(node_ref_ids.values()))
+    instances: dict[str, EntityInstance] = {}
+    for start in range(0, len(ref_ids), 1000):
+        chunk = ref_ids[start:start + 1000]
+        instances.update({
+            item.id: item
+            for item in db.query(EntityInstance).filter(
+                EntityInstance.ontology_id == replay.ontology_id,
+                EntityInstance.id.in_(chunk),
+            ).all()
+        })
+    for index, object_ref_id in node_ref_ids.items():
+        instance = instances.get(object_ref_id)
+        if instance is None:
+            continue
+        node = nodes[index]
+        props = dict(node.get("properties") or {})
+        props["object_ref_id"] = instance.id
+        if instance.object_type_resource_id:
+            props["object_type_resource_id"] = instance.object_type_resource_id
+        node["properties"] = props
+    graph_data["nodes"] = nodes
+    return graph_data
 
 
 def stream_graph(
@@ -1595,11 +3077,36 @@ def stream_graph(
                                     mode=mode, relation_state=relation_state,
                                     entity_type=entity_type, episode_id=episode_id),
                 "run_id": replay.id, "ontology_id": replay.ontology_id}
+    latest_rebuild = db.query(TemporalGraphProjectionJob).filter(
+        TemporalGraphProjectionJob.replay_id == replay.id,
+    ).order_by(TemporalGraphProjectionJob.created_at.desc()).first()
+    if latest_rebuild and latest_rebuild.status != "completed":
+        return {
+            **_sql_stream_graph(
+                db,
+                replay,
+                limit=limit,
+                offset=offset,
+                at=at,
+                mode=mode,
+                relation_state=relation_state,
+                entity_type=entity_type,
+                episode_id=episode_id,
+            ),
+            "run_id": replay.id,
+            "ontology_id": replay.ontology_id,
+            "graph_namespace": replay.graph_namespace,
+            "at": at,
+            "mode": mode,
+            "graph_recovered": True,
+            "graph_projection_rebuild_status": latest_rebuild.status,
+        }
     graph = FalkorDBService()
     if getattr(graph, "available", False):
         try:
             data = graph.get_graph_data(replay.ontology_id, limit=limit, offset=offset, entity_type=entity_type, episode_id=episode_id, seq_to=None, relation_state=relation_state, replay_id=replay.id, at=at, graph_namespace=replay.graph_namespace, mode=mode)
             if data.get("nodes") or not int(replay.committed_events or 0):
+                data = _attach_factorynet_object_refs(db, replay, data)
                 return {**data, "run_id": replay.id, "ontology_id": replay.ontology_id, "graph_namespace": replay.graph_namespace, "at": at, "mode": mode}
             # FalkorDB is a projection, not the source of truth.  A restart
             # or a lost graph volume can leave it empty while PostgreSQL still
@@ -1627,6 +3134,7 @@ def stream_graph(
         except TypeError:
             data = graph.get_graph_data(replay.ontology_id, limit=limit, offset=offset, entity_type=entity_type, episode_id=episode_id, relation_state=relation_state, replay_id=replay.id, at=at)
             if data.get("nodes") or not int(replay.committed_events or 0):
+                data = _attach_factorynet_object_refs(db, replay, data)
                 return {**data, "run_id": replay.id, "ontology_id": replay.ontology_id, "graph_namespace": replay.graph_namespace, "at": at, "mode": mode}
             return {
                 **_sql_stream_graph(
@@ -1755,19 +3263,26 @@ def _validate_publish(db: Session, replay: TemporalReplay) -> list[str]:
 
 
 def publish_stream_run(db: Session, replay: TemporalReplay, *, created_by: str | None = None) -> dict[str, Any]:
+    locked_replay = db.query(TemporalReplay).filter(
+        TemporalReplay.id == replay.id,
+    ).populate_existing().with_for_update().first()
+    if locked_replay is None:
+        raise StreamError("动态运行不存在", "RUN_NOT_FOUND")
+    replay = locked_replay
     if replay.status == "published" and replay.published_snapshot_id:
         snapshot = db.query(DataModelSnapshot).filter(DataModelSnapshot.id == replay.published_snapshot_id).first()
         return {"run": serialize_stream(replay, db=db), "snapshot": _serialize_snapshot(snapshot) if snapshot else None, "already_published": True}
     if replay.status != "completed":
         raise StreamError("只有全部事件处理完成后才能发布快照", "RUN_NOT_COMPLETED")
     committed = db.query(TemporalStreamEvent).filter(TemporalStreamEvent.replay_id == replay.id, TemporalStreamEvent.status == "committed").count()
-    if committed != int(replay.total_events or 0):
+    if committed != int(replay.total_events or 0) or committed != int(replay.committed_events or 0):
         raise StreamError("仍有事件未提交，不能发布", "EVENTS_INCOMPLETE", committed=committed, total=replay.total_events)
     project = db.query(OntologyProject).filter(OntologyProject.id == replay.ontology_id).first()
     if not project:
         raise StreamError("本体不存在", "ONTOLOGY_NOT_FOUND")
-    if replay.schema_revision_id and project.current_revision_id and str(replay.schema_revision_id) != str(project.current_revision_id):
+    if replay.schema_revision_id != project.current_revision_id:
         raise StreamError("运行期间本体结构已变化，请基于新修订重新验证", "SCHEMA_REVISION_CONFLICT", run_revision_id=replay.schema_revision_id, current_revision_id=project.current_revision_id)
+    expected_snapshot_id = replay.base_snapshot_id
     validation_problems = _validate_publish(db, replay)
     if validation_problems:
         code = "CURRENT_STATE_CONFLICT" if any("当前状态" in item for item in validation_problems) else "STREAM_VALIDATION_FAILED"
@@ -1778,8 +3293,25 @@ def publish_stream_run(db: Session, replay: TemporalReplay, *, created_by: str |
         TemporalFact.predicate.asc(),
         TemporalFact.object_id.asc(),
         TemporalFact.state_key.asc(),
+        TemporalFact.id.asc(),
     ).all()
     through = _float_or_none(replay.watermark_ordinal)
+    latest_event = db.query(TemporalStreamEvent).filter(
+        TemporalStreamEvent.replay_id == replay.id,
+        TemporalStreamEvent.status == "committed",
+    ).order_by(
+        TemporalStreamEvent.ordinal.desc(),
+        TemporalStreamEvent.source_sequence.desc(),
+        TemporalStreamEvent.id.desc(),
+    ).first()
+    if committed and (
+        latest_event is None
+        or replay.watermark_ordinal is None
+        or replay.watermark_sequence is None
+        or Decimal(str(latest_event.ordinal)) != Decimal(str(replay.watermark_ordinal))
+        or int(latest_event.source_sequence) != int(replay.watermark_sequence)
+    ):
+        raise StreamError("回放 watermark 与最后一条已提交事件不一致", "EVENT_WATERMARK_MISMATCH")
     graph = stream_graph(db, replay, limit=MAX_GRAPH_NODES, offset=0, at=None, relation_state="all")
     node_count = int(graph.get("total_instances") or len(graph.get("nodes") or []))
     edge_count = int(graph.get("total_edges") or len(graph.get("edges") or []))
@@ -1790,41 +3322,96 @@ def publish_stream_run(db: Session, replay: TemporalReplay, *, created_by: str |
     # same hash while still keeping both projections isolated at runtime.
     ordered_events = db.query(TemporalStreamEvent).filter(
         TemporalStreamEvent.replay_id == replay.id,
-    ).order_by(TemporalStreamEvent.source_sequence.asc()).all()
-    event_digest = [
-        {
-            "episode_id": event.episode_id,
-            "entity_key": event.entity_key,
-            "ordinal": str(event.ordinal),
-            "source_sequence": event.source_sequence,
-            "payload_hash": event.payload_hash,
-        }
-        for event in ordered_events
-    ]
-    fact_digest = [
-        {
-            "subject_id": fact.subject_id,
-            "predicate": fact.predicate,
-            "object_id": fact.object_id,
-            "object_value": fact.object_value,
-            "state_key": fact.state_key,
-            "from": str(fact.valid_from_ordinal),
-            "to": str(fact.valid_to_ordinal) if fact.valid_to_ordinal is not None else None,
-            "status": fact.status,
-        }
-        for fact in facts
-    ]
-    digest_payload = {
-        "ontology_id": replay.ontology_id,
-        "schema_revision_id": replay.schema_revision_id,
-        "through": through,
-        "events": event_digest,
-        "facts": fact_digest,
-    }
-    snapshot = DataModelSnapshot(id=str(uuid.uuid4()), ontology_id=replay.ontology_id, schema_revision_id=replay.schema_revision_id, replay_id=replay.id, dataset_version_id=replay.dataset_version_id, graph_namespace=replay.graph_namespace or f"stream_{replay.id.replace('-', '')}", through_ordinal=Decimal(str(through)) if through is not None else None, event_count=committed, node_count=node_count, edge_count=edge_count, fact_count=len(facts), evidence_count=evidence_count, snapshot_hash=_hash(digest_payload), status="published", created_by=created_by)
+        TemporalStreamEvent.status == "committed",
+    ).order_by(
+        TemporalStreamEvent.ordinal.asc(),
+        TemporalStreamEvent.source_sequence.asc(),
+        TemporalStreamEvent.id.asc(),
+    ).all()
+    manifest = temporal_snapshot_manifest(
+        replay,
+        watermark_ordinal=replay.watermark_ordinal,
+        watermark_sequence=replay.watermark_sequence,
+        event_count=committed,
+        node_count=node_count,
+        edge_count=edge_count,
+        fact_count=len(facts),
+        evidence_count=evidence_count,
+    )
+    snapshot_hash = temporal_snapshot_content_digest(
+        replay, ordered_events, facts, through, manifest=manifest,
+    )
+    snapshot = DataModelSnapshot(
+        id=str(uuid.uuid4()),
+        ontology_id=replay.ontology_id,
+        schema_revision_id=replay.schema_revision_id,
+        replay_id=replay.id,
+        dataset_version_id=replay.dataset_version_id,
+        graph_namespace=replay.graph_namespace or f"stream_{replay.id.replace('-', '')}",
+        through_ordinal=Decimal(str(through)) if through is not None else None,
+        watermark_sequence=replay.watermark_sequence,
+        event_count=committed,
+        node_count=node_count,
+        edge_count=edge_count,
+        fact_count=len(facts),
+        evidence_count=evidence_count,
+        snapshot_hash=snapshot_hash,
+        snapshot_hash_version=2,
+        status="published",
+        created_by=created_by,
+    )
     db.add(snapshot)
     db.flush()
-    project.current_data_snapshot_id = snapshot.id
+
+    # The run pins the project snapshot that existed when the run was created.
+    # The conditional UPDATE is the atomic compare-and-swap: only one publisher
+    # based on that version can advance the project's current snapshot.
+    pointer_filter = (
+        OntologyProject.current_data_snapshot_id.is_(None)
+        if expected_snapshot_id is None
+        else OntologyProject.current_data_snapshot_id == expected_snapshot_id
+    )
+    project_update = db.query(OntologyProject).filter(
+        OntologyProject.id == replay.ontology_id,
+        pointer_filter,
+    )
+    revision_filter = (
+        OntologyProject.current_revision_id.is_(None)
+        if replay.schema_revision_id is None
+        else OntologyProject.current_revision_id == replay.schema_revision_id
+    )
+    project_update = project_update.filter(revision_filter)
+    switched = project_update.update(
+        {
+            OntologyProject.current_data_snapshot_id: snapshot.id,
+            OntologyProject.updated_at: _now(),
+        },
+        synchronize_session=False,
+    )
+    if switched != 1:
+        current_project = db.query(OntologyProject).filter(
+            OntologyProject.id == replay.ontology_id,
+        ).populate_existing().first()
+        if current_project is None:
+            db.rollback()
+            raise StreamError("本体不存在", "ONTOLOGY_NOT_FOUND")
+        if current_project.current_revision_id != replay.schema_revision_id:
+            current_revision_id = current_project.current_revision_id
+            db.rollback()
+            raise StreamError(
+                "发布期间本体结构已变化，请基于新修订重新运行",
+                "SCHEMA_REVISION_CONFLICT",
+                run_revision_id=replay.schema_revision_id,
+                current_revision_id=current_revision_id,
+            )
+        current_snapshot_id = current_project.current_data_snapshot_id
+        db.rollback()
+        raise StreamError(
+            "项目当前快照已更新；此运行基于旧版本，不能覆盖较新的快照",
+            "SNAPSHOT_STALE",
+            expected_base_snapshot_id=expected_snapshot_id,
+            current_snapshot_id=current_snapshot_id,
+        )
     replay.published_snapshot_id = snapshot.id
     replay.published_at = _now()
     replay.status = "published"
@@ -1852,5 +3439,5 @@ __all__ = [
     "StreamError", "STREAM_ACTIVE_STATUSES", "STREAM_TERMINAL_STATUSES", "create_stream_run",
     "process_one_event", "run_temporal_stream", "dispatch_stream", "update_stream_control",
     "ingest_push_event", "serialize_stream", "stream_graph", "stream_facts", "publish_stream_run",
-    "stream_snapshot",
+    "stream_snapshot", "temporal_snapshot_content_digest", "temporal_snapshot_manifest",
 ]
