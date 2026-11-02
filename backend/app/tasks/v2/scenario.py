@@ -32,6 +32,28 @@ def _commit_stage(db, stage, status, *, summary=None, error=None):
         if stage.started_at:
             stage.duration_ms = max(0, int((stage.completed_at - stage.started_at).total_seconds() * 1000))
 
+
+def _stop_run_for_inactive_scenario(db, run, started):
+    from app.models.v2.scenario import ScenarioResource, ScenarioRunStage
+    from app.services.v2.scenarios import scenario_is_expired
+
+    scenario = (db.query(ScenarioResource).populate_existing()
+                .filter_by(id=run.scenario_id).first())
+    if scenario and scenario.status == "active" and not scenario_is_expired(scenario):
+        return False
+    code = "scenario_expired" if scenario and scenario_is_expired(scenario) else "scenario_inactive"
+    error = {"code": code, "message": "Scenario is no longer available for execution."}
+    for stage in db.query(ScenarioRunStage).filter_by(run_id=run.id).all():
+        if stage.status in {"pending", "running"}:
+            _commit_stage(db, stage, "cancelled", error=error)
+    run.status = "failed"
+    run.current_stage = "retention"
+    run.error_json = error
+    run.completed_at = _now()
+    run.duration_ms = max(0, int((monotonic() - started) * 1000))
+    db.commit()
+    return True
+
 @contextmanager
 def _execution_lock(db, run_id):
     """Session advisory lock survives stage commits and releases on worker death."""
@@ -88,6 +110,8 @@ def _execute_run(run_id: str):
         run = db.get(ScenarioRun, run_id)
         if not run or run.status in {"completed", "failed", "cancelled"}:
             return
+        if _stop_run_for_inactive_scenario(db, run, started):
+            return
         if run.study_id:
             return _run_supplier_study(db, run, started)
         stages = db.query(ScenarioRunStage).filter_by(run_id=run.id).order_by(ScenarioRunStage.sequence).all()
@@ -98,6 +122,8 @@ def _execute_run(run_id: str):
         result = None
         for index, stage in enumerate(stages):
             db.refresh(run)
+            if _stop_run_for_inactive_scenario(db, run, started):
+                return
             if run.cancel_requested:
                 _commit_stage(db, stage, "cancelled", error={"code": "cancelled"})
                 run.status = "cancelled"; run.current_stage = "cancelled"; run.progress = int(index / len(stages) * 100)
@@ -186,6 +212,8 @@ def _run_supplier_study(db, run, started):
     logic_run_id = None
     for index, stage in enumerate(stages):
         db.refresh(run)
+        if _stop_run_for_inactive_scenario(db, run, started):
+            return
         if run.cancel_requested:
             _commit_stage(db, stage, "cancelled", error={"code": "cancelled"})
             run.status = "cancelled"; run.current_stage = "cancelled"

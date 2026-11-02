@@ -358,6 +358,9 @@ class ExecutionContext(StrictModel):
     projection_token: str | None = Field(default=None, max_length=500)
     scenario_id: str | None = Field(default=None, max_length=200)
     scenario_revision: int | None = Field(default=None, ge=0)
+    what_if_scenario_id: str | None = Field(default=None, max_length=200)
+    what_if_context_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    what_if_input_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
     def validate_revision(self) -> "ExecutionContext":
@@ -365,6 +368,17 @@ class ExecutionContext(StrictModel):
             raise ValueError("pinned revision_policy requires revision_id")
         if self.scenario_id and self.scenario_revision is None:
             raise ValueError("scenario context requires scenario_revision")
+        if self.what_if_scenario_id:
+            if not self.what_if_context_digest or not self.what_if_input_digest:
+                raise ValueError("What-if context requires its baseline and input digests")
+            if self.scenario_id or self.data_view_id:
+                raise ValueError("What-if context cannot be combined with a ScenarioResource or data view")
+            if self.consistency != "snapshot":
+                raise ValueError("What-if context requires snapshot consistency")
+            if self.revision_policy != "pinned" or not self.revision_id:
+                raise ValueError("What-if context requires a pinned ontology revision")
+        elif self.what_if_context_digest or self.what_if_input_digest:
+            raise ValueError("What-if digests require a What-if scenario id")
         return self
 
 

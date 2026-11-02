@@ -17,7 +17,18 @@ from app.services.v2.object_query.core import FalkorReadAdapter
 from app.services.v2.object_query.normalize import stable_hash
 from app.services.v2.object_query.authorization import require_ontology_access
 from app.services.v2.object_query.errors import ObjectQueryError
-from app.services.v2.scenarios import ScenarioService
+from app.services.v2.scenarios import ScenarioError, ScenarioService
+from app.services.v2.action_authorization import authorize_action_snapshot
+from app.services.v2.action_runtime import (
+    ActionRequest,
+    compile_with_authorization,
+    create_action_run_record,
+    acquire_initial_scenario_action_run_claim,
+    claim_idempotent_scenario_action_run,
+    fail_scenario_action_run_claim,
+    renew_scenario_action_run_claim,
+    scenario_action_run_claim_manifest,
+)
 from app.services.v2.supplier_action import compile_supplier_action
 from app.services.v2.supplier_resilience import WOOD, validate_profile
 from app.tasks.v2.scenario import STAGES, run_scenario
@@ -57,11 +68,15 @@ class ArchiveCase(StrictBody):
     etag: int
 
 
-class Submit(StrictBody):
+class PreviewAction(StrictBody):
     etag: int
     client_request_id: str = Field(min_length=1, max_length=200)
     action_key: str = "replace_wood_supplier_v1"
     parameters: dict
+
+
+class Submit(PreviewAction):
+    preview_digest: str = Field(min_length=64, max_length=64)
 
 
 class RunCommand(StrictBody):
@@ -114,6 +129,81 @@ def _compatibility(study, view):
                         "time": study.scenario_time, "scope": study.scope_hash,
                         "smoothing": study.smoothing_minutes, "model": (study.model_key, study.model_version,
                         study.model_config_alias), "projection": study.parameter_projection})
+
+
+def _study_action_context(study):
+    return {
+        "study_etag": study.etag,
+        "model_key": study.model_key,
+        "model_version": study.model_version,
+        "source_manifest_digest": study.source_manifest_digest,
+        "scenario_time": study.scenario_time,
+        "scope_definition": study.scope_definition or {},
+        "scope_hash": study.scope_hash,
+        "smoothing_minutes": study.smoothing_minutes,
+        "run_baseline_sim": study.run_baseline_sim,
+        "parameter_projection": study.parameter_projection or [],
+    }
+
+
+def _compile_supplier_action_preview(db, user, ontology_id, study, case, scenario, *,
+                                     action_key, parameters, client_request_id, expected_case_etag):
+    """Compile the exact authorized edit batch used by preview and submit."""
+    if expected_case_etag != case.etag:
+        raise ScenarioError("etag_conflict", "情景已变化，请刷新后再预览", 409)
+    if action_key != "replace_wood_supplier_v1":
+        raise ScenarioError("unsupported_action", "不支持的操作", 422)
+    validate_profile(parameters)
+    raw_snapshot = _snapshot(db, scenario.base_view_id, ontology_id)
+    study_context = _study_action_context(study)
+    study_context_digest = stable_hash(study_context)
+    action_request = ActionRequest.from_invocations(
+        ontology_id=ontology_id,
+        compiler_scope=scenario.id,
+        source="supplier_study",
+        invocations=[{"action_type_id": action_key, "parameters": parameters}],
+        definition_versions={
+            f"scenario_study_case:{case.id}": case.definition_revision,
+            f"logic_asset:{study.model_key}": study.model_version,
+        },
+        execution_context={
+            "study_id": study.id,
+            "case_id": case.id,
+            "case_key": case.case_key,
+            "scenario_id": scenario.id,
+            "scenario_revision": scenario.head_revision,
+            "scenario_etag": scenario.etag,
+            "case_definition_revision": case.definition_revision,
+            **study_context,
+            "study_context_digest": study_context_digest,
+        },
+        expected_etag=expected_case_etag,
+        client_request_id=client_request_id,
+    )
+    command, permission_digest = compile_with_authorization(
+        db, ontology_id, user, raw_snapshot,
+        lambda snapshot: compile_supplier_action(
+            ontology_id,
+            scenario,
+            snapshot,
+            action_request.invocations[0].parameters,
+            action_request.client_request_id,
+        ),
+        edits_from=lambda result: result.edits,
+    )
+    preview_digest = stable_hash({
+        "action_request": action_request.manifest(),
+        "compiled_edits": [edit.model_dump(mode="json") for edit in command.edits],
+        "permission_digest": permission_digest,
+    })
+    return {
+        "action_request": action_request,
+        "command": command,
+        "permission_digest": permission_digest,
+        "preview_digest": preview_digest,
+        "study_context": study_context,
+        "study_context_digest": study_context_digest,
+    }
 
 
 def _latest_compatible_run(db, case, compatibility, run_id=None):
@@ -289,7 +379,22 @@ def rename_case(ontology_id: str, study_id: str, case_id: str, body: RenameCase,
                 db=Depends(get_db), user=Depends(get_current_user)):
     _require_editor(user)
     study = _study(db, user, ontology_id, study_id, write=True)
-    case = _case(db, study, case_id)
+    case_hint = _case(db, study, case_id)
+    study = db.query(ScenarioStudy).filter_by(
+        id=study.id, ontology_id=ontology_id,
+    ).populate_existing().with_for_update().first()
+    if study is None:
+        raise HTTPException(404, "未找到研究")
+    scenario = db.query(ScenarioResource).filter_by(
+        id=case_hint.scenario_id, ontology_id=ontology_id,
+    ).populate_existing().with_for_update().first()
+    if scenario is None:
+        raise HTTPException(404, "未找到情景")
+    case = db.query(ScenarioStudyCase).filter_by(
+        id=case_id, study_id=study.id,
+    ).populate_existing().with_for_update().first()
+    if case is None:
+        raise HTTPException(404, "未找到情景")
     if case.etag != body.etag:
         raise HTTPException(409, "情景已变化，请刷新后再重命名")
     name = body.name.strip()
@@ -300,7 +405,6 @@ def rename_case(ontology_id: str, study_id: str, case_id: str, body: RenameCase,
         raise HTTPException(409, "情景名称已存在")
     case.display_name = name
     case.etag += 1
-    scenario = db.get(ScenarioResource, case.scenario_id)
     scenario.name = name
     scenario.etag += 1
     scenario.updated_at = datetime.now(timezone.utc)
@@ -315,14 +419,28 @@ def archive_case(ontology_id: str, study_id: str, case_id: str, body: ArchiveCas
                  db=Depends(get_db), user=Depends(get_current_user)):
     _require_editor(user)
     study = _study(db, user, ontology_id, study_id, write=True)
-    case = _case(db, study, case_id)
-    if case.case_kind == "baseline" or db.get(ScenarioResource, case.scenario_id).protected_demo:
+    case_hint = _case(db, study, case_id)
+    study = db.query(ScenarioStudy).filter_by(
+        id=study.id, ontology_id=ontology_id,
+    ).populate_existing().with_for_update().first()
+    if study is None:
+        raise HTTPException(404, "未找到研究")
+    scenario = db.query(ScenarioResource).filter_by(
+        id=case_hint.scenario_id, ontology_id=ontology_id,
+    ).populate_existing().with_for_update().first()
+    if scenario is None:
+        raise HTTPException(404, "未找到情景")
+    case = db.query(ScenarioStudyCase).filter_by(
+        id=case_id, study_id=study.id,
+    ).populate_existing().with_for_update().first()
+    if case is None:
+        raise HTTPException(404, "未找到情景")
+    if case.case_kind == "baseline" or scenario.protected_demo:
         raise HTTPException(422, "准备好的演示情景不能归档")
     if case.etag != body.etag:
         raise HTTPException(409, "情景已变化，请刷新后再归档")
     if db.query(ScenarioRun).filter_by(case_id=case.id).filter(ScenarioRun.status.in_(["queued", "running"])).first():
         raise HTTPException(409, "请等待当前运行完成")
-    scenario = db.get(ScenarioResource, case.scenario_id)
     scenario.status = "archived"
     scenario.etag += 1
     scenario.updated_at = datetime.now(timezone.utc)
@@ -337,25 +455,43 @@ def case_graph(ontology_id: str, study_id: str, case_id: str,
                run_id: str | None = Query(default=None),
                context_token: str | None = Query(default=None),
                db=Depends(get_db), user=Depends(get_current_user)):
-    study = _study(db, user, ontology_id, study_id)
-    case = _case(db, study, case_id)
-    compatibility = _compatibility(study, db.get(QueryDataView, study.base_view_id))
-    context = _context_ref(db, study, case, compatibility, run_id)
-    if context_token and context_token != context["context_token"]:
-        raise HTTPException(409, "情景上下文已过期，请刷新研究")
-    if context["selection_reason"] == "inconsistent_result_view":
-        raise HTTPException(409, "运行结果视图来源不一致")
-    view_id = context["selected_result_view_id"] or context["revision_view_id"]
-    snapshot = _snapshot(db, view_id, ontology_id)
-    kinds = {"Supplier", "SupplyOption", "Item", "Demand", "Operation", "MaterialRequirement", "Inventory", "DemandImpact"}
-    nodes = [{"id": identity[1], "type": identity[0], "name": props.get("name", identity[1]),
-              "properties": props} for identity, props in snapshot.objects.items() if identity[0] in kinds]
-    ids = {node["id"] for node in nodes}
-    edges = [{"source": source[1], "target": target[1], "type": relation}
-             for source, relation, target in snapshot.edges if source[1] in ids and target[1] in ids]
-    return {"context": {**context, "view_id": view_id,
-                         "read_layer": "result" if context["selected_result_view_id"] else "revision"},
-            "nodes": nodes, "edges": edges, "truncated": False}
+    try:
+        study = _study(db, user, ontology_id, study_id)
+        case = _case(db, study, case_id)
+        compatibility = _compatibility(study, db.get(QueryDataView, study.base_view_id))
+        context = _context_ref(db, study, case, compatibility, run_id)
+        if context_token and context_token != context["context_token"]:
+            raise HTTPException(409, "情景上下文已过期，请刷新研究")
+        if context["selection_reason"] == "inconsistent_result_view":
+            raise HTTPException(409, "运行结果视图来源不一致")
+        view_id = context["selected_result_view_id"] or context["revision_view_id"]
+        snapshot, _ = authorize_action_snapshot(db, ontology_id, user,
+                                                _snapshot(db, view_id, ontology_id))
+        kinds = {"Supplier", "SupplyOption", "Item", "Demand", "Operation", "MaterialRequirement", "Inventory", "DemandImpact"}
+        nodes = [{"id": identity[1], "type": identity[0], "name": props.get("name", identity[1]),
+                  "properties": props} for identity, props in snapshot.objects.items() if identity[0] in kinds]
+        ids = {node["id"] for node in nodes}
+        edges = [{"source": source[1], "target": target[1], "type": relation}
+                 for source, relation, target in snapshot.edges if source[1] in ids and target[1] in ids]
+        return {"context": {**context, "view_id": view_id,
+                             "read_layer": "result" if context["selected_result_view_id"] else "revision"},
+                "nodes": nodes, "edges": edges, "truncated": False}
+    except ScenarioError as exc:
+        raise HTTPException(exc.status, detail={"code": exc.code, "message": exc.message}) from exc
+    except ObjectQueryError as exc:
+        error_status = {
+            "not_found": 404,
+            "forbidden": 403,
+            "version_conflict": 409,
+            "expired_reference": 410,
+            "stale_reference": 409,
+            "metadata_mismatch": 409,
+            "graph_unavailable": 503,
+            "query_timeout": 504,
+            "snapshot_unavailable": 409,
+            "view_build_failed": 422,
+        }.get(exc.code, 422)
+        raise HTTPException(error_status, detail=exc.as_dict()) from exc
 
 
 @router.patch("/{ontology_id}/scenario-studies/{study_id}/options")
@@ -388,42 +524,421 @@ def update_options(ontology_id: str, study_id: str, body: Options, db=Depends(ge
     return _view(db, study)
 
 
-@router.patch("/{ontology_id}/scenario-studies/{study_id}/cases/{case_id}")
-def submit_action(ontology_id: str, study_id: str, case_id: str, body: Submit,
-                  db=Depends(get_db), user=Depends(get_current_user)):
+@router.post("/{ontology_id}/scenario-studies/{study_id}/cases/{case_id}:preview-action")
+def preview_action(ontology_id: str, study_id: str, case_id: str, body: PreviewAction,
+                   db=Depends(get_db), user=Depends(get_current_user)):
     _require_editor(user)
     study = _study(db, user, ontology_id, study_id, write=True)
     case = _case(db, study, case_id)
     if case.case_kind == "baseline":
         raise HTTPException(422, "基线方案没有操作")
-    prior = db.query(ScenarioChangeSet).filter_by(scenario_id=case.scenario_id,
-                                                   client_request_id=body.client_request_id).first()
-    if prior:
-        prior_profile = prior.ordered_edits[0].get("parameters", {}) if prior.ordered_edits else {}
-        if stable_hash(prior_profile) != stable_hash(body.parameters):
-            raise HTTPException(409, "操作请求编号已用于其他参数")
-        revision = db.get(ScenarioRevision, prior.validation_report.get("revision_id"))
-        return {"case": next(item for item in _view(db, study)["cases"] if item["id"] == case.id),
-                "revision": revision.revision, "changeset_id": revision.changeset_id}
-    if body.etag != case.etag:
-        raise HTTPException(409, "情景已变化，请刷新后再提交")
-    if body.action_key != "replace_wood_supplier_v1":
-        raise HTTPException(422, "不支持的操作")
     try:
-        validate_profile(body.parameters)
-        scenario = ScenarioService(db, ontology_id, user).get(case.scenario_id, write=True)
-        snapshot = _snapshot(db, scenario.base_view_id, ontology_id)
-        command = compile_supplier_action(ontology_id, scenario, snapshot, body.parameters, body.client_request_id)
-        revision = ScenarioService(db, ontology_id, user).revision(scenario, command)
+        service = ScenarioService(db, ontology_id, user)
+        scenario = service.get(case.scenario_id, write=True)
+        prepared = _compile_supplier_action_preview(
+            db, user, ontology_id, study, case, scenario,
+            action_key=body.action_key,
+            parameters=body.parameters,
+            client_request_id=body.client_request_id,
+            expected_case_etag=body.etag,
+        )
+        command = prepared["command"]
+        edits = [edit for edit in command.edits if edit.op != "invoke_action"]
+        created = [edit for edit in edits if edit.op == "create_object"]
+        disabled = [edit for edit in edits if edit.op == "set_property"
+                    and edit.property == "active" and edit.value is False]
+        links = [edit for edit in edits if edit.op == "add_link"]
+        return {
+            "valid": True,
+            "client_request_id": body.client_request_id,
+            "preview_digest": prepared["preview_digest"],
+            "permission_digest": prepared["permission_digest"],
+            "case_etag": case.etag,
+            "study_etag": study.etag,
+            "scenario_etag": scenario.etag,
+            "scenario_revision": scenario.head_revision,
+            "summary": {
+                "supplier": body.parameters["supplier"],
+                "affected_items": list(WOOD),
+                "created_objects": len(created),
+                "disabled_options": len(disabled),
+                "created_links": len(links),
+                "total_changes": len(edits),
+            },
+        }
+    except ScenarioError as exc:
+        db.rollback()
+        raise HTTPException(exc.status, detail={"code": exc.code, "message": exc.message}) from exc
     except ValueError as exc:
+        db.rollback()
         raise HTTPException(422, str(exc)) from exc
-    case.submitted_parameters = body.parameters
-    case.parameters_hash = stable_hash(body.parameters)
-    case.definition_revision += 1
-    case.etag += 1
-    db.commit()
+
+
+@router.patch("/{ontology_id}/scenario-studies/{study_id}/cases/{case_id}")
+def submit_action(ontology_id: str, study_id: str, case_id: str, body: Submit,
+                  db=Depends(get_db), user=Depends(get_current_user)):
+    runtime_action_run = None
+    execution_claim_token = None
+
+    def fail_current_claim(error_code: str):
+        if runtime_action_run is None or not execution_claim_token:
+            return
+        try:
+            fail_scenario_action_run_claim(
+                db,
+                run_id=runtime_action_run.id,
+                claim_token=execution_claim_token,
+                error=error_code,
+                actor_id=str(user.id),
+            )
+        except Exception:
+            db.rollback()
+
+    _require_editor(user)
+    study = _study(db, user, ontology_id, study_id, write=True)
+    case = _case(db, study, case_id)
+    if case.case_kind == "baseline":
+        raise HTTPException(422, "基线方案没有操作")
+    try:
+        service = ScenarioService(db, ontology_id, user)
+        scenario = service.get(case.scenario_id, write=True)
+        action_scope = f"scenario:{scenario.id}"
+        request_digest = stable_hash({
+            "ontology_id": ontology_id,
+            "study_id": study.id,
+            "case_id": case.id,
+            "action_key": body.action_key,
+            "parameters": body.parameters,
+            "expected_case_etag": body.etag,
+            "preview_digest": body.preview_digest,
+        })
+
+        def run_response(run, *, replayed):
+            after = run.after_snapshot or {}
+            revision_number = after.get("scenario_revision")
+            revision_row = db.query(ScenarioRevision).filter_by(
+                scenario_id=scenario.id,
+                revision=revision_number,
+                status="ready",
+            ).first() if revision_number is not None else None
+            if revision_row is None:
+                raise ScenarioError(
+                    "action_request_incomplete",
+                    "ActionRun 已完成但关联的 Scenario 修订记录不可读取。", 409)
+            return {
+                "case": next(item for item in _view(db, study)["cases"] if item["id"] == case.id),
+                "revision": revision_row.revision,
+                "changeset_id": revision_row.changeset_id,
+                "action_run_id": run.id,
+                "action_run_status": run.status,
+                "replayed": replayed,
+            }
+
+        existing_run, reclaimed_token, replayed = claim_idempotent_scenario_action_run(
+            db,
+            ontology_id=ontology_id,
+            actor_id=str(user.id),
+            scope=action_scope,
+            request_id=body.client_request_id,
+            request_digest=request_digest,
+            scenario_id=scenario.id,
+        )
+        if existing_run is not None:
+            if replayed:
+                return run_response(existing_run, replayed=True)
+            runtime_action_run = existing_run
+            execution_claim_token = reclaimed_token
+
+        prior = db.query(ScenarioChangeSet).filter_by(
+            scenario_id=scenario.id,
+            client_request_id=body.client_request_id,
+        ).first()
+        if prior:
+            prior_action = prior.ordered_edits[0] if prior.ordered_edits else {}
+            prior_profile = prior_action.get("parameters", {})
+            if (prior_action.get("action_key") != body.action_key
+                    or stable_hash(prior_profile) != stable_hash(body.parameters)):
+                raise ScenarioError(
+                    "idempotency_conflict", "操作请求编号已用于其他 Action 或参数", 409)
+            prior_report = prior.validation_report or {}
+            revision = db.get(ScenarioRevision, prior_report.get("revision_id"))
+            if revision is None:
+                raise ScenarioError(
+                    "request_incomplete", "已记录的请求缺少可重放的情景修订", 409)
+            return {
+                "case": next(item for item in _view(db, study)["cases"] if item["id"] == case.id),
+                "revision": revision.revision,
+                "changeset_id": revision.changeset_id,
+            }
+
+        prepared = _compile_supplier_action_preview(
+            db, user, ontology_id, study, case, scenario,
+            action_key=body.action_key,
+            parameters=body.parameters,
+            client_request_id=body.client_request_id,
+            expected_case_etag=body.etag,
+        )
+        action_request = prepared["action_request"]
+        command = prepared["command"]
+        permission_digest = prepared["permission_digest"]
+        preview_digest = prepared["preview_digest"]
+        study_context = prepared["study_context"]
+        study_context_digest = prepared["study_context_digest"]
+        if body.preview_digest != preview_digest:
+            raise ScenarioError(
+                "preview_stale", "操作内容、权限或运行上下文已变化，请重新预览后提交", 409)
+
+        # Always lock Study -> Scenario -> case. The same order is reacquired
+        # after the durable graph-build marker is committed.
+        def lock_action_context():
+            nonlocal study, scenario, case
+            locked_study = db.query(ScenarioStudy).filter_by(
+                id=study.id, ontology_id=ontology_id,
+            ).populate_existing().with_for_update().first()
+            if locked_study is None:
+                raise ScenarioError("study_not_found", "未找到研究", 404)
+            if _study_action_context(locked_study) != study_context:
+                raise ScenarioError(
+                    "study_changed", "研究范围、时间或模型配置已变化，请重新加载后提交", 409)
+            study = locked_study
+            locked_scenario = db.query(ScenarioResource).filter_by(
+                id=scenario.id, ontology_id=ontology_id,
+            ).populate_existing().with_for_update().first()
+            if locked_scenario is None:
+                raise ScenarioError("not_found", "Scenario not found", 404)
+            service.get(locked_scenario.id, write=True)
+            locked_case = db.query(ScenarioStudyCase).filter_by(
+                id=case.id, study_id=study.id,
+            ).populate_existing().with_for_update().first()
+            if locked_case is None:
+                raise ScenarioError("case_not_found", "未找到情景", 404)
+            scenario, case = locked_scenario, locked_case
+
+        lock_action_context()
+
+        # Recompile under the locked Study/Scenario/Case context so a policy,
+        # case, or source change while waiting for locks cannot use an older
+        # preview digest to claim the ActionRun key.
+        locked_prepared = _compile_supplier_action_preview(
+            db, user, ontology_id, study, case, scenario,
+            action_key=body.action_key,
+            parameters=body.parameters,
+            client_request_id=body.client_request_id,
+            expected_case_etag=body.etag,
+        )
+        if body.preview_digest != locked_prepared["preview_digest"]:
+            raise ScenarioError(
+                "preview_stale", "操作内容、权限或运行上下文已变化，请重新预览后提交", 409)
+        action_request = locked_prepared["action_request"]
+        command = locked_prepared["command"]
+        permission_digest = locked_prepared["permission_digest"]
+        preview_digest = locked_prepared["preview_digest"]
+        study_context = locked_prepared["study_context"]
+        study_context_digest = locked_prepared["study_context_digest"]
+
+        if runtime_action_run is None:
+            existing_run, reclaimed_token, replayed = claim_idempotent_scenario_action_run(
+                db,
+                ontology_id=ontology_id,
+                actor_id=str(user.id),
+                scope=action_scope,
+                request_id=body.client_request_id,
+                request_digest=request_digest,
+                scenario_id=scenario.id,
+            )
+            if existing_run is not None:
+                if replayed:
+                    return run_response(existing_run, replayed=True)
+                runtime_action_run = existing_run
+                execution_claim_token = reclaimed_token
+                # The new claim was committed while the lock set was held;
+                # reacquire Study -> Scenario -> case before recompiling.
+                lock_action_context()
+                locked_prepared = _compile_supplier_action_preview(
+                    db, user, ontology_id, study, case, scenario,
+                    action_key=body.action_key,
+                    parameters=body.parameters,
+                    client_request_id=body.client_request_id,
+                    expected_case_etag=body.etag,
+                )
+                if body.preview_digest != locked_prepared["preview_digest"]:
+                    raise ScenarioError(
+                        "preview_stale", "操作内容、权限或运行上下文已变化，请重新预览后提交", 409)
+                action_request = locked_prepared["action_request"]
+                command = locked_prepared["command"]
+                permission_digest = locked_prepared["permission_digest"]
+                preview_digest = locked_prepared["preview_digest"]
+                study_context = locked_prepared["study_context"]
+                study_context_digest = locked_prepared["study_context_digest"]
+
+        prior = db.query(ScenarioChangeSet).filter_by(
+            scenario_id=scenario.id,
+            client_request_id=body.client_request_id,
+        ).first()
+        if prior:
+            prior_action = prior.ordered_edits[0] if prior.ordered_edits else {}
+            if (prior_action.get("action_key") != body.action_key
+                    or stable_hash(prior_action.get("parameters", {})) != stable_hash(body.parameters)):
+                raise ScenarioError(
+                    "idempotency_conflict", "操作请求编号已用于其他 Action 或参数", 409)
+            prior_report = prior.validation_report or {}
+            revision = db.get(ScenarioRevision, prior_report.get("revision_id"))
+            if revision is None:
+                raise ScenarioError(
+                    "request_incomplete", "已记录的请求缺少可重放的情景修订", 409)
+            return {
+                "case": next(item for item in _view(db, study)["cases"] if item["id"] == case.id),
+                "revision": revision.revision,
+                "changeset_id": revision.changeset_id,
+            }
+        if body.etag != case.etag:
+            raise ScenarioError("etag_conflict", "情景已变化，请刷新后再提交", 409)
+        if command.expected_etag != scenario.etag:
+            raise ScenarioError("scenario_changed", "情景本体已变化，请重新加载后提交", 409)
+
+        command = command.model_copy(update={"permission_digest": permission_digest})
+        runtime_manifest = {
+            "action_input_hash": stable_hash({
+                "action_key": body.action_key,
+                "parameters": body.parameters,
+            }),
+            "action_request_digest": request_digest,
+            "expected_etag": body.etag,
+            "scenario_etag": command.expected_etag,
+            "study_etag": study_context["study_etag"],
+            "study_context_digest": study_context_digest,
+            "permission_digest": permission_digest,
+            "preview_digest": preview_digest,
+            "preview_mode": "compiled_preview",
+            "confirmation_mode": "human_confirmed",
+            "approval_mode": "not_required",
+            "typed_action_request": action_request.manifest(),
+        }
+        revision_state = {"study": study, "case": case}
+        expected_case_definition_revision = case.definition_revision
+
+        def before_scenario_relock():
+            locked_study = db.query(ScenarioStudy).filter_by(
+                id=study.id, ontology_id=ontology_id,
+            ).populate_existing().with_for_update().first()
+            if locked_study is None:
+                raise ScenarioError("study_not_found", "未找到研究", 404)
+            if _study_action_context(locked_study) != study_context:
+                raise ScenarioError(
+                    "study_changed", "研究范围、时间或模型配置已变化，请重新加载后提交", 409)
+            revision_state["study"] = locked_study
+
+        def after_scenario_relock(locked_scenario):
+            locked_case = db.query(ScenarioStudyCase).filter_by(
+                id=case.id, study_id=revision_state["study"].id,
+            ).populate_existing().with_for_update().first()
+            if locked_case is None:
+                raise ScenarioError("case_not_found", "未找到情景", 404)
+            if (
+                locked_case.etag != body.etag
+                or locked_case.definition_revision != expected_case_definition_revision
+            ):
+                raise ScenarioError("etag_conflict", "情景已变化，请刷新后再提交", 409)
+            rechecked = _compile_supplier_action_preview(
+                db, user, ontology_id, revision_state["study"], locked_case,
+                locked_scenario,
+                action_key=body.action_key,
+                parameters=body.parameters,
+                client_request_id=body.client_request_id,
+                expected_case_etag=body.etag,
+            )
+            if rechecked["preview_digest"] != preview_digest:
+                raise ScenarioError(
+                    "preview_stale", "操作内容、权限或运行上下文已变化，请重新预览后提交", 409)
+            revision_state["case"] = locked_case
+
+        def before_sql_commit():
+            finalized_case = revision_state["case"]
+            finalized_case.submitted_parameters = body.parameters
+            finalized_case.parameters_hash = stable_hash(body.parameters)
+            finalized_case.definition_revision += 1
+            finalized_case.etag += 1
+
+        if runtime_action_run is None:
+            runtime_action_run = create_action_run_record(
+                db=db,
+                # The wood-specific compiler is server-owned and has no
+                # OntologyActionType row; retain its identity in the manifest.
+                action_type_id=None,
+                ontology_id=ontology_id,
+                parameters={"invocations": action_request.compiler_payloads()},
+                execution_context={
+                    "scenario_id": scenario.id,
+                    "study_id": study.id,
+                    "case_id": case.id,
+                    "source": "supplier_study",
+                    "action_request": action_request.manifest(),
+                    "preview_mode": "compiled_preview",
+                    "confirmation_mode": "human_confirmed",
+                    "approval_mode": "not_required",
+                },
+                initial_status="running",
+                requester_id=str(user.id),
+                executor_id=str(user.id),
+                client_request_id=body.client_request_id,
+                idempotency_scope=action_scope,
+                input_digest=request_digest,
+                preview_digest=preview_digest,
+                permission_digest=permission_digest,
+                expected_etag=str(body.etag),
+            )
+            db.add(runtime_action_run)
+            db.flush()
+            execution_claim_token = acquire_initial_scenario_action_run_claim(
+                db,
+                runtime_action_run,
+                actor_id=str(user.id),
+            )
+
+        if not execution_claim_token:
+            raise ScenarioError(
+                "action_claim_missing", "Scenario Action 缺少有效执行租约", 409,
+            )
+        runtime_action_run = renew_scenario_action_run_claim(
+            db,
+            run_id=runtime_action_run.id,
+            claim_token=execution_claim_token,
+            actor_id=str(user.id),
+        )
+        db.commit()
+        db.refresh(runtime_action_run)
+        runtime_manifest.update(scenario_action_run_claim_manifest(
+            runtime_action_run,
+            execution_claim_token,
+            request_digest,
+        ))
+        revision = service.revision(
+            scenario,
+            command,
+            runtime_manifest=runtime_manifest,
+            runtime_action_run=runtime_action_run,
+            before_scenario_relock=before_scenario_relock,
+            after_scenario_relock=after_scenario_relock,
+            before_sql_commit=before_sql_commit,
+        )
+        study, case = revision_state["study"], revision_state["case"]
+    except ScenarioError as exc:
+        db.rollback()
+        fail_current_claim(exc.code)
+        raise HTTPException(exc.status, detail={"code": exc.code, "message": exc.message}) from exc
+    except ValueError as exc:
+        db.rollback()
+        fail_current_claim("validation_failed")
+        raise HTTPException(422, str(exc)) from exc
+    except Exception as exc:
+        db.rollback()
+        fail_current_claim("action_submission_failed")
+        raise
     return {"case": next(item for item in _view(db, study)["cases"] if item["id"] == case.id),
-            "revision": revision.revision, "changeset_id": revision.changeset_id}
+            "revision": revision.revision, "changeset_id": revision.changeset_id,
+            "action_run_id": runtime_action_run.id,
+            "action_run_status": runtime_action_run.status,
+            "replayed": False}
 
 
 def _enqueue(db, user, study, case, compatibility, dependency=None, request_id=None, retry_of=None):

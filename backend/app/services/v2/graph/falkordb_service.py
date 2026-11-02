@@ -59,14 +59,18 @@ class FalkorDBService:
         if not self.available or not self._db:
             return False
         try:
-            names = self._db.connection.execute_command("GRAPH.LIST") or []
-            normalized = {
-                item.decode("utf-8") if isinstance(item, bytes) else str(item)
-                for item in names
-            }
-            return graph_name_for_ontology(ontology_id, namespace) in normalized
+            return graph_name_for_ontology(ontology_id, namespace) in self._graph_names()
         except Exception:
             return False
+
+    def _graph_names(self) -> set[str]:
+        if not self.available or not self._db:
+            raise RuntimeError("FalkorDB unavailable")
+        names = self._db.connection.execute_command("GRAPH.LIST") or []
+        return {
+            item.decode("utf-8") if isinstance(item, bytes) else str(item)
+            for item in names
+        }
 
     def projection_counts(self, ontology_id: str, namespace: str | None = None) -> dict[str, int] | None:
         """Read graph cardinalities for freshness/reconciliation checks."""
@@ -81,6 +85,41 @@ class FalkorDBService:
         except Exception:
             return None
 
+    def projection_content_records(
+        self,
+        ontology_id: str,
+        replay_id: str,
+        namespace: str,
+    ) -> dict[str, list[dict[str, Any]]] | None:
+        """Read a replay's stored nodes and fact edges for content-level audit."""
+        if not self.available:
+            return None
+        graph = self._graph(ontology_id, namespace)
+        nodes_result = graph.query(
+            "MATCH (n:Instance) RETURN n._instance_id, n._type, properties(n)"
+        )
+        edges_result = graph.query(
+            "MATCH (a:Instance)-[r]->(b:Instance) "
+            "RETURN r._fact_id, type(r), a._instance_id, b._instance_id, properties(r)"
+        )
+        nodes = []
+        for instance_id, entity_type, properties in nodes_result.result_set:
+            nodes.append({
+                "id": str(instance_id),
+                "entity_type": str(entity_type or "Entity"),
+                "properties": dict(properties or {}),
+            })
+        edges = []
+        for fact_id, relation_type, source_id, target_id, properties in edges_result.result_set:
+            edges.append({
+                "id": str(fact_id),
+                "type": str(relation_type),
+                "source": str(source_id),
+                "target": str(target_id),
+                "properties": dict(properties or {}),
+            })
+        return {"nodes": nodes, "edges": edges}
+
     def delete_graph(self, ontology_id: str, namespace: str | None = None) -> bool:
         """Delete the isolated graph for an ontology.
 
@@ -92,6 +131,11 @@ class FalkorDBService:
             return False
         name = graph_name_for_ontology(ontology_id, namespace)
         try:
+            # GRAPH.DELETE may report an error for a graph removed by an earlier
+            # attempt. Distinguish that case from an unavailable LIST command so
+            # a worker can safely finish its SQL audit after a process restart.
+            if name not in self._graph_names():
+                return True
             deleter = getattr(self._db, "delete_graph", None)
             if callable(deleter):
                 deleter(name)
@@ -104,9 +148,18 @@ class FalkorDBService:
                 # keys visible to GRAPH.LIST after GRAPH.DELETE. Remove only
                 # the exact per-graph keys so the demo inventory is clean.
                 connection.delete(name, f"telemetry{{{name}}}")
-            return True
+            if name in self._graph_names():
+                connection = getattr(self._db, "connection", None)
+                if connection is None:
+                    return False
+                connection.execute_command("GRAPH.DELETE", name)
+                connection.delete(name, f"telemetry{{{name}}}")
+            return name not in self._graph_names()
         except Exception:
-            return False
+            try:
+                return name not in self._graph_names()
+            except Exception:
+                return False
 
     def _graph(self, ontology_id: str, namespace: str | None = None):
         if not self._db:
@@ -207,6 +260,74 @@ class FalkorDBService:
             written += len(rows)
         return written
 
+    def apply_link_relation_facts(
+        self,
+        ontology_id: str,
+        *,
+        upserts: list[dict[str, Any]],
+        delete_fact_ids: list[str],
+    ) -> dict[str, int]:
+        """Apply durable Link Mapping facts, reporting matched endpoints exactly.
+
+        PostgreSQL stores the authoritative relation facts and outbox. Stable
+        ``_fact_id`` keys make this projection safe to retry after an unknown
+        worker outcome. Unlike ``upsert_relations``, this method counts actual
+        endpoint matches so a missing graph node cannot be reported as success.
+        """
+        if not self.available:
+            raise RuntimeError("FalkorDB unavailable")
+        graph = self._graph(ontology_id)
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for item in upserts:
+            fact_id = str(item.get("fact_id") or "")
+            source = str(item.get("source") or "")
+            target = str(item.get("target") or "")
+            if not fact_id or not source or not target:
+                raise ValueError("Link relation projection requires stable IDs")
+            raw_type = str(item.get("type") or "RELATED")
+            rel_type = self._safe_relation_type(raw_type)
+            properties = dict(item.get("properties") or {})
+            properties.update({
+                "_fact_id": fact_id,
+                "_ontology_id": str(ontology_id),
+                "_link_mapping_fact": True,
+            })
+            grouped.setdefault(rel_type, []).append({
+                "fact_id": fact_id,
+                "source": source,
+                "target": target,
+                "props": properties,
+            })
+
+        matched_upserts = 0
+        for rel_type, rows in grouped.items():
+            result = graph.query(
+                "UNWIND $rows AS row "
+                "MATCH (a:Instance {_instance_id: row.source}), (b:Instance {_instance_id: row.target}) "
+                f"MERGE (a)-[r:{rel_type} {{_fact_id: row.fact_id}}]->(b) "
+                "SET r += row.props RETURN count(r)",
+                params={"rows": rows},
+            )
+            if not result.result_set:
+                raise RuntimeError("FalkorDB did not return relationship projection counts")
+            matched_upserts += int(result.result_set[0][0] or 0)
+
+        deleted = 0
+        bounded_ids = [str(item) for item in delete_fact_ids if item]
+        for start in range(0, len(bounded_ids), 500):
+            batch = bounded_ids[start:start + 500]
+            result = graph.query(
+                "UNWIND $fact_ids AS fact_id "
+                "OPTIONAL MATCH ()-[r]->() WHERE r._fact_id = fact_id "
+                "WITH collect(r) AS relationships "
+                "UNWIND relationships AS rel DELETE rel RETURN count(rel)",
+                params={"fact_ids": batch},
+            )
+            if result.result_set:
+                deleted += int(result.result_set[0][0] or 0)
+
+        return {"upserted": matched_upserts, "deleted": deleted}
+
     def expire_relation_by_fact_id(
         self,
         ontology_id: str,
@@ -262,7 +383,12 @@ class FalkorDBService:
         graph = self._graph(ontology_id, graph_namespace)
         limit = max(1, min(int(limit), 1000))
         rel_pattern = f"[r:{self._safe_relation_type(relation_type)}]" if relation_type else "[r]"
-        clauses = ["a._instance_id IS NOT NULL", "b._instance_id IS NOT NULL"]
+        clauses = [
+            "a._instance_id IS NOT NULL",
+            "b._instance_id IS NOT NULL",
+            "(a._source_deleted IS NULL OR a._source_deleted = false)",
+            "(b._source_deleted IS NULL OR b._source_deleted = false)",
+        ]
         params: dict[str, Any] = {"limit": limit}
         if subject_id:
             clauses.append("a._instance_id = $subject_id")
@@ -360,7 +486,10 @@ class FalkorDBService:
         limit = max(1, min(int(limit), 500))
         offset = max(0, int(offset))
         graph = self._graph(ontology_id, graph_namespace)
-        clauses = ["n._instance_id IS NOT NULL"]
+        clauses = [
+            "n._instance_id IS NOT NULL",
+            "(n._source_deleted IS NULL OR n._source_deleted = false)",
+        ]
         params: dict[str, Any] = {"limit": limit}
         if entity_type:
             clauses.append("n._type = $entity_type")
@@ -399,7 +528,12 @@ class FalkorDBService:
 
         edges: list[dict[str, Any]] = []
         if ids:
-            rel_where = ["source._instance_id IN $ids", "target._instance_id IN $ids"]
+            rel_where = [
+                "source._instance_id IN $ids",
+                "target._instance_id IN $ids",
+                "(source._source_deleted IS NULL OR source._source_deleted = false)",
+                "(target._source_deleted IS NULL OR target._source_deleted = false)",
+            ]
             rel_params: dict[str, Any] = {"ids": ids}
             if replay_id:
                 rel_where.append("relation._replay_id = $replay_id")
@@ -439,7 +573,10 @@ class FalkorDBService:
                     "valid_to_ordinal": props.get("valid_to_ordinal"),
                     "edge_kind": "instance",
                 })
-        total_clauses = ["n._instance_id IS NOT NULL"]
+        total_clauses = [
+            "n._instance_id IS NOT NULL",
+            "(n._source_deleted IS NULL OR n._source_deleted = false)",
+        ]
         total_params: dict[str, Any] = {}
         if entity_type:
             total_clauses.append("n._type = $entity_type"); total_params["entity_type"] = entity_type
@@ -459,7 +596,12 @@ class FalkorDBService:
                 total_params["window_at"] = float(at)
         total = graph.query(f"MATCH (n) WHERE {' AND '.join(total_clauses)} RETURN count(n)", params=total_params)
         total_instances = int(total.result_set[0][0]) if total.result_set else 0
-        edge_clauses = ["a._instance_id IS NOT NULL", "b._instance_id IS NOT NULL"]
+        edge_clauses = [
+            "a._instance_id IS NOT NULL",
+            "b._instance_id IS NOT NULL",
+            "(a._source_deleted IS NULL OR a._source_deleted = false)",
+            "(b._source_deleted IS NULL OR b._source_deleted = false)",
+        ]
         edge_params = dict(total_params)
         if entity_type:
             edge_clauses.extend(["a._type = $entity_type", "b._type = $entity_type"])
@@ -541,10 +683,11 @@ class FalkorDBService:
         *,
         target_id: str | None = None,
         episode_id: str | None = None,
-        seq_to: int | None = None,
+        seq_to: float | None = None,
         mode: str = "cumulative",
         hops: int = 2,
         limit: int = 500,
+        graph_namespace: str | None = None,
     ) -> dict[str, Any]:
         """Return a bounded, temporal-aware neighborhood around one instance.
 
@@ -555,7 +698,7 @@ class FalkorDBService:
         """
         if not self.available:
             return {"available": False, "nodes": [], "edges": []}
-        graph = self._graph(ontology_id)
+        graph = self._graph(ontology_id, graph_namespace)
         hops = max(0, min(int(hops), 2))
         limit = max(1, min(int(limit), 500))
 
@@ -564,17 +707,42 @@ class FalkorDBService:
             # _node removes internal properties; the graph query below keeps
             # only fields needed for filtering in a private side map.
             node_episode = props.get("episode_id")
-            node_seq = node.get("event_seq")
+            node_seq = node.get("event_ordinal")
+            if node_seq is None:
+                node_seq = node.get("event_seq")
             if episode_id and node_episode not in (None, episode_id):
                 return False
             if node_seq is not None and seq_to is not None:
                 try:
-                    seq = int(float(node_seq))
+                    seq = float(node_seq)
+                    point = float(seq_to)
                 except (TypeError, ValueError):
                     return False
                 if mode == "window":
-                    return seq == int(seq_to)
-                return seq <= int(seq_to)
+                    return abs(seq - point) <= 1e-9
+                return seq <= point
+            return True
+
+        def allowed_relation(properties: dict[str, Any]) -> bool:
+            if seq_to is None:
+                return True
+            try:
+                point = float(seq_to)
+                event_ordinal = properties.get("event_ordinal")
+                valid_from = properties.get("valid_from_ordinal")
+                valid_to = properties.get("valid_to_ordinal")
+                if valid_from is not None and point < float(valid_from):
+                    return False
+                if valid_to is not None and point >= float(valid_to):
+                    return False
+                if event_ordinal is not None:
+                    event_point = float(event_ordinal)
+                    if mode == "window" and abs(event_point - point) > 1e-9:
+                        return False
+                    if mode != "window" and event_point > point:
+                        return False
+            except (TypeError, ValueError):
+                return False
             return True
 
         target_row = None
@@ -632,6 +800,8 @@ class FalkorDBService:
                 if a_id not in nodes_by_id or b_id not in nodes_by_id:
                     continue
                 relation_props = dict(getattr(relation, "properties", {}) or {})
+                if not allowed_relation(relation_props):
+                    continue
                 edge_id = f"{a_id}:{relation_type}:{b_id}:{relation_props.get('valid_from', '')}"
                 edges_by_id[edge_id] = {"id": edge_id, "source": a_id, "target": b_id, "type": str(relation_type), "label": str(relation_type), "properties": relation_props, "edge_kind": "instance"}
                 if len(edges_by_id) >= limit * 4:
@@ -639,7 +809,7 @@ class FalkorDBService:
             frontier = next_frontier
         # Always return the selected target first, which makes the UI and a
         # copied scenario stable across FalkorDB result-order differences.
-        return {"available": True, "target_instance_id": str(target["id"]), "nodes": [nodes_by_id[str(target["id"])] ] + [node for node_id, node in nodes_by_id.items() if node_id != str(target["id"])][: max(0, limit - 1)], "edges": list(edges_by_id.values())[: limit * 4], "hops": hops, "episode_id": episode_id, "at": seq_to, "mode": mode}
+        return {"available": True, "target_instance_id": str(target["id"]), "nodes": [nodes_by_id[str(target["id"])] ] + [node for node_id, node in nodes_by_id.items() if node_id != str(target["id"])][: max(0, limit - 1)], "edges": list(edges_by_id.values())[: limit * 4], "hops": hops, "episode_id": episode_id, "at": seq_to, "mode": mode, "graph_namespace": graph_namespace, "replay_id": target_props.get("_replay_id"), "event_id": target_props.get("_event_id"), "event_ordinal": target_props.get("event_ordinal"), "object_ref_id": target_props.get("object_ref_id")}
 
     def get_instance_type_counts(
         self,

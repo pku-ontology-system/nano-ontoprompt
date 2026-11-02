@@ -4,10 +4,11 @@ import uuid
 from types import SimpleNamespace
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from typing import Optional
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from app.deps import get_current_user, get_db, require_admin, require_editor
 from app.models.user import User
 from app.models.v2.logic import OntologyLogicRule, OntologyStateMachine
@@ -15,12 +16,30 @@ from app.models.v2.action import OntologyActionType, OntologyActionRun
 from app.models.v2.decision_case import DecisionCase
 from app.schemas.v2.object_query import ExecutionContext
 from app.services.v2.action_context import ActionContextError, action_context_error, resolve_action_context
+from app.services.v2.action_authorization import authorize_action_snapshot, authorize_compiled_edits
+from app.services.v2.action_runtime import (
+    ActionRequest,
+    complete_action_run,
+    compile_action_definitions,
+    create_action_run_record,
+    fail_action_run,
+    fail_scenario_action_run_claim,
+    find_idempotent_action_run,
+    claim_idempotent_scenario_action_run,
+    record_action_run_claim_event,
+    renew_scenario_action_run_claim,
+    scenario_action_run_response,
+    transition_action_run,
+)
 from app.services.v2.scenario_actions import compile_actions, validate_definition
 from app.services.v2.decision_cases import CaseError, DecisionCaseService, digest
+from app.services.v2.object_query.normalize import stable_hash
 from app.services.v2.scenarios import ScenarioError, ScenarioService
 from app.models.v2.query_view import QueryDataView
 from app.services.v2.graph.falkordb_service import FalkorDBService
 from app.services.v2.object_query.core import FalkorReadAdapter
+from app.services.v2.object_query.data_views import require_ready
+from app.services.v2.object_query.errors import ObjectQueryError
 from app.schemas.v2.scenario import Edit, RevisionRequest, Target
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -62,6 +81,14 @@ class LogicReviewRequest(BaseModel):
 class LogicTestRequest(BaseModel):
     row: dict = {}
     parameters: dict = {}
+
+
+class ActionRevertRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    client_request_id: str = Field(min_length=1, max_length=120)
+    preview_digest: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+    reason: str = Field(min_length=1, max_length=4000)
 
 
 @router.get("/{ontology_id}/logic")
@@ -268,7 +295,8 @@ class ActionRunRequest(BaseModel):
     parameters: dict = {}
     context: Optional[ExecutionContext] = None
     expected_etag: Optional[int | str] = None
-    client_request_id: Optional[str] = None
+    client_request_id: Optional[str] = Field(default=None, max_length=120)
+    preview_digest: Optional[str] = Field(default=None, min_length=64, max_length=64)
     evidence_refs: list[str | dict] = Field(default_factory=list)
     reason: str = ""
     case_context: dict = Field(default_factory=dict)
@@ -444,6 +472,18 @@ def publish_actions_v2(ontology_id: str, db: Session = Depends(get_db)):
 
 # ── Action Runs ─────────────────────────────────────────────────
 
+def _can_read_action_run_audit(run: OntologyActionRun, current_user: User) -> bool:
+    """Let administrators and explicitly attributed run participants inspect audit."""
+    if current_user.role == "admin":
+        return True
+    principal_id = str(current_user.id)
+    return principal_id in {
+        str(actor_id)
+        for actor_id in (run.requested_by, run.reviewed_by, run.executed_by)
+        if actor_id is not None
+    }
+
+
 @router.get("/{ontology_id}/action-runs", dependencies=[Depends(require_action_ontology)])
 def list_action_runs(ontology_id: str, limit: int = 20, target_object_id: str | None = None,
                      db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -458,7 +498,7 @@ def list_action_runs(ontology_id: str, limit: int = 20, target_object_id: str | 
     service = DecisionCaseService(db, ontology_id, current_user) if db.get(OntologyProject, ontology_id) else None
     visible = []
     for run in runs:
-        if current_user.role != "admin" and run.executed_by != current_user.id:
+        if not _can_read_action_run_audit(run, current_user):
             continue
         if service and run.target_object_id:
             try:
@@ -469,81 +509,153 @@ def list_action_runs(ontology_id: str, limit: int = 20, target_object_id: str | 
         # reader's current field policy must not be bypassed by old Run JSON.
         operations = [{"op": item.get("op")}
                       for item in (run.side_effect_results or []) if isinstance(item, dict)]
+        parameters = run.parameters if isinstance(run.parameters, dict) else {}
         visible.append({"id": run.id, "action_type_id": run.action_type_id, "status": run.status,
                         "target_object_id": run.target_object_id, "error_code": "action_failed" if run.error else None,
                         "side_effect_results": operations, "decision_case_id": run.decision_case_id,
+                        "revert_of": parameters.get("revert_of"),
+                        "requested_by": run.requested_by, "reviewed_by": run.reviewed_by,
+                        "executed_by": run.executed_by,
                         "trace_id": run.trace_id, "projection_status": run.projection_status,
                         "started_at": run.started_at.isoformat() if run.started_at else None})
     return visible
 
 
-@router.post("/{ontology_id}/action-runs/{run_id}:revert", dependencies=[Depends(require_action_ontology), Depends(require_editor)])
-def revert_action_run(ontology_id: str, run_id: str, db: Session = Depends(get_db),
-                      current_user: User = Depends(get_current_user)):
+@router.get("/{ontology_id}/action-runs/{run_id}/events")
+def list_action_run_events(
+    ontology_id: str,
+    run_id: str,
+    limit: int = 500,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.models.ontology import OntologyProject
+    from app.models.v2.action import OntologyActionRunClaimEvent, OntologyActionRunEvent
+    from app.services.v2.action_runtime import (
+        action_run_claim_chain_valid,
+        action_run_event_chain_valid,
+    )
+    from app.services.v2.decision_cases import CaseError, DecisionCaseService
+
+    run = db.query(OntologyActionRun).filter_by(
+        id=run_id,
+        ontology_id=ontology_id,
+    ).first()
+    if run is None:
+        raise HTTPException(404, "Action run not found")
+    if not _can_read_action_run_audit(run, current_user):
+        raise HTTPException(404, "Action run not found")
+    if db.get(OntologyProject, ontology_id) and run.target_object_id:
+        try:
+            DecisionCaseService(db, ontology_id, current_user)._target(run.target_object_id)
+        except CaseError as exc:
+            raise HTTPException(404, "Action run not found") from exc
+
+    capped_limit = max(1, min(int(limit), 500))
+    query = db.query(OntologyActionRunEvent).filter_by(action_run_id=run.id)
+    total = query.count()
+    # Validate the entire chain even when the response is truncated. The
+    # iterator streams in bounded batches so audit integrity does not require
+    # retaining every event object in memory.
+    chain_valid = (
+        action_run_event_chain_valid(
+            query.order_by(OntologyActionRunEvent.sequence.asc()).yield_per(500)
+        )
+        if total
+        else None
+    )
+    events = query.order_by(OntologyActionRunEvent.sequence.asc()).limit(capped_limit).all()
+    claim_query = db.query(OntologyActionRunClaimEvent).filter_by(action_run_id=run.id)
+    claim_total = claim_query.count()
+    claim_chain_valid = (
+        action_run_claim_chain_valid(
+            claim_query.order_by(OntologyActionRunClaimEvent.sequence.asc()).yield_per(500)
+        )
+        if claim_total else None
+    )
+    claim_events = claim_query.order_by(OntologyActionRunClaimEvent.sequence.asc()).limit(capped_limit).all()
+    return {
+        "run_id": run.id,
+        "events": [{
+            "id": row.id,
+            "sequence": row.sequence,
+            "event_type": row.event_type,
+            "from_status": row.from_status,
+            "to_status": row.to_status,
+            "actor_kind": row.actor_kind,
+            "actor_id": row.actor_id,
+            "request_id": row.request_id,
+            "trace_id": row.trace_id,
+            "input_digest": row.input_digest,
+            "preview_digest": row.preview_digest,
+            "permission_digest": row.permission_digest,
+            "previous_digest": row.previous_digest,
+            "event_digest": row.event_digest,
+            "occurred_at": row.occurred_at.isoformat() if row.occurred_at else None,
+        } for row in events],
+        "chain_valid": chain_valid,
+        "history_available": total > 0,
+        "history_truncated": total > len(events),
+        "execution_claims": [{
+            "id": row.id,
+            "sequence": row.sequence,
+            "attempt_number": row.attempt_number,
+            "event_type": row.event_type,
+            "actor_kind": row.actor_kind,
+            "actor_id": row.actor_id,
+            "request_id": row.request_id,
+            "input_digest": row.input_digest,
+            "claim_token_digest": row.claim_token_digest,
+            "lease_expires_at": row.lease_expires_at.isoformat() if row.lease_expires_at else None,
+            "previous_digest": row.previous_digest,
+            "event_digest": row.event_digest,
+            "occurred_at": row.occurred_at.isoformat() if row.occurred_at else None,
+        } for row in claim_events],
+        "execution_claim_chain_valid": claim_chain_valid,
+        "execution_claim_history_available": claim_total > 0,
+        "execution_claim_history_truncated": claim_total > len(claim_events),
+    }
+
+
+@router.get("/{ontology_id}/action-runs/{run_id}/revert-preview",
+            dependencies=[Depends(require_action_ontology), Depends(require_editor)])
+def preview_action_run_revert(ontology_id: str, run_id: str, db: Session = Depends(get_db),
+                              current_user: User = Depends(get_current_user)):
+    original = db.query(OntologyActionRun).filter_by(id=run_id, ontology_id=ontology_id).first()
+    if not original:
+        raise HTTPException(404, "Action run not found")
+    if not original.decision_case_id:
+        raise HTTPException(409, detail={"code": "legacy_run_requires_manual_compensation",
+                                         "message": "未经过审核的历史运行不能自动回退，请人工复核补偿方案"})
+    from app.services.v2.decision_cases import CaseError, DecisionCaseService
+    try:
+        return DecisionCaseService(db, ontology_id, current_user).preview_revert(original)
+    except CaseError as exc:
+        raise HTTPException(exc.status, detail={"code": exc.code, "message": str(exc)}) from exc
+
+
+@router.post("/{ontology_id}/action-runs/{run_id}:revert",
+             dependencies=[Depends(require_action_ontology), Depends(require_editor)])
+def revert_action_run(ontology_id: str, run_id: str, body: ActionRevertRequest,
+                      db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     original = db.query(OntologyActionRun).filter_by(id=run_id, ontology_id=ontology_id).with_for_update().first()
     if not original:
         raise HTTPException(404, "Action run not found")
-    if original.decision_case_id:
-        from app.services.v2.decision_cases import CaseError, DecisionCaseService
-        try:
-            run = DecisionCaseService(db, ontology_id, current_user).revert(original)
-            return {"run_id": run.id, "reverted_run_id": original.id, "status": run.status,
-                    "projection_status": run.projection_status, "edits": len(run.side_effect_results or [])}
-        except CaseError as exc:
-            raise HTTPException(exc.status, detail={"code": exc.code, "message": str(exc)}) from exc
-    if current_user.role != "admin" and original.executed_by != current_user.id:
-        raise HTTPException(403, "Only the executor or an administrator can revert this Action")
-    from app.models.ontology import OntologyProject
-    if db.get(OntologyProject, ontology_id):
+    if not original.decision_case_id:
         raise HTTPException(409, detail={"code": "legacy_run_requires_manual_compensation",
-                                         "message": "历史未审核运行不能直接自动撤销，请人工复核补偿方案"})
-    if original.status != "completed" or (original.execution_context or {}).get("scenario_id"):
-        raise HTTPException(409, "Only a completed live Action can be reverted")
-    effects = original.side_effect_results or []
-    if not effects or any(item.get("op") not in {"set_property", "unset_property"} for item in effects):
-        raise HTTPException(422, "Only property edits can be reverted automatically")
-    graph = FalkorDBService()
-    if not graph.available:
-        raise HTTPException(503, "FalkorDB is unavailable")
-    snapshot = FalkorReadAdapter(graph._graph(ontology_id)).read(ontology_id)
-    edits = []
-    for object_id, after in (original.after_snapshot or {}).items():
-        before = (original.before_snapshot or {}).get(object_id)
-        if not isinstance(before, dict) or not isinstance(after, dict):
-            raise HTTPException(409, "Action snapshots are incomplete")
-        matches = [key for key in snapshot.objects if key[1] == object_id]
-        if len(matches) != 1:
-            raise HTTPException(409, "Action target is missing or ambiguous")
-        kind = matches[0][0]
-        for prop in sorted(set(before) | set(after)):
-            if before.get(prop) == after.get(prop) and (prop in before) == (prop in after):
-                continue
-            edits.append(Edit(sequence=len(edits), op="set_property" if prop in before else "unset_property",
-                              target=Target(ontology_id=ontology_id, concrete_type=kind, object_id=object_id),
-                              property=prop, value=before.get(prop), expected_old_value=after.get(prop)))
-    if not edits:
-        raise HTTPException(409, "Action has no changed properties to revert")
-    from app.services.v2.live_edits import apply_live_edits
+                                         "message": "未经过审核的历史运行不能自动回退，请人工复核补偿方案"})
+    from app.services.v2.decision_cases import CaseError, DecisionCaseService
     try:
-        before_snapshot, after_snapshot, results, restore = apply_live_edits(db, ontology_id, edits, graph)
-        reverted = OntologyActionRun(action_type_id=original.action_type_id, ontology_id=ontology_id,
-                                     target_object_id=original.target_object_id, parameters={"revert_of": original.id},
-                                     execution_context=original.execution_context, status="completed",
-                                     before_snapshot=before_snapshot, after_snapshot=after_snapshot,
-                                     side_effect_results=results, executed_by=current_user.id,
-                                     completed_at=datetime.now(timezone.utc))
-        original.status = "reverted"
-        db.add(reverted)
-        try:
-            db.commit()
-        except Exception:
-            db.rollback()
-            restore()
-            raise
-        return {"run_id": reverted.id, "reverted_run_id": original.id, "status": "completed", "edits": len(edits)}
-    except ScenarioError as exc:
-        db.rollback()
-        raise HTTPException(exc.status, detail={"code": exc.code, "path": exc.path, "message": exc.message}) from exc
+        run = DecisionCaseService(db, ontology_id, current_user).revert(
+            original,
+            client_request_id=body.client_request_id,
+            expected_preview_digest=body.preview_digest,
+            reason=body.reason,
+        )
+        return {"run_id": run.id, "reverted_run_id": original.id, "status": run.status,
+                "projection_status": run.projection_status, "edits": len(run.side_effect_results or [])}
+    except CaseError as exc:
+        raise HTTPException(exc.status, detail={"code": exc.code, "message": str(exc)}) from exc
 
 
 def _live_action_snapshot(db, ontology_id):
@@ -555,7 +667,10 @@ def _live_action_snapshot(db, ontology_id):
         return FalkorReadAdapter(graph._graph(ontology_id)).read(ontology_id)
     from app.models.entity import Entity
     from app.models.relation import Relation
-    entities = db.query(Entity).filter(Entity.ontology_id == ontology_id).all()
+    entities = db.query(Entity).filter(
+        Entity.ontology_id == ontology_id,
+        Entity.is_source_deleted.is_(False),
+    ).all()
     objects = {}
     for entity in entities:
         object_type = entity.type or entity.name_en or entity.name_cn or "Entity"
@@ -570,8 +685,11 @@ def _live_action_snapshot(db, ontology_id):
 
 
 def _scenario_action_snapshot(db, context, current_user):
-    view = db.get(QueryDataView, context.data_view_id) if context.data_view_id else None
-    if not view or view.status != "ready":
+    try:
+        view = require_ready(db, context.data_view_id, context.ontology_id) if context.data_view_id else None
+    except ObjectQueryError as exc:
+        raise ScenarioError("view_unavailable", "Scenario data view is unavailable", 409, "context.data_view_id") from exc
+    if not view:
         raise ScenarioError("view_unavailable", "Scenario data view is unavailable", 409, "context.data_view_id")
     graph = FalkorDBService()
     if not graph.available:
@@ -580,19 +698,51 @@ def _scenario_action_snapshot(db, context, current_user):
 
 
 def _compile_action_request(ontology_id, action, body, resolved_context, db, current_user):
-    from app.services.v2.function_binding import function_resolver
-    if resolved_context.target == "scenario":
-        snapshot = _scenario_action_snapshot(db, resolved_context.context, current_user)
-        scenario_key = resolved_context.context.scenario_id or "scenario"
-    else:
-        snapshot = _live_action_snapshot(db, ontology_id)
-        scenario_key = "live"
     invocation = {"action_type_id": action.id, "parameters": body.parameters or {}}
     if body.target_object_id:
         invocation["target_object_id"] = body.target_object_id
-    id_factory = (lambda action_index, rule_index: str(uuid.uuid4())) if resolved_context.target == "live" else None
-    return compile_actions(ontology_id, scenario_key, [invocation], {action.id: action}, snapshot,
-                           actor=current_user, id_factory=id_factory, function_resolver=function_resolver(db, ontology_id))
+    if resolved_context.target == "scenario":
+        snapshot = _scenario_action_snapshot(db, resolved_context.context, current_user)
+        scenario_key = resolved_context.context.scenario_id or "scenario"
+        request = ActionRequest.from_invocations(
+            ontology_id=ontology_id,
+            compiler_scope=scenario_key,
+            source="logic_actions",
+            invocations=[invocation],
+            execution_context=resolved_context.context.model_dump(mode="json"),
+            action_type_versions={action.id: action.version},
+            expected_etag=body.expected_etag,
+            client_request_id=body.client_request_id,
+            preview_digest=body.preview_digest,
+        )
+        edits, permission_digest = compile_action_definitions(
+            db, request, current_user, {action.id: action}, snapshot)
+        return edits, permission_digest, snapshot
+
+    # The pre-Project compatibility endpoint is retained for legacy ontologies.
+    # Registered Ontologies use DecisionCase or the authorized Scenario path.
+    from app.services.v2.function_binding import function_resolver
+    snapshot = _live_action_snapshot(db, ontology_id)
+    id_factory = lambda action_index, rule_index: str(uuid.uuid4())
+    edits = compile_actions(ontology_id, "live", [invocation], {action.id: action}, snapshot,
+                            actor=current_user, id_factory=id_factory,
+                            function_resolver=function_resolver(db, ontology_id))
+    return edits, None, snapshot
+
+
+def _scenario_action_preview_digest(ontology_id, action, body, execution_context, edits, permission_digest):
+    return digest({
+        "ontology_id": ontology_id,
+        "action_type_id": action.id,
+        "action_type_version": action.version,
+        "parameters": body.parameters or {},
+        "target_object_id": body.target_object_id,
+        "expected_etag": int(body.expected_etag),
+        "client_request_id": body.client_request_id,
+        "execution_context": execution_context.model_dump(mode="json"),
+        "edits": [edit.model_dump(mode="json") for edit in edits],
+        "permission_digest": permission_digest,
+    })
 
 
 def _apply_live_edits(db, ontology_id, action, edits):
@@ -605,7 +755,11 @@ def _apply_live_edits(db, ontology_id, action, edits):
         if edit.op == "invoke_action":
             continue
         if edit.op in {"set_property", "unset_property", "delete_object"}:
-            entity = db.query(Entity).filter(Entity.id == edit.target.object_id, Entity.ontology_id == ontology_id).with_for_update().first()
+            entity = db.query(Entity).filter(
+                Entity.id == edit.target.object_id,
+                Entity.ontology_id == ontology_id,
+                Entity.is_source_deleted.is_(False),
+            ).with_for_update().first()
             if not entity:
                 raise ValueError(f"Target entity not found: {edit.target.object_id}")
             props = dict(entity.properties or {})
@@ -719,9 +873,34 @@ def preview_action_type(
             raise ScenarioError("not_found", "Action type not found", 404, "action_id")
         if not action.enabled or action.status != "published":
             raise ScenarioError("action_type_unavailable", "Action type must be enabled and published", 422, "action_id")
-        edits = _compile_action_request(ontology_id, action, body, resolved_context, db, current_user)
+        edits, permission_digest, source_snapshot = _compile_action_request(
+            ontology_id, action, body, resolved_context, db, current_user)
+        preview_digest = None
+        preview_changes = []
+        if resolved_context.target == "scenario":
+            if body.expected_etag is None or not body.client_request_id:
+                raise ScenarioError("scenario_write_contract_required",
+                    "Scenario Action preview requires expected_etag and client_request_id", 422,
+                    "expected_etag")
+            scenario = ScenarioService(db, ontology_id, current_user).get(
+                resolved_context.context.scenario_id, write=True)
+            if int(body.expected_etag) != scenario.etag:
+                raise ScenarioError("etag_conflict", "Scenario changed; reload before previewing", 409)
+            authorized_snapshot, _ = authorize_action_snapshot(
+                db, ontology_id, current_user, source_snapshot,
+            )
+            preview_changes = ScenarioService._revision_preview_changes(
+                authorized_snapshot, edits,
+            )
+            preview_digest = _scenario_action_preview_digest(
+                ontology_id, action, body, resolved_context.context, edits, permission_digest)
         return {"valid": True, "target": resolved_context.target, "execution_context": resolved_context.context.model_dump(mode="json"),
-                "edits": [edit.model_dump(mode="json") for edit in edits], "edit_count": sum(edit.op != "invoke_action" for edit in edits)}
+                "edits": [edit.model_dump(mode="json") for edit in edits],
+                "changes": preview_changes,
+                "edit_count": sum(edit.op != "invoke_action" for edit in edits),
+                "permission_digest": permission_digest,
+                "client_request_id": body.client_request_id,
+                "preview_digest": preview_digest}
     except ActionContextError as exc:
         raise HTTPException(exc.status, detail=action_context_error(exc)) from exc
     except ScenarioError as exc:
@@ -808,60 +987,220 @@ def run_action_type(
     ).first()
     if not action:
         raise HTTPException(404, "Action type not found")
+
+    scenario_scope = None
+    scenario_id = None
+    execution_claim_token = None
+    run = None
+    request_digest = digest({"action_type_id": action.id, "action_version": action.version,
+                             "parameters": body.parameters or {}, "target_object_id": body.target_object_id,
+                             "context": resolved_context.context.model_dump(mode="json")})
+    if resolved_context.target == "scenario":
+        scenario_id = resolved_context.context.scenario_id
+        if body.expected_etag is None or not body.client_request_id or not body.preview_digest:
+            raise HTTPException(422, {
+                "code": "scenario_write_contract_required",
+                "message": "Scenario Action writes require expected_etag, preview_digest and client_request_id",
+            })
+        if not scenario_id:
+            raise HTTPException(422, {
+                "code": "scenario_context_required",
+                "message": "Scenario Action writes require a resolved Scenario context",
+            })
+        scenario_scope = f"scenario:{scenario_id}"
+        request_digest = digest({
+            "ontology_id": ontology_id,
+            "actor_id": str(current_user.id),
+            "action_type_id": action.id,
+            "request": body.model_dump(mode="json"),
+            "resolved_context": resolved_context.context.model_dump(mode="json"),
+        })
+        try:
+            existing_run, reclaimed_token, replayed = claim_idempotent_scenario_action_run(
+                db,
+                ontology_id=ontology_id,
+                actor_id=str(current_user.id),
+                scope=scenario_scope,
+                request_id=body.client_request_id,
+                request_digest=request_digest,
+                scenario_id=scenario_id,
+            )
+            if existing_run is not None:
+                if replayed:
+                    return scenario_action_run_response(db, existing_run, replayed=True)
+                run = existing_run
+                execution_claim_token = reclaimed_token
+        except ScenarioError as exc:
+            raise HTTPException(exc.status, detail={"code": exc.code, "message": exc.message}) from exc
+
     if not action.enabled:
+        if run is not None and execution_claim_token:
+            fail_scenario_action_run_claim(
+                db, run_id=run.id, claim_token=execution_claim_token,
+                error="Action type is disabled", actor_id=str(current_user.id),
+            )
         raise HTTPException(400, "Action type is disabled")
     if action.status != "published":
+        if run is not None and execution_claim_token:
+            fail_scenario_action_run_claim(
+                db, run_id=run.id, claim_token=execution_claim_token,
+                error="Action type is not published", actor_id=str(current_user.id),
+            )
         raise HTTPException(400, "Action type must be published before runtime execution")
 
-    run = OntologyActionRun(
-        action_type_id=action.id,
-        ontology_id=ontology_id,
-        target_object_id=body.target_object_id,
-        parameters=body.parameters or {},
-        execution_context=resolved_context.context.model_dump(mode="json"),
-        status="running",
-        executed_by=getattr(current_user, "id", None),
-    )
-    db.add(run)
-    db.commit()
+    if run is None:
+        execution_claim_token = str(uuid.uuid4()) if scenario_scope else None
+        lease_until = (
+            datetime.now(timezone.utc) + timedelta(seconds=300)
+            if execution_claim_token else None
+        )
+        run = create_action_run_record(
+            db=db,
+            action_type_id=action.id,
+            ontology_id=ontology_id,
+            target_object_id=body.target_object_id,
+            parameters=body.parameters or {},
+            execution_context=resolved_context.context.model_dump(mode="json"),
+            initial_status="running",
+            requester_id=getattr(current_user, "id", None),
+            executor_id=getattr(current_user, "id", None),
+            client_request_id=body.client_request_id,
+            idempotency_scope=scenario_scope,
+            action_version=action.version,
+            expected_etag=str(body.expected_etag) if body.expected_etag is not None else None,
+            input_digest=request_digest,
+            trace_id=str(uuid.uuid4()),
+            execution_attempt=1 if execution_claim_token else 0,
+            execution_lease_token=execution_claim_token,
+            execution_lease_until=lease_until,
+        )
+        db.add(run)
+        if execution_claim_token:
+            record_action_run_claim_event(
+                db, run, "claim_acquired", actor_id=str(current_user.id), actor_kind="user",
+            )
+        try:
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            if scenario_scope:
+                try:
+                    existing_run, reclaimed_token, replayed = claim_idempotent_scenario_action_run(
+                        db,
+                        ontology_id=ontology_id,
+                        actor_id=str(current_user.id),
+                        scope=scenario_scope,
+                        request_id=body.client_request_id,
+                        request_digest=request_digest,
+                        scenario_id=scenario_id,
+                    )
+                    if existing_run is not None:
+                        if replayed:
+                            return scenario_action_run_response(db, existing_run, replayed=True)
+                        run = existing_run
+                        execution_claim_token = reclaimed_token
+                    else:
+                        raise HTTPException(409, {
+                            "code": "action_request_conflict",
+                            "message": "Action request could not claim its idempotency key",
+                        }) from exc
+                except ScenarioError as runtime_exc:
+                    raise HTTPException(runtime_exc.status, detail={
+                        "code": runtime_exc.code, "message": runtime_exc.message,
+                    }) from runtime_exc
+            else:
+                raise HTTPException(409, {
+                    "code": "action_request_conflict",
+                    "message": "Action request could not claim its idempotency key",
+                }) from exc
     db.refresh(run)
 
     before_snapshot = {}
     after_snapshot = {}
     side_effect_results = []
+
+    def completed_scenario_result_after_uncertain_commit():
+        if not scenario_scope:
+            return None
+        db.rollback()
+        persisted = db.query(OntologyActionRun).filter_by(id=run.id).populate_existing().first()
+        if persisted is not None and persisted.status == "completed":
+            return scenario_action_run_response(db, persisted, replayed=True)
+        return None
+
     try:
-        edits = _compile_action_request(ontology_id, action, body, resolved_context, db, current_user)
+        edits, permission_digest, _ = _compile_action_request(
+            ontology_id, action, body, resolved_context, db, current_user)
         if resolved_context.target == "scenario":
             scenario_service = ScenarioService(db, ontology_id, current_user)
             scenario = scenario_service.get(resolved_context.context.scenario_id, write=True)
-            if body.expected_etag is None or not body.client_request_id:
-                raise ScenarioError("scenario_write_contract_required", "Scenario Action writes require expected_etag and client_request_id", 422, "expected_etag")
+            expected_etag = int(body.expected_etag)
+            if expected_etag != scenario.etag:
+                raise ScenarioError("etag_conflict", "Scenario changed; reload before submitting", 409)
+            preview_digest = _scenario_action_preview_digest(
+                ontology_id, action, body, resolved_context.context, edits, permission_digest)
+            if not body.preview_digest or body.preview_digest != preview_digest:
+                raise ScenarioError("preview_conflict", "Action、Scenario 或权限已变化；请重新预览", 409)
+            if not execution_claim_token:
+                raise ScenarioError(
+                    "action_claim_missing", "Scenario Action 缺少有效执行租约", 409,
+                )
+            run = renew_scenario_action_run_claim(
+                db,
+                run_id=run.id,
+                claim_token=execution_claim_token,
+                actor_id=str(current_user.id),
+            )
+            # Persist the renewal before ScenarioService acquires locks. The
+            # publication path uses Scenario -> ActionRun lock order, which is
+            # shared by graph recovery and avoids a run -> Scenario deadlock.
+            db.commit()
+            db.refresh(run)
+            runtime_manifest = {
+                "action_run_id": run.id,
+                "client_request_id": body.client_request_id,
+                "request_digest": request_digest,
+                "attempt_number": run.execution_attempt,
+                "claim_token_digest": stable_hash({"execution_lease_token": execution_claim_token}),
+                "action_type_id": action.id,
+                "action_version": action.version,
+                "preview_digest": preview_digest,
+                "permission_digest": permission_digest,
+                "expected_etag": expected_etag,
+            }
             revision = scenario_service.revision(
                 scenario,
-                RevisionRequest(base_revision=scenario.head_revision, expected_etag=body.expected_etag,
-                                client_request_id=body.client_request_id, edits=edits),
+                RevisionRequest(base_revision=scenario.head_revision, expected_etag=expected_etag,
+                                client_request_id=body.client_request_id,
+                                permission_digest=permission_digest, edits=edits),
+                runtime_manifest=runtime_manifest,
+                runtime_action_run=run,
             )
-            run.status = "completed"
-            run.side_effect_results = [{"op": edit.op, "sequence": edit.sequence} for edit in edits if edit.op != "invoke_action"]
-            run.completed_at = datetime.now(timezone.utc)
-            db.commit()
-            return {"run_id": run.id, "status": run.status, "target": "scenario", "revision": revision.revision,
-                    "execution_context": resolved_context.context.model_dump(mode="json"), "edits": [edit.model_dump(mode="json") for edit in edits]}
+            return scenario_action_run_response(db, run, replayed=False)
         from app.models.ontology import OntologyProject
         restore_graph = None
         if db.get(OntologyProject, ontology_id):
             from app.services.v2.live_edits import apply_live_edits
-            before_snapshot, after_snapshot, side_effect_results, restore_graph = apply_live_edits(db, ontology_id, edits, FalkorDBService())
+            before_snapshot, after_snapshot, side_effect_results, restore_graph = apply_live_edits(
+                db,
+                ontology_id,
+                edits,
+                FalkorDBService(),
+                actor=current_user,
+                expected_permission_digest=permission_digest,
+            )
         else:
             # Compatibility for pre-project fixtures only; registered ontologies
             # must use EntityInstance and the canonical graph projection.
             before_snapshot, after_snapshot, side_effect_results = _apply_live_edits(db, ontology_id, action, edits)
 
-        run.status = "completed"
-        run.before_snapshot = before_snapshot
-        run.after_snapshot = after_snapshot
-        run.side_effect_results = side_effect_results
-        run.completed_at = datetime.now(timezone.utc)
+        complete_action_run(
+            db,
+            run,
+            before_snapshot=before_snapshot,
+            after_snapshot=after_snapshot,
+            side_effect_results=side_effect_results,
+        )
         try:
             db.commit()
         except Exception:
@@ -875,22 +1214,73 @@ def run_action_type(
             "side_effect_results": side_effect_results,
         }
     except ScenarioError as e:
+        recovered = completed_scenario_result_after_uncertain_commit()
+        if recovered is not None:
+            return recovered
         db.rollback()
+        actor_id = getattr(current_user, "id", None)
+        if scenario_scope and execution_claim_token:
+            outcome = fail_scenario_action_run_claim(
+                db, run_id=run.id, claim_token=execution_claim_token,
+                error=e.message, actor_id=str(actor_id) if actor_id else None,
+                actor_kind="user" if actor_id else "system",
+            )
+            if outcome == "completed":
+                persisted = db.query(OntologyActionRun).filter_by(id=run.id).populate_existing().first()
+                if persisted is not None:
+                    return scenario_action_run_response(db, persisted, replayed=True)
+            if outcome == "superseded":
+                raise HTTPException(409, {
+                    "run_id": run.id,
+                    "code": "action_attempt_superseded",
+                    "message": "此尝试已被同请求的新执行租约接管，未更改新尝试状态。",
+                }) from e
+            raise HTTPException(e.status, {
+                "run_id": run.id, "code": e.code, "path": e.path, "error": e.message,
+            }) from e
+        persisted = db.query(OntologyActionRun).filter_by(id=run.id).populate_existing().first()
+        if persisted is not None:
+            run = persisted
         db.add(run)
-        run.status = "failed"
-        run.error = e.message
-        run.completed_at = datetime.now(timezone.utc)
+        fail_action_run(db, run, e.message, actor_id=actor_id,
+                        actor_kind="user" if actor_id else "system")
         db.commit()
         raise HTTPException(e.status, {"run_id": run.id, "code": e.code, "path": e.path, "error": e.message}) from e
     except Exception:
+        recovered = completed_scenario_result_after_uncertain_commit()
+        if recovered is not None:
+            return recovered
         db.rollback()
+        actor_id = getattr(current_user, "id", None)
+        if scenario_scope and execution_claim_token:
+            outcome = fail_scenario_action_run_claim(
+                db, run_id=run.id, claim_token=execution_claim_token,
+                error="Unexpected Action runtime failure",
+                actor_id=str(actor_id) if actor_id else None,
+                actor_kind="user" if actor_id else "system",
+            )
+            if outcome == "completed":
+                persisted = db.query(OntologyActionRun).filter_by(id=run.id).populate_existing().first()
+                if persisted is not None:
+                    return scenario_action_run_response(db, persisted, replayed=True)
+            if outcome == "superseded":
+                raise HTTPException(409, {
+                    "run_id": run.id,
+                    "code": "action_attempt_superseded",
+                    "message": "此尝试已被同请求的新执行租约接管，未更改新尝试状态。",
+                })
+            raise HTTPException(500, {
+                "run_id": run.id, "error": "Unexpected Action runtime failure",
+            })
+        persisted = db.query(OntologyActionRun).filter_by(id=run.id).populate_existing().first()
+        if persisted is not None:
+            run = persisted
         db.add(run)
-        run.status = "failed"
-        run.error = "Unexpected Action runtime failure"
+        fail_action_run(db, run, "Unexpected Action runtime failure", actor_id=actor_id,
+                        actor_kind="user" if actor_id else "system")
         run.before_snapshot = before_snapshot or None
         run.after_snapshot = after_snapshot or None
         run.side_effect_results = side_effect_results or None
-        run.completed_at = datetime.now(timezone.utc)
         db.commit()
         raise HTTPException(500, {"run_id": run.id, "error": run.error})
 
@@ -957,13 +1347,21 @@ def _validate_action_submission(action: OntologyActionType, params: dict, target
             errors.append({"type": ctype, "message": "target_object_id is required"})
         elif ctype == "entity_exists":
             entity_id = target_object_id or params.get("target_id")
-            if not entity_id or not db.query(Entity).filter(Entity.id == entity_id, Entity.ontology_id == ontology_id).first():
+            if not entity_id or not db.query(Entity).filter(
+                Entity.id == entity_id,
+                Entity.ontology_id == ontology_id,
+                Entity.is_source_deleted.is_(False),
+            ).first():
                 errors.append({"type": ctype, "message": "target entity does not exist"})
         elif ctype == "field_equals":
             field = criterion.get("field")
             expected = criterion.get("value")
             entity_id = target_object_id or params.get("target_id")
-            entity = db.query(Entity).filter(Entity.id == entity_id, Entity.ontology_id == ontology_id).first() if entity_id else None
+            entity = db.query(Entity).filter(
+                Entity.id == entity_id,
+                Entity.ontology_id == ontology_id,
+                Entity.is_source_deleted.is_(False),
+            ).first() if entity_id else None
             actual = (entity.properties or {}).get(field) if entity and field else None
             if str(actual) != str(expected):
                 errors.append({"type": ctype, "field": field, "expected": expected, "actual": actual})

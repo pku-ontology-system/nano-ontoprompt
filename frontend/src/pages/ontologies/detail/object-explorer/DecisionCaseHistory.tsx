@@ -16,6 +16,37 @@ type CaseSummary = {
   reviewed_preview?: { diff?: Array<{ property: string; before: unknown; after: unknown }> }
 }
 type CaseEvent = { sequence: number; event_type: string; created_at?: string; trace_id?: string; payload?: Record<string, unknown> }
+type WhatIfScenarioRef = {
+  ref_id: string; source_version: string; scenario_input_digest: string;
+  assumptions: unknown[]; rule_overrides: Record<string, unknown>;
+  scenario_context: Record<string, unknown>
+}
+
+function isWhatIfScenarioRef(value: unknown): value is WhatIfScenarioRef {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const ref = value as Record<string, unknown>
+  return typeof ref.ref_id === 'string' && typeof ref.source_version === 'string'
+    && typeof ref.scenario_input_digest === 'string'
+    && Array.isArray(ref.assumptions)
+    && !!ref.rule_overrides && typeof ref.rule_overrides === 'object'
+    && !Array.isArray(ref.rule_overrides)
+    && !!ref.scenario_context && typeof ref.scenario_context === 'object'
+    && !Array.isArray(ref.scenario_context)
+}
+
+function eventText(event: CaseEvent): string {
+  const payload = event.payload ?? {}
+  if (event.event_type === 'projection_attempt_started') {
+    const kind = payload.attempt_kind === 'manual_retry' ? '人工图投影重放' : payload.actor_kind === 'system' ? '系统图投影重试' : '图投影开始'
+    const reason = typeof payload.reason === 'string' && payload.reason ? ` · 理由：${payload.reason}` : ''
+    return `${kind} #${String(payload.attempt_number ?? '—')}${reason}`
+  }
+  if (event.event_type === 'projection_attempt_finished') {
+    const error = typeof payload.error === 'string' && payload.error ? ` · ${payload.error}` : ''
+    return `图投影尝试结果：${String(payload.status ?? '未知')}${error}`
+  }
+  return event.event_type
+}
 
 const statusLabel: Record<string, string> = {
   draft: '草稿', ready_for_review: '待审核', approved: '已批准', rejected: '已驳回',
@@ -34,6 +65,8 @@ export default function DecisionCaseHistory({ ontologyId, objectId }: {
       `${base}?target_object_id=${encodeURIComponent(objectId)}`),
   })
   const selected = cases.data?.cases.find(item => item.id === selectedId)
+  const whatIfRefs = (Array.isArray(selected?.context?.what_if_scenarios)
+    ? selected.context.what_if_scenarios : []).filter(isWhatIfScenarioRef)
   const sourceLink = selected?.kind === 'dynamic_event' && typeof selected.context?.run_id === 'string'
     ? `/data/dynamic?run_id=${encodeURIComponent(selected.context.run_id)}&incident_id=${encodeURIComponent(objectId)}`
     : selected?.kind === 'quality_review' ? `/decision-lab?demo=ibadas&object=${encodeURIComponent(objectId)}`
@@ -62,13 +95,16 @@ export default function DecisionCaseHistory({ ontologyId, objectId }: {
       {selected.context?.window_start !== undefined && <p className="mt-2">时间窗口 {String(selected.context.window_start)}–{String(selected.context.window_end)} · 规则 {String(selected.context.rule_version ?? '—')}</p>}
       {selected.context?.event_key !== undefined && <p className="mt-2 break-all">来源事件 {String(selected.context.event_key)}</p>}
       {selected.context?.severity !== undefined && <p className="mt-2">严重度 {String(selected.context.severity)}</p>}
+      {whatIfRefs.map(ref => <p key={ref.ref_id} className="mt-2 break-all font-mono text-[10px] text-slate-600">
+        What-if {ref.ref_id} · 基线 {ref.source_version.slice(0, 12)} · 情景输入 {ref.scenario_input_digest.slice(0, 12)} · 回放 {String(ref.scenario_context.replay_id ?? '—')} · 时点 {String(ref.scenario_context.time_value ?? '—')}
+      </p>)}
       {selected.evidence_refs?.map((ref, index) => <p key={index} className="mt-1 break-all font-mono text-[10px] text-slate-600">证据 {typeof ref === 'string' ? ref : ref.evidence_ref_id}{typeof ref === 'string' ? '' : ` · 资产 ${ref.asset_id ?? '整个样例'} · SHA-256 ${ref.asset_checksum ?? '—'} · ${JSON.stringify(ref.locator ?? {})}`}</p>)}
       {selected.reviewed_preview?.diff?.map((item, index) => <p key={index} className="mt-1 break-all font-mono text-[10px]">{item.property}: {String(item.before ?? '∅')} → {String(item.after ?? '∅')}</p>)}
       {selected.action_run_id && <p className="mt-2 break-all font-mono text-[10px]">Action Run {selected.action_run_id} · 图投影 {selected.projection_status ?? '待查询'}</p>}
       {sourceLink && <Link className="mt-2 inline-block text-blue-700 hover:underline" to={sourceLink}>打开原始演示与证据</Link>}
       {events.isLoading && <p className="mt-2 text-slate-500">正在读取生命周期…</p>}
       {events.isError && <p className="mt-2 text-red-700">{formatApiError(events.error, '生命周期暂不可用')}</p>}
-      {!!events.data?.events.length && <ol className="mt-2 border-t pt-2">{events.data.events.map(event => <li key={event.sequence}>{event.sequence}. {event.event_type} · {event.created_at ? new Date(event.created_at).toLocaleString('zh-CN') : '—'}{typeof event.payload?.revert_run_id === 'string' && <span className="block break-all font-mono text-[10px]">撤销 Run {event.payload.revert_run_id}</span>}</li>)}</ol>}
+      {!!events.data?.events.length && <ol className="mt-2 border-t pt-2">{events.data.events.map(event => <li key={event.sequence}>{event.sequence}. {eventText(event)} · {event.created_at ? new Date(event.created_at).toLocaleString('zh-CN') : '—'}{typeof event.payload?.revert_run_id === 'string' && <span className="block break-all font-mono text-[10px]">撤销 Run {event.payload.revert_run_id}</span>}</li>)}</ol>}
     </div>}
   </section>
 }

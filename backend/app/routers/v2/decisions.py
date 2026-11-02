@@ -7,10 +7,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from app.deps import get_db, get_current_user, require_editor
 from app.models.ontology import OntologyProject
+from app.models.user import User
 from app.models.v2.decision import DecisionRecord, DecisionLink
 from app.models.v2.reasoning import ReasoningRun
 from app.services.v2.graph.falkordb_service import FalkorDBService
 from app.services.v2.graph.decision_analysis import DecisionGraphAdapter, analyze
+from app.services.v2.object_query.authorization import require_ontology_access
+from app.services.v2.object_query.errors import ObjectQueryError
+from app.services.v2.reasoning_authorization import reasoning_permission_digest
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -19,7 +23,35 @@ def scope(db, oid, user):
     obj = db.get(OntologyProject, oid)
     if not obj or (user.role != 'admin' and obj.created_by != user.id):
         raise HTTPException(404, '本体不存在或无访问权限')
+    try:
+        access = require_ontology_access(db, oid, str(user.id), user.role,
+                                        metadata_revision_id=obj.current_revision_id)
+    except ObjectQueryError as exc:
+        raise HTTPException(404, '本体不存在或无访问权限') from exc
+    if not access.unrestricted:
+        raise HTTPException(403, '当前细粒度权限策略不支持旧版决策工作台；请使用受权对象查询与持久 DecisionCase')
     return obj
+
+
+def _reasoning_run_is_current(db: Session, ontology: OntologyProject, run: ReasoningRun) -> bool:
+    payload = run.payload if isinstance(run.payload, dict) else {}
+    if (not run.created_by
+            or str(payload.get('ontology_revision_id') or '') != str(ontology.current_revision_id or '')
+            or not payload.get('_access_digest')):
+        return False
+    creator = db.get(User, str(run.created_by))
+    if creator is None or not getattr(creator, 'is_active', True):
+        return False
+    try:
+        access = require_ontology_access(
+            db, ontology.id, str(creator.id), creator.role,
+            metadata_revision_id=ontology.current_revision_id,
+        )
+    except ObjectQueryError:
+        return False
+    return payload.get('_access_digest') == reasoning_permission_digest(
+        db, ontology.id, creator, ontology, access,
+    )
 
 
 class Basis(BaseModel):
@@ -111,6 +143,11 @@ def create_decision(oid: str, body: DecisionInput, db: Session = Depends(get_db)
     proofs = []
     for basis in body.basis:
         run = db.query(ReasoningRun).filter_by(id=basis.run_id, ontology_id=oid).first()
+        if run and not _reasoning_run_is_current(db, ontology, run):
+            raise HTTPException(status_code=409, detail={
+                'code': 'reasoning_run_context_stale',
+                'message': '推理运行的本体版本或权限上下文已变化，请在当前版本重新推理。',
+            })
         proof = next((c for c in (run.payload or {}).get('conclusions', []) if c['conclusion'] == basis.conclusion), None) if run else None
         if not proof:
             raise HTTPException(422, '推理依据不存在于指定运行中')

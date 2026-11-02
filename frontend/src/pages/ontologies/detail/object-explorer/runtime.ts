@@ -17,7 +17,7 @@ export function explorerError(error: unknown): string {
 }
 
 export async function loadComplete(ontologyId: string, expression: ObjectSetExpression, context: ExplorerContext, signal?: AbortSignal): Promise<ObjectPanelRecord[]> {
-  if (context.consistency !== 'snapshot' || !context.data_view_id) throw new Error('A pinned view is required');
+  if (context.consistency !== 'snapshot' || (!context.data_view_id && !context.what_if_scenario_id)) throw new Error('A pinned view or What-if context is required');
   const objects: ObjectPanelRecord[] = [];
   let pageToken: string | undefined;
   const seen = new Set<string>();

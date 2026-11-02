@@ -5,8 +5,8 @@ import { deterministicGraphPositions } from "@/lib/relationshipGraph";
 
 type Evidence = { fact: string; source: string; source_file?: string; source_row?: string; source_version?: string; evidence_ref_id?: string; evidence_text?: string; content_hash?: string };
 type Inference = { conclusion: string; rule: string; premises: string[]; evidence: Evidence[] };
-type Result = { run_id: string; status: string; facts: string[]; rules: string[]; inferred_facts: Inference[]; rules_fired: string[]; graph: { status: string; written: number; unary_facts?: number; reason?: string; missing_nodes?: string[] } };
-type Run = { run_id: string; status: string; created_at: string; derived_fact_count: number };
+type Result = { run_id: string; status: string; facts: string[]; rules: string[]; inferred_facts: Inference[]; rules_fired: string[]; graph: { status: string; written?: number; unary_facts?: number; reason?: string; missing_nodes?: string[] }; action_run_id?: string | null; action_run_status?: string | null };
+type Run = { run_id: string; status: string; created_at: string; derived_fact_count?: number | null; authorization_status?: "current" | "stale_or_unpinned" };
 type GraphProperties = { derived?: boolean; reasoning_run_id?: string; preview?: boolean; conclusion?: string; [key: string]: unknown };
 type GraphData = { available: boolean; total_instances: number; nodes: Array<{ id: string; entity_type: string; properties: GraphProperties }>; edges: Array<{ id: string; source: string; target: string; label: string; properties: GraphProperties }> };
 const button = "rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:opacity-50";
@@ -25,14 +25,19 @@ export default function ReasoningTab({ ontologyId }: { ontologyId: string }) {
   const [notice, setNotice] = useState("");
   const [result, setResult] = useState<Result | null>(null);
   const [runs, setRuns] = useState<Run[]>([]);
+  const [canApply, setCanApply] = useState(false);
+  const [canRun, setCanRun] = useState(false);
   const [graph, setGraph] = useState<GraphData | null>(null);
   const [selected, setSelected] = useState<Inference | null>(null);
   const [nodeDetails, setNodeDetails] = useState<Record<string, unknown> | null>(null);
   const [derivedOnly, setDerivedOnly] = useState(false);
   const [showRelationshipLabels, setShowRelationshipLabels] = useState(true);
   const [query, setQuery] = useState("");
+  const [applyRequestId, setApplyRequestId] = useState("");
   const canvas = useRef<HTMLDivElement>(null);
   const cy = useRef<cytoscape.Core | null>(null);
+
+  const applyStorageKey = (runId: string) => `p4:reasoning-projection:${ontologyId}:${runId}`;
 
   const refresh = useCallback(async () => {
     const [history, data] = await Promise.all([
@@ -47,16 +52,24 @@ export default function ReasoningTab({ ontologyId }: { ontologyId: string }) {
     let active = true;
     (async () => {
       const [inputs, history] = await Promise.all([
-        apiClientV2.get<{facts: string[]; rules: string[]; truncated: boolean}>(`${base}/inputs`),
+        apiClientV2.get<{facts: string[]; rules: string[]; truncated: boolean; can_apply?: boolean; can_run?: boolean}>(`${base}/inputs`),
         refresh(),
       ]);
       if (!active) return;
       setFacts(inputs.facts.join("\n")); setRules(inputs.rules.join("\n"));
-      setNotice(inputs.facts.length ? `已加载 ${inputs.facts.length} 条原始图事实；不含已保存的派生边。${inputs.truncated ? "注意：仅前 500 个实例。" : ""}` : "当前本体没有实例，请先导入数据。");
-      const latest = history.find(r => r.status === "applied") || history[0];
+      setCanApply(inputs.can_apply === true);
+      setCanRun(inputs.can_run === true);
+      setNotice(inputs.facts.length ? `已加载 ${inputs.facts.length} 条当前可见的原始图事实；不含已保存的派生边。${inputs.truncated ? "注意：仅前 500 个实例。" : ""}${inputs.can_apply ? "" : " 规则定义和原始来源内容受本体管理权限保护。"}` : "当前本体没有实例，请先导入数据。");
+      const currentRuns = history.filter(r => r.authorization_status === "current");
+      const latest = currentRuns.find(r => r.status === "applied") || currentRuns[0];
       if (latest) {
         const saved = await apiClientV2.get<Result>(`${base}/runs/${latest.run_id}`);
-        if (active) setResult(saved);
+        if (active) {
+          setResult(saved);
+          setApplyRequestId(localStorage.getItem(applyStorageKey(latest.run_id)) || "");
+        }
+      } else if (history.length && active) {
+        setNotice("历史推理运行的权限上下文已变化或缺少权限标记，请加载当前事实并重新运行。");
       }
     })().catch(e => active && setError(message(e)));
     return () => { active = false; };
@@ -65,10 +78,12 @@ export default function ReasoningTab({ ontologyId }: { ontologyId: string }) {
   async function loadInputs() {
     setBusy(true); setError("");
     try {
-      const data = await apiClientV2.get<{facts: string[]; rules: string[]; truncated: boolean}>(`${base}/inputs`);
+      const data = await apiClientV2.get<{facts: string[]; rules: string[]; truncated: boolean; can_apply?: boolean; can_run?: boolean}>(`${base}/inputs`);
       setFacts(data.facts.join("\n")); setRules(data.rules.join("\n"));
+      setCanApply(data.can_apply === true);
+      setCanRun(data.can_run === true);
       setResult(null); setSelected(null);
-      setNotice(`已加载 ${data.facts.length} 条原始图事实${data.truncated ? "（前 500 个实例的子图）" : ""}；规则来自当前本体的可执行规则定义。`);
+      setNotice(`已加载 ${data.facts.length} 条当前可见的原始图事实${data.truncated ? "（前 500 个实例的子图）" : ""}；${data.can_apply ? "规则来自当前本体的可执行定义。" : "规则定义和原始来源内容受本体管理权限保护。"}`);
     } catch(e: unknown) { setError(message(e)); } finally { setBusy(false); }
   }
   async function run() {
@@ -79,6 +94,7 @@ export default function ReasoningTab({ ontologyId }: { ontologyId: string }) {
         rules: rules.split(/\r?\n/).map(x => x.trim()).filter(Boolean),
       });
       setResult(data);
+      setApplyRequestId("");
       setNotice("推理完成：预览及证据已保存为运行记录，尚未写入实例图。");
       await refresh();
     } catch(e: unknown) { setError(message(e)); } finally { setBusy(false); }
@@ -87,18 +103,30 @@ export default function ReasoningTab({ ontologyId }: { ontologyId: string }) {
     if (!result) return;
     setBusy(true); setError("");
     try {
-      const data = await apiClientV2.post<Result>(`${base}/runs/${result.run_id}/apply`);
+      const requestId = applyRequestId || localStorage.getItem(applyStorageKey(result.run_id)) || `reasoning:${result.run_id}:${crypto.randomUUID()}`;
+      setApplyRequestId(requestId);
+      localStorage.setItem(applyStorageKey(result.run_id), requestId);
+      const data = await apiClientV2.post<Result>(`${base}/runs/${result.run_id}/apply`, { client_request_id: requestId });
       setResult(data);
-      setNotice(data.status === "applied" ? `结果已保存；${data.graph.written} 条二元关系投影到图。刷新页面后仍可查看。` : "投影未完成；预览记录保留，可修正后重试。");
+      if (data.action_run_status === "completed" || data.action_run_status === "failed") {
+        localStorage.removeItem(applyStorageKey(result.run_id));
+        setApplyRequestId("");
+      }
+      setNotice(data.status === "applied"
+        ? `结果已保存；${data.graph.written} 条二元关系投影到图。ActionRun：${data.action_run_id || "未知"}。`
+        : `投影未完成，预览仍保留。ActionRun：${data.action_run_id || "未知"} · ${data.action_run_status || "状态未知"}。`);
       await refresh();
-    } catch(e: unknown) { setError(message(e)); } finally { setBusy(false); }
+    } catch(e: unknown) {
+      setError(message(e));
+      try { setResult(await apiClientV2.get<Result>(`${base}/runs/${result.run_id}`)); } catch { /* keep the pinned preview visible */ }
+    } finally { setBusy(false); }
   }
   async function restore(id: string) {
     if (!id) return;
     setBusy(true); setError("");
     try {
       const data = await apiClientV2.get<Result>(`${base}/runs/${id}`);
-      setResult(data); setSelected(null); setFacts(data.facts.join("\n")); setRules(data.rules.join("\n"));
+      setResult(data); setApplyRequestId(localStorage.getItem(applyStorageKey(id)) || ""); setSelected(null); setFacts(data.facts.join("\n")); setRules(data.rules.join("\n"));
     } catch(e: unknown) { setError(message(e)); } finally { setBusy(false); }
   }
 
@@ -170,17 +198,20 @@ export default function ReasoningTab({ ontologyId }: { ontologyId: string }) {
         <button className={button} disabled={busy} onClick={loadInputs}>加载当前图事实与规则</button>
         <label className="block text-sm">Facts<textarea aria-label="Facts" rows={7} value={facts} onChange={e => {setFacts(e.target.value); setResult(null); setSelected(null);}} className="mt-2 w-full rounded-lg border p-3 font-mono text-xs" /></label>
         <label className="block text-sm">Rules<textarea aria-label="Rules" rows={5} value={rules} onChange={e => {setRules(e.target.value); setResult(null); setSelected(null);}} className="mt-2 w-full rounded-lg border p-3 font-mono text-xs" /></label>
-        <button className={button + " bg-slate-900 text-white"} disabled={busy || !facts || !rules} onClick={run}>{busy ? "处理中…" : "运行推理"}</button>
+        <button className={button + " bg-slate-900 text-white"} disabled={busy || !canRun || !facts || !rules} onClick={run}>{busy ? "处理中…" : "运行推理"}</button>
+        {!canRun && <span className="text-xs text-slate-500">需要 Editor 或 Admin 角色才能运行推理</span>}
       </section>
       <section className="space-y-3 rounded-xl border bg-white p-5">
         <label className="block text-sm">历史运行（刷新后可恢复）<select aria-label="历史运行" className="mt-2 w-full rounded border p-2 text-xs" value={result?.run_id || ""} onChange={e => restore(e.target.value)}>
-          <option value="">选择运行</option>{runs.map(r => <option key={r.run_id} value={r.run_id}>{r.created_at} · {r.status} · {r.derived_fact_count} 条</option>)}
+          <option value="">选择运行</option>{runs.map(r => <option key={r.run_id} value={r.run_id} disabled={r.authorization_status !== "current"}>{r.created_at} · {r.status} · {r.authorization_status === "current" ? `${r.derived_fact_count ?? "—"} 条` : "权限已变化，需重跑"}</option>)}
         </select></label>
         {result && <>
           <div className="flex flex-wrap items-center gap-3 text-sm">
             <strong>派生事实 {result.inferred_facts.length}</strong><span>命中规则 {result.rules_fired.length}</span>
             <span data-testid="run-status">{result.status === "applied" ? "已保存并投影" : "预览（未写图）"}</span>
-            <button className={button} disabled={busy || result.status === "applied"} onClick={save}>保存结果</button>
+            {result.action_run_id && <span data-testid="action-run-status">ActionRun {result.action_run_id} · {result.action_run_status || "状态未知"}</span>}
+            <button className={button} disabled={busy || result.status === "applied" || !canApply} onClick={save}>{result.action_run_status === "reconciliation_required" ? "重试恢复同一保存请求" : "保存结果"}</button>
+            {!canApply && <span className="text-xs text-slate-500">仅本体所有者或管理员可写回实例图</span>}
             <button className={button} onClick={jumpToGraph}>查看预览图</button>
           </div>
           <p className="rounded bg-violet-50 p-2 text-xs text-violet-700">{result.status === "preview" ? "关系图预览已生成：紫色虚线表示本次推理的临时派生关系，尚未写入图数据库。" : "关系图已加载：紫色实线表示已保存的派生关系。"}</p>

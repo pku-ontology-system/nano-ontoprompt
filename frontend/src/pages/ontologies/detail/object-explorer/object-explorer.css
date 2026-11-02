@@ -42,6 +42,8 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 .oe-resource-context { display: flex; align-items: center; gap: 7px; color: #596579; font-size: 10px; white-space: nowrap; }
 .oe-resource-context > span:first-child { width: 7px; height: 7px; border-radius: 50%; background: #21a366; box-shadow: 0 0 0 3px #daf3e5; }
 .oe-resource-context > span.is-pinned { background: #4c78a8; box-shadow: 0 0 0 3px #e0eaf5; }
+.oe-whatif-select { display: flex; align-items: center; gap: 6px; color: #596579; font-size: 10px; white-space: nowrap; }
+.oe-whatif-select select { max-width: 230px; border: 1px solid #d8dee8; border-radius: 6px; background: #fff; padding: 5px 22px 5px 7px; color: #253047; font: inherit; }
 .oe-resource-actions { display: flex; align-items: center; justify-content: flex-end; gap: 5px; flex-wrap: wrap; }
 .oe-resource-actions button, .oe-resource-drawer button, .oe-workspace-actions button, .oe-layout-tools button { display: inline-flex; align-items: center; gap: 5px; border: 1px solid #cfd6e0; border-radius: 4px; background: #fff; padding: 6px 8px; color: #344054; font-size: 10px; }
 .oe-resource-actions button:disabled, .oe-resource-drawer button:disabled, .oe-workspace-actions button:disabled { color: #9aa4b2; opacity: .65; }
@@ -175,6 +177,13 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 .oe-selection-cards button span { display: grid; width: 23px; height: 23px; place-items: center; border-radius: 3px; background: #4a76a8; color: #fff; font-size: 9px; }
 .oe-selection-cards button strong { overflow: hidden; font-size: 9px; text-overflow: ellipsis; }
 .oe-object-panel { background: #fff; }
+.oe-object-panel--full { overflow: hidden; border: 1px solid #e0cfcf; border-radius: 12px; box-shadow: 0 4px 18px rgb(38 19 23 / .05); }
+.oe-object-panel--full .oe-object-panel__header { padding: 18px 20px; }
+.oe-object-panel--full .oe-object-panel__header h3 { font-size: 17px; }
+.oe-object-panel--full .oe-property-list { padding: 8px 20px 18px; }
+.oe-object-panel--full .oe-property-list > div { grid-template-columns: minmax(140px, .7fr) minmax(0, 2fr); padding: 10px 0; }
+.oe-object-panel--full .oe-property-list dt, .oe-object-panel--full .oe-property-list dd { font-size: 12px; }
+.oe-object-panel--full .oe-object-panel__actions { padding: 11px 18px; }
 .oe-object-panel__header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; border-bottom: 1px solid #e5e9ef; padding: 14px; }
 .oe-object-panel__header h3 { margin: 3px 0 0; font-size: 14px; }
 .oe-object-panel__header button { border-radius: 4px; color: #6b7587; padding: 4px; }

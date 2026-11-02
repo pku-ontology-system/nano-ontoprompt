@@ -2,23 +2,37 @@
 import TemporalSnapshotConnector from '../object-explorer/TemporalSnapshotConnector';
 import TemporalSourceForm, { type TemporalSourcePayload } from './TemporalSourceForm';
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router-dom";
 import cytoscape from "cytoscape";
-import { CheckCircle2, CirclePause, Loader2, Play, RefreshCw, RotateCcw, SkipForward, Square, TriangleAlert } from "lucide-react";
+import { CheckCircle2, CirclePause, Loader2, Play, RefreshCw, RotateCcw, Search, SkipForward, Square, TriangleAlert } from "lucide-react";
 import { apiClientV2 } from "@/api/client";
 import { compactRelationshipLabel, curveClassName, curveStyleRules, deterministicGraphPositions, parallelCurveOffsets } from "@/lib/relationshipGraph";
 
 type Run = {
   id: string; run_id?: string; ontology_id: string; status: string; source_mode?: string; source_id?: string; time_kind?: string; config?: Record<string, any>;
-  episode_ids?: string[]; series_ids?: string[]; start_ordinal?: number; end_ordinal?: number;
-  current_ordinal?: number | null; current_event_index?: number; total_events?: number; committed_events?: number;
-  watermark_ordinal?: number | null; event_interval_ms?: number; speed?: number; progress?: { pct?: number; completed?: number; total?: number; stage?: string };
+  episode_ids?: string[]; series_ids?: string[]; start_ordinal?: number | null; end_ordinal?: number | null;
+  current_ordinal?: number | null; current_event_index?: number; total_events?: number | null; committed_events?: number;
+  first_received_ordinal?: number | null; source_exhausted?: boolean | null;
+  watermark_ordinal?: number | null; event_interval_ms?: number; speed?: number; progress?: { pct?: number; completed?: number; total?: number | null; stage?: string };
+  heartbeat_at?: string | null; worker_lease_expires_at?: string | null; next_attempt_at?: string | null; dispatch_attempts?: number;
   metrics?: Record<string, unknown>; state?: Record<string, any>; latest_event?: { payload?: Record<string, unknown>; event_key?: string; ordinal?: number; event_time?: string | null; ingestion_time?: string | null; source_row_id?: string; episode_id?: string; entity_key?: string } | null; error?: string; published_snapshot_id?: string | null;
 };
+type FailedStreamEvent = { id: string; event_key: string; episode_id: string; ordinal: number; status: string; error?: string | null };
+type ProjectionAttempt = { id: string; event_id: string; attempt_no: number; retry_generation: number; attempt_type: string; status: string; requested_by?: string | null; reason?: string | null; error_code?: string | null; error_message?: string | null; created_at?: string | null; started_at?: string | null; finished_at?: string | null };
+type ProjectionHealth = { status: string; events_pending_or_unknown: number; sql_expected_nodes: number; sql_expected_edges: number; graph_counts?: { nodes: number; edges: number } | null; count_match_is_not_content_proof: boolean; last_rebuild?: { status: string; verified_nodes?: number; verified_edges?: number; content_digest?: string | null; error_message?: string | null } | null };
 type Graph = { nodes: any[]; edges: any[]; total_instances?: number; total_edges?: number; available?: boolean; error?: string };
+type TemporalSearchFact = { predicate: string; state_key?: string | null; object_id?: string | null; object_value?: unknown; valid_from_ordinal: number; valid_to_ordinal?: number | null; evidence_ref_id?: string | null; source_event_id?: string | null };
+type TemporalSearchResponse = { at: number; time_kind?: string; index_revision?: string; results: Array<{ subject_id: string; object_ref_id?: string; score: number; matched_facts: TemporalSearchFact[] }> };
+type TemporalVectorIndexJob = { id: string; status: "queued" | "running" | "completed" | "failed" | "pruned"; total_facts: number; indexed_facts: number; error_message?: string | null };
+type PendingTemporalIndex = { status: "indexing"; message?: string; job: TemporalVectorIndexJob };
+type TemporalVectorIndexRetentionEvent = { id: string; source_revision: string; reason: string; details?: { retention_days?: number; keep_per_replay?: number; generation_age_days?: number; indexed_facts?: number }; created_at?: string | null };
+type ReconciliationPreview = { run_id: string; status: string; offset: number; limit: number; total_committed_events: number; scanned_events: number; unique_observations: number; existing_instances: number; missing_instances: number; invalid_events: number; has_more: boolean; next_offset?: number | null; schema_revision_id?: string | null; dataset_version_id?: string | null };
+type ReconciliationResult = { reconciliation_id: string; run_id: string; status: string; scanned_events: number; created_instances: number; updated_instances: number; invalid_events: number; has_more: boolean; next_offset?: number | null; idempotent?: boolean };
+type ReconciliationAudit = { id: string; requested_by: string; request: Record<string, unknown>; result: ReconciliationResult; created_at?: string | null };
 
 const label: Record<string, string> = { created: "待开始", queued: "排队中", running: "处理中", pausing: "即将暂停", paused: "已暂停", completed: "已完成，待发布", published: "已发布", failed: "失败", cancelled: "已取消" };
+const projectionHealthLabel: Record<string, string> = { unavailable: "图服务不可用", missing_graph: "图空间缺失", empty: "空投影", count_match: "数量匹配，未逐项核验", content_verified: "最近重建已逐项核验", rebuilding: "正在 SQL 驱动重建", rebuild_failed: "重建失败，当前读取 SQL", lag_or_count_mismatch: "存在滞后或数量差异" };
 const fmt = (value: unknown) => value === null || value === undefined || value === "" ? "—" : String(value);
 const fmtTime = (value: unknown, timeKind?: string) => timeKind === "event_time" && typeof value === "number" && Number.isFinite(value) ? new Date(value * 1000).toISOString() : fmt(value);
 const errorText = (reason: any) => typeof reason?.detail === "string" ? reason.detail : reason?.detail?.message || reason?.message || "动态运行请求失败";
@@ -100,12 +114,248 @@ function KeyValueTable({ values }: { values: Record<string, unknown> }) {
   return <div className="overflow-hidden rounded border border-slate-200">{entries.slice(0, 24).map(([key, value]) => <div key={key} className="grid grid-cols-[110px_minmax(0,1fr)] border-b border-slate-100 last:border-0"><span className="bg-slate-50 px-2 py-1.5 text-[11px] text-slate-500">{key}</span><span className="break-words px-2 py-1.5 text-[11px] text-slate-700">{typeof value === "object" ? JSON.stringify(value) : fmt(value)}</span></div>)}</div>;
 }
 
+function TemporalSemanticSearchPanel({ run, at, onOpenObject, onUseTemporalEvent }: { run: Run; at: number; onOpenObject: (node: any) => void; onUseTemporalEvent: (eventId: string, prompt: string) => void }) {
+  const [query, setQuery] = useState("");
+  const [response, setResponse] = useState<TemporalSearchResponse | null>(null);
+  const [indexJob, setIndexJob] = useState<TemporalVectorIndexJob | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const executeSearch = useCallback(async () => {
+    if (!query.trim()) return;
+    setLoading(true);
+    setError("");
+    try {
+      const result = await apiClientV2.post<TemporalSearchResponse | PendingTemporalIndex>(`/temporal-streams/${run.id}/search/semantic`, {
+        query: query.trim(), at, n_results: 10,
+      });
+      if ((result as PendingTemporalIndex).status === "indexing") {
+        const pending = result as PendingTemporalIndex;
+        setResponse(null);
+        if (pending.job.status === "failed") {
+          setIndexJob(null);
+          setError(pending.job.error_message || "后台向量索引构建失败，请稍后重试");
+        } else {
+          setIndexJob(pending.job);
+        }
+        return;
+      }
+      setIndexJob(null);
+      setResponse(result as TemporalSearchResponse);
+    } catch (reason) {
+      setIndexJob(null);
+      setResponse(null);
+      setError(errorText(reason));
+    } finally {
+      setLoading(false);
+    }
+  }, [at, query, run.id]);
+  const search = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    void executeSearch();
+  };
+  useEffect(() => {
+    const jobId = indexJob?.id;
+    if (!jobId || !["queued", "running", "completed"].includes(indexJob?.status || "")) return;
+    let cancelled = false;
+    let polling = false;
+    const poll = async () => {
+      if (polling) return;
+      polling = true;
+      try {
+        const job = await apiClientV2.get<TemporalVectorIndexJob>(`/temporal-streams/${run.id}/vector-index-jobs/${jobId}`);
+        if (cancelled) return;
+        setIndexJob(job);
+        if (job.status === "completed") {
+          setIndexJob(null);
+          await executeSearch();
+        } else if (job.status === "failed" || job.status === "pruned") {
+          setIndexJob(null);
+          setError(job.error_message || (job.status === "pruned" ? "历史向量索引已清理，请重新检索" : "后台向量索引构建失败，请稍后重试"));
+        }
+      } catch {
+        // Keep the durable job visible through temporary status API failures.
+      } finally {
+        polling = false;
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => { void poll(); }, 2000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [executeSearch, indexJob?.id, indexJob?.status, run.id]);
+  const displayValue = (fact: TemporalSearchFact) => {
+    const objectValue = fact.object_value && typeof fact.object_value === "object"
+      ? (fact.object_value as Record<string, unknown>).value ?? fact.object_value
+      : fact.object_value;
+    const value = objectValue ?? fact.object_id ?? "—";
+    return typeof value === "object" ? JSON.stringify(value) : String(value);
+  };
+  return <section className="rounded-xl border border-slate-200 bg-white p-4">
+    <div className="flex flex-wrap items-start justify-between gap-3">
+      <div><h3 className="text-sm font-medium">时序语义检索</h3><p className="mt-1 text-[11px] text-slate-500">按当前位置召回回放事实；结果会再按 PostgreSQL 中的有效时间区间核验。</p></div>
+      <span className="rounded bg-slate-100 px-2 py-1 text-[10px] text-slate-500">{run.time_kind === "event_time" ? "Event Time" : "Ordinal"} · {fmtTime(at, run.time_kind)}</span>
+    </div>
+    <form onSubmit={(event) => void search(event)} className="mt-3 flex flex-wrap gap-2">
+      <input value={query} onChange={(event) => setQuery(event.target.value)} maxLength={1000} aria-label="时序语义检索问题" placeholder="例如：哪些观测显示刀具状态异常？" className="min-w-[220px] flex-1 rounded border border-slate-300 px-3 py-2 text-xs outline-none focus:border-slate-600" />
+      <button type="submit" disabled={loading || Boolean(indexJob) || !query.trim()} className="inline-flex items-center gap-1.5 rounded bg-slate-800 px-3 py-2 text-xs text-white disabled:opacity-50"><Search size={13} />{indexJob ? "索引中" : loading ? "检索中" : "检索当前时点"}</button>
+    </form>
+    {indexJob && <p role="status" className="mt-3 rounded border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800">大回放后台索引：{indexJob.status === "queued" ? "排队中" : "构建中"}，已处理 {indexJob.indexed_facts.toLocaleString()} / {indexJob.total_facts.toLocaleString()} 条事实。</p>}
+    {error && <p role="alert" className="mt-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{error}</p>}
+    {response && <div className="mt-3 space-y-2" aria-live="polite">
+      <p className="text-[10px] text-slate-400">索引版本 {response.index_revision || "—"} · 时间点 {fmtTime(response.at, response.time_kind || run.time_kind)}</p>
+      {response.results.length ? response.results.map((result) => <article key={result.subject_id} className="rounded border border-slate-200 bg-slate-50 p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2"><span className="break-all font-mono text-[11px] text-slate-700">{result.subject_id}</span><div className="flex items-center gap-2"><span className="text-[10px] tabular-nums text-slate-500">相似度 {result.score.toFixed(3)}</span>{result.object_ref_id && <button type="button" onClick={() => onOpenObject({ id: result.subject_id, entity_type: "Observation", properties: { object_ref_id: result.object_ref_id } })} className="rounded border border-slate-300 px-2 py-1 text-[10px] text-slate-700 hover:bg-white">打开对象</button>}</div></div>
+        <div className="mt-2 space-y-1">{result.matched_facts.map((fact, index) => <div key={`${fact.predicate}-${fact.state_key || ""}-${index}`} className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 pt-1.5"><p className="break-words text-[11px] text-slate-600"><span className="font-medium">{fact.state_key || fact.predicate}</span>：{displayValue(fact)} <span className="text-slate-400">· {fact.valid_from_ordinal} → {fact.valid_to_ordinal ?? "当前"}</span></p>{fact.source_event_id && <button type="button" onClick={() => onUseTemporalEvent(fact.source_event_id!, query.trim())} className="shrink-0 rounded border border-slate-300 px-2 py-1 text-[10px] text-slate-700 hover:bg-white">固定此观测到 Agent</button>}</div>)}</div>
+      </article>) : <p className="rounded border border-slate-100 bg-slate-50 px-3 py-4 text-center text-xs text-slate-400">该时间点没有召回仍有效的事实。</p>}
+    </div>}
+    {!response && !error && !indexJob && <p className="mt-3 text-[10px] text-slate-400">首次查询会按回放构建独立索引；大回放使用后台分批构建。索引只负责候选召回，正式结果以该运行和时间点的事实为准。</p>}
+  </section>;
+}
+
+function TemporalVectorIndexRetentionPanel({ run }: { run: Run }) {
+  const [events, setEvents] = useState<TemporalVectorIndexRetentionEvent[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState("");
+  const load = useCallback(async () => {
+    setError("");
+    try {
+      const response = await apiClientV2.get<{ events: TemporalVectorIndexRetentionEvent[] }>(
+        `/temporal-streams/${run.id}/vector-index-retention-events?limit=20`,
+      );
+      setEvents(response.events || []);
+      setLoaded(true);
+    } catch (reason) {
+      setError(errorText(reason));
+      setLoaded(true);
+    }
+  }, [run.id]);
+  useEffect(() => { void load(); }, [load]);
+
+  return <section className="rounded-xl border border-slate-200 bg-white p-4">
+    <div className="flex items-start justify-between gap-3">
+      <div><h3 className="text-sm font-medium">索引保留审计</h3><p className="mt-1 text-[11px] text-slate-500">查看此回放中已清理的历史向量索引版本与保留策略。</p></div>
+      <button type="button" onClick={() => void load()} className="rounded border border-slate-300 px-2.5 py-1 text-[11px] text-slate-700 hover:bg-slate-50">刷新</button>
+    </div>
+    {error && <p role="alert" className="mt-3 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">{error}</p>}
+    {!error && !loaded && <p role="status" className="mt-3 text-[11px] text-slate-400">读取清理记录…</p>}
+    {!error && loaded && !events.length && <p className="mt-3 text-[11px] text-slate-400">暂无清理记录。</p>}
+    {!error && events.length > 0 && <div className="mt-3 space-y-2">{events.map((event) => <article key={event.id} className="rounded border border-slate-200 bg-slate-50 px-3 py-2">
+      <div className="flex flex-wrap items-center justify-between gap-2"><span className="font-mono text-[10px] text-slate-700">{event.source_revision.slice(0, 16)}</span><time className="text-[10px] text-slate-500">{event.created_at ? new Date(event.created_at).toLocaleString() : "时间未知"}</time></div>
+      <p className="mt-1 text-[11px] text-slate-600">超过 {event.details?.retention_days ?? "—"} 天 · 每回放保留最近 {event.details?.keep_per_replay ?? "—"} 版 · 索引年龄 {event.details?.generation_age_days ?? "—"} 天 · {event.details?.indexed_facts?.toLocaleString() ?? "—"} 条事实</p>
+    </article>)}</div>}
+  </section>;
+}
+
+function TemporalObjectReconciliationPanel({ run }: { run: Run }) {
+  const [offset, setOffset] = useState(0);
+  const [preview, setPreview] = useState<ReconciliationPreview | null>(null);
+  const [result, setResult] = useState<ReconciliationResult | null>(null);
+  const [history, setHistory] = useState<ReconciliationAudit[] | null>(null);
+  const [confirm, setConfirm] = useState(false);
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+  const idempotencyKey = useRef("");
+  const canReconcile = ["completed", "failed", "cancelled", "published"].includes(run.status);
+
+  const loadPreview = useCallback(async (nextOffset = 0) => {
+    if (!canReconcile) return;
+    setBusy("preview");
+    setError("");
+    try {
+      const response = await apiClientV2.get<ReconciliationPreview>(
+        `/temporal-streams/${run.id}/instances/reconciliation?offset=${nextOffset}&limit=5000`,
+      );
+      setOffset(nextOffset);
+      setPreview(response);
+      setResult(null);
+      setConfirm(false);
+    } catch (reason) {
+      setPreview(null);
+      setError(errorText(reason));
+    } finally {
+      setBusy("");
+    }
+  }, [canReconcile, run.id]);
+
+  const loadHistory = useCallback(async () => {
+    try {
+      const response = await apiClientV2.get<{ reconciliations: ReconciliationAudit[] }>(
+        `/temporal-streams/${run.id}/instances/reconciliations?limit=20`,
+      );
+      setHistory(response.reconciliations || []);
+    } catch {
+      setHistory(null);
+    }
+  }, [run.id]);
+
+  useEffect(() => {
+    void loadPreview(0);
+    void loadHistory();
+  }, [loadHistory, loadPreview]);
+
+  const apply = async () => {
+    if (!preview || !confirm) return;
+    if (!idempotencyKey.current) idempotencyKey.current = window.crypto.randomUUID();
+    setBusy("apply");
+    setError("");
+    try {
+      const response = await apiClientV2.post<ReconciliationResult>(
+        `/temporal-streams/${run.id}/instances/reconciliation`,
+        { idempotency_key: idempotencyKey.current, offset: preview.offset, limit: preview.limit },
+      );
+      idempotencyKey.current = "";
+      setResult(response);
+      setConfirm(false);
+      await loadPreview(preview.offset);
+      await loadHistory();
+      setResult(response);
+    } catch (reason) {
+      setError(errorText(reason));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  return <section className="rounded-xl border border-slate-200 bg-white p-4">
+    <div className="flex flex-wrap items-start justify-between gap-3">
+      <div><h3 className="text-sm font-medium">Observation 对象身份对账</h3><p className="mt-1 text-[11px] text-slate-500">把终止回放中的观测按稳定行身份关联到本体对象；预览只读，写入需单独确认并留下不可变审计记录。</p></div>
+      <button type="button" onClick={() => void loadPreview(offset)} disabled={!canReconcile || !!busy} className="rounded border border-slate-300 px-2.5 py-1.5 text-[11px] text-slate-700 disabled:opacity-50">{busy === "preview" ? "统计中" : "刷新预览"}</button>
+    </div>
+    {!canReconcile && <p className="mt-3 rounded bg-slate-50 p-2 text-[11px] text-slate-500">回放运行期间不能对账；结束后可预览和执行。</p>}
+    {error && <p role="alert" className="mt-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{error}</p>}
+    {preview && <>
+      <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] md:grid-cols-5">
+        <div className="rounded bg-slate-50 p-2"><span className="text-slate-500">扫描事件</span><strong className="mt-1 block text-slate-800">{preview.scanned_events} / {preview.total_committed_events}</strong></div>
+        <div className="rounded bg-slate-50 p-2"><span className="text-slate-500">唯一观测</span><strong className="mt-1 block text-slate-800">{preview.unique_observations}</strong></div>
+        <div className="rounded bg-slate-50 p-2"><span className="text-slate-500">已有对象</span><strong className="mt-1 block text-slate-800">{preview.existing_instances}</strong></div>
+        <div className="rounded bg-slate-50 p-2"><span className="text-slate-500">待创建对象</span><strong className="mt-1 block text-slate-800">{preview.missing_instances}</strong></div>
+        <div className="rounded bg-slate-50 p-2"><span className="text-slate-500">无效观测</span><strong className="mt-1 block text-slate-800">{preview.invalid_events}</strong></div>
+      </div>
+      <p className="mt-2 break-all text-[10px] text-slate-400">Schema revision {preview.schema_revision_id || "—"} · Dataset version {preview.dataset_version_id || "—"} · 分页偏移 {preview.offset}</p>
+      {(preview.missing_instances > 0 || preview.existing_instances > 0) && <div className="mt-3 rounded border border-amber-200 bg-amber-50 p-3">
+        <p className="text-[11px] text-amber-900">执行会创建 {preview.missing_instances} 个缺失对象，并用此回放的固定数据版本核验/刷新 {preview.existing_instances} 个已有对象。</p>
+        <label className="mt-2 flex items-start gap-2 text-[11px] text-amber-900"><input type="checkbox" checked={confirm} onChange={(event) => setConfirm(event.target.checked)} />我已核对该回放和数据版本，确认写入本体对象。</label>
+        <button type="button" onClick={() => void apply()} disabled={!confirm || !!busy} className="mt-2 rounded bg-amber-800 px-3 py-2 text-[11px] text-white disabled:opacity-50">{busy === "apply" ? "对账中" : "确认执行对象对账"}</button>
+      </div>}
+      {preview.has_more && preview.next_offset !== null && <button type="button" onClick={() => void loadPreview(preview.next_offset || 0)} disabled={!!busy} className="mt-3 rounded border border-slate-300 px-2.5 py-1.5 text-[11px] text-slate-700 disabled:opacity-50">预览下一批</button>}
+    </>}
+    {result && <p role="status" className="mt-3 rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11px] text-emerald-900">对账记录 {result.reconciliation_id}：新建 {result.created_instances} 个、刷新 {result.updated_instances} 个，跳过无效观测 {result.invalid_events} 条。</p>}
+    <details className="mt-3 rounded border border-slate-200 bg-slate-50 px-3 py-2">
+      <summary className="cursor-pointer text-[11px] font-medium text-slate-700">对账审计记录（{history?.length ?? "…"}）</summary>
+      {history === null ? <p className="mt-2 text-[11px] text-slate-500">审计记录暂不可用。</p> : history.length ? <div className="mt-2 space-y-2">{history.map((item) => <div key={item.id} className="rounded border border-slate-200 bg-white p-2 text-[10px] text-slate-600"><p className="break-all font-mono">{item.id}</p><p className="mt-1">操作人 {item.requested_by} · {fmt(item.created_at)}</p><p>新建 {item.result.created_instances} · 刷新 {item.result.updated_instances} · 无效 {item.result.invalid_events}</p></div>)}</div> : <p className="mt-2 text-[11px] text-slate-500">暂无已执行对账；预览不会写入数据或审计记录。</p>}
+    </details>
+  </section>;
+}
+
 export default function DynamicEvolutionTab({ ontologyId }: { ontologyId: string }) {
   const [params, setParams] = useSearchParams();
   const runId = params.get("run_id") || "";
   const [runs, setRuns] = useState<Run[]>([]);
   const [run, setRun] = useState<Run | null>(null);
   const [graph, setGraph] = useState<Graph | null>(null);
+  const [failedEvents, setFailedEvents] = useState<FailedStreamEvent[]>([]);
+  const [projectionAttempts, setProjectionAttempts] = useState<ProjectionAttempt[]>([]);
+  const [projectionHealth, setProjectionHealth] = useState<ProjectionHealth | null>(null);
+  const [retryReasons, setRetryReasons] = useState<Record<string, string>>({});
   const [selectedNode, setSelectedNode] = useState<any>(null);
   const [selectedEdge, setSelectedEdge] = useState<any>(null);
   const [viewMode, setViewMode] = useState<"current" | "history">("current");
@@ -127,6 +377,14 @@ export default function DynamicEvolutionTab({ ontologyId }: { ontologyId: string
       if (followLatest && point !== null && point !== undefined) { setAt(Number(point)); setParams((old) => { const next = new URLSearchParams(old); next.set("at", String(point)); return next; }, { replace: true }); }
       const data = await apiClientV2.get<Graph>(`/temporal-streams/${runId}/graph`, { params: { at: point ?? undefined, mode: "cumulative", relation_state: viewMode === "current" ? "current" : "all", limit: 200 } });
       setGraph(data);
+      const [failedResult, attemptResult, healthResult] = await Promise.all([
+        apiClientV2.get<{ events?: FailedStreamEvent[] }>(`/temporal-streams/${runId}/events`, { params: { status: "failed", limit: 100 } }),
+        apiClientV2.get<{ attempts?: ProjectionAttempt[] }>(`/temporal-streams/${runId}/attempts`, { params: { limit: 200 } }),
+        apiClientV2.get<ProjectionHealth>(`/temporal-streams/${runId}/projection-health`),
+      ]);
+      setFailedEvents(failedResult?.events || []);
+      setProjectionAttempts(attemptResult?.attempts || []);
+      setProjectionHealth(healthResult);
       setSelectedEdge(null);
       setError("");
     } catch (reason) { setError(errorText(reason)); }
@@ -137,6 +395,7 @@ export default function DynamicEvolutionTab({ ontologyId }: { ontologyId: string
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { void load(); }, [load]);
   useEffect(() => { if (!runId || !run || ["failed", "cancelled", "published", "completed"].includes(run.status)) return; const timer = window.setInterval(() => void load(), 900); return () => window.clearInterval(timer); }, [load, run, runId]);
+  useEffect(() => { if (!runId || projectionHealth?.status !== "rebuilding") return; const timer = window.setInterval(() => void load(), 2000); return () => window.clearInterval(timer); }, [load, projectionHealth?.status, runId]);
   const loadRef = useRef(load);
   useEffect(() => { loadRef.current = load; }, [load]);
   useEffect(() => {
@@ -178,9 +437,22 @@ export default function DynamicEvolutionTab({ ontologyId }: { ontologyId: string
   }, [followLatest, runId]);
 
   const control = async (action: string) => { if (!runId) return; setBusy(action); setError(""); try { await apiClientV2.post(`/temporal-streams/${runId}/control`, { action, speed }); await load(); } catch (reason) { setError(errorText(reason)); } finally { setBusy(""); } };
+  const rebuildProjection = async () => { if (!runId) return; setBusy("projection-rebuild"); setError(""); try { await apiClientV2.post(`/temporal-streams/${runId}/projection-rebuild`); await load(); } catch (reason) { setError(errorText(reason)); } finally { setBusy(""); } };
   const create = async () => { setBusy("create"); setError(""); try { const created = await apiClientV2.post<Run>(`/ontologies/${ontologyId}/temporal-streams`, { source_id: "factorynet_cnc", source_mode: "file_replay", speed: 1 }); setParams((old) => { const next = new URLSearchParams(old); next.set("tab", "dynamic"); next.set("run_id", created.id || created.run_id || ""); return next; }); } catch (reason) { setError(errorText(reason)); } finally { setBusy(""); } };
   const createSource = async (payload: TemporalSourcePayload) => { setBusy("source"); setError(""); try { const created = await apiClientV2.post<Run>(`/ontologies/${ontologyId}/temporal-streams`, payload); setParams((old) => { const next = new URLSearchParams(old); next.set("tab", "dynamic"); next.set("run_id", created.id || created.run_id || ""); return next; }); } catch (reason) { setError(errorText(reason)); } finally { setBusy(""); } };
   const publish = async () => { if (!runId) return; setBusy("publish"); setError(""); try { await apiClientV2.post(`/temporal-streams/${runId}/publish`); await load(); } catch (reason) { setError(errorText(reason)); } finally { setBusy(""); } };
+  const retryEvent = async (event: FailedStreamEvent) => {
+    const reason = (retryReasons[event.id] || "").trim();
+    if (reason.length < 8) { setError("人工重放原因至少需要 8 个字符。"); return; }
+    setBusy(`retry:${event.id}`); setError("");
+    try {
+      const key = `manual-${Date.now()}-${Math.random().toString(36).slice(2, 14)}`;
+      await apiClientV2.post(`/temporal-streams/${runId}/events/${event.id}/retry`, { idempotency_key: key, reason });
+      setRetryReasons((current) => ({ ...current, [event.id]: "" }));
+      await load();
+    } catch (reason) { setError(errorText(reason)); }
+    finally { setBusy(""); }
+  };
   const updateAt = (value: number) => { setFollowLatest(false); setAt(value); setParams((old) => { const next = new URLSearchParams(old); next.set("at", String(value)); return next; }, { replace: true }); };
   const latestPayload = run?.latest_event?.payload || {};
   const stateRows = useMemo(() => Object.entries((run?.state?.episodes || {})[run?.episode_ids?.[0] || ""] || {}).filter(([key]) => !key.endsWith("previous_fact_id")), [run]);
@@ -188,6 +460,11 @@ export default function DynamicEvolutionTab({ ontologyId }: { ontologyId: string
     if (run?.source_id && run.source_id !== "factorynet_cnc") {
       const mapping = run.config?.mapping || {};
       const properties = Object.fromEntries(Object.keys(mapping.properties || {}).map((key) => [key, `<${key}>`])) as Record<string, string>;
+      for (const link of Array.isArray(mapping.links) ? mapping.links : []) {
+        if (typeof link?.source_field === "string" && link.source_field.trim()) {
+          properties[link.source_field] = "<target-object-id>";
+        }
+      }
       const event: Record<string, unknown> = { event_id: "source-event-001", episode_id: "entity-group-001", entity_key: "object-id-001", source_sequence: Number(run.current_event_index ?? -1) + 1, payload: properties, source_ref: { source: run.source_id } };
       if (run.time_kind === "event_time") event.event_time = new Date().toISOString();
       else event.ordinal = Number(run.current_ordinal || 0) + 1;
@@ -198,18 +475,39 @@ export default function DynamicEvolutionTab({ ontologyId }: { ontologyId: string
 
   if (!runId) return <div className="space-y-4" data-testid="dynamic-evolution-tab"><section className="rounded-xl border border-slate-200 bg-white p-6"><div className="flex items-start justify-between gap-3"><div><p className="text-xs uppercase tracking-[0.16em] text-slate-400">时序数据工作台</p><h2 className="mt-1 text-lg font-semibold text-slate-900">动态演化</h2><p className="mt-2 text-xs text-slate-500">每次提交一条观测；选择来源、时间语义和固定 schema 后即可跟踪变化。</p></div><button onClick={() => void create()} disabled={!!busy} className="inline-flex items-center gap-2 rounded-md bg-slate-900 px-3 py-2 text-xs text-white disabled:opacity-50"><Play size={13} />{busy === "create" ? "创建中" : "新建 FactoryNet 演示"}</button></div>{error && <p className="mt-4 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{error}</p>}</section><TemporalSourceForm busy={busy === "source"} onCreate={createSource} /><section className="rounded-xl border border-slate-200 bg-white p-5"><h3 className="text-sm font-medium">已有运行</h3><div className="mt-3 space-y-2">{runs.map((item) => <button key={item.id} onClick={() => { const next = new URLSearchParams(params); next.set("run_id", item.id); setParams(next); }} className="flex w-full items-center justify-between rounded border border-slate-200 px-3 py-3 text-left text-xs hover:border-slate-400"><span><span className="font-mono text-slate-700">{item.id.slice(0, 8)}</span><span className="ml-3 text-slate-500">{item.source_id || "FactoryNet CNC"} · {(item.series_ids || item.episode_ids || []).join(", ") || "推送模式"}</span></span><span className="text-slate-500">{label[item.status] || item.status}</span></button>)}{!runs.length && <p className="text-xs text-slate-400">暂无动态运行，点击右上角创建演示。</p>}</div></section></div>;
   if (!run) return <div className="flex min-h-[360px] items-center justify-center text-sm text-slate-500"><Loader2 className="mr-2 animate-spin" size={17} />读取动态运行</div>;
-  const total = Number(run.total_events || run.progress?.total || 0); const committed = Number(run.committed_events || run.progress?.completed || 0); const pct = Number(run.progress?.pct ?? (total ? committed / total * 100 : 0)); const start = Number(run.start_ordinal ?? 0); const end = Number(run.end_ordinal ?? start); const point = at ?? Number(run.current_ordinal ?? start);
+  const declaredTotal = Number(run.total_events ?? run.progress?.total ?? 0); const total = declaredTotal > 0 ? declaredTotal : null; const committed = Number(run.committed_events ?? run.progress?.completed ?? 0); const terminal = ["completed", "published"].includes(run.status); const pct = terminal ? 100 : Number(run.progress?.pct ?? (total ? committed / total * 100 : 0)); const start = Number(run.start_ordinal ?? run.first_received_ordinal ?? run.watermark_ordinal ?? run.current_ordinal ?? 0); const end = Number(run.end_ordinal ?? run.watermark_ordinal ?? run.current_ordinal ?? start); const requestedPoint = at ?? Number(run.current_ordinal ?? end); const point = Math.min(Math.max(requestedPoint, start), Math.max(start, end)); const eventSummary = total === null ? `已提交 ${committed} 条事件${run.source_exhausted ? " · 来源已耗尽" : ""}` : `已提交 ${committed} / ${total} 条事件`; const queueSummary = total === null ? (terminal ? "未处理 0 条" : "未处理数量未知") : `未处理 ${Math.max(0, total - committed)} 条`;
   return <div className="space-y-4" data-testid="dynamic-evolution-tab">
     {run.published_snapshot_id && <TemporalSnapshotConnector ontologyId={ontologyId} snapshotId={run.published_snapshot_id} payload={latestPayload} />}
     <div className="flex flex-wrap items-start justify-between gap-3"><div><button onClick={() => { const next = new URLSearchParams(params); next.delete("run_id"); setParams(next); }} className="mb-2 text-xs text-slate-500 hover:text-slate-900">返回运行列表</button><h2 className="text-xl font-semibold text-slate-900">动态演化</h2><p className="mt-1 text-xs text-slate-500">运行 {run.id.slice(0, 12)} · 来源：{run.source_id || "FactoryNet CNC"} · episode：{(run.episode_ids || run.series_ids || []).join(", ") || "推送"} · 时间语义：{run.time_kind === "event_time" ? "Event Time (UTC)" : "Ordinal"}</p></div><button onClick={() => void load()} className="inline-flex items-center gap-2 rounded border border-slate-300 bg-white px-3 py-2 text-xs hover:border-slate-500"><RefreshCw size={13} />刷新</button></div>
     {error && <div className="flex items-start gap-2 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700"><TriangleAlert size={14} />{error}</div>}
-    <section className="rounded-xl border border-slate-200 bg-white p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-2"><span className={`grid h-8 w-8 place-items-center rounded-full ${run.status === "failed" ? "bg-red-100 text-red-700" : run.status === "completed" || run.status === "published" ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-700"}`}>{run.status === "completed" || run.status === "published" ? <CheckCircle2 size={16} /> : run.status === "failed" ? <TriangleAlert size={16} /> : <Loader2 className="animate-spin" size={16} />}</span><div><p className="text-sm font-medium text-slate-900">{label[run.status] || run.status}</p><p className="mt-0.5 text-xs text-slate-500">{run.error || run.progress?.stage || `已提交 ${committed} / ${total} 条事件`}</p></div></div><div className="flex flex-wrap items-center gap-2"><label className="text-xs text-slate-500">速度<select value={speed} onChange={(event) => setSpeed(Number(event.target.value))} className="ml-1 rounded border border-slate-300 px-2 py-1"><option value={0.5}>0.5 条/秒</option><option value={1}>1 条/秒</option><option value={2}>2 条/秒</option><option value={5}>5 条/秒</option><option value={10}>10 条/秒</option><option value={20}>20 条/秒</option></select></label><button disabled={!!busy || !["created", "paused", "queued"].includes(run.status)} onClick={() => void control(run.status === "paused" ? "resume" : "start")} className="rounded border border-slate-300 px-2 py-1.5 text-xs disabled:opacity-40"><Play size={12} className="mr-1 inline" />{run.status === "paused" ? "继续" : "开始"}</button><button disabled={!!busy || !["running", "pausing"].includes(run.status)} onClick={() => void control("pause")} className="rounded border border-slate-300 px-2 py-1.5 text-xs disabled:opacity-40"><CirclePause size={12} className="mr-1 inline" />暂停</button><button disabled={!!busy || !["created", "paused"].includes(run.status)} onClick={() => void control("step")} className="rounded border border-slate-300 px-2 py-1.5 text-xs disabled:opacity-40"><SkipForward size={12} className="mr-1 inline" />单步</button><button disabled={!!busy || ["completed", "published", "failed", "cancelled"].includes(run.status)} onClick={() => void control("cancel")} className="rounded border border-red-200 px-2 py-1.5 text-xs text-red-700 disabled:opacity-40"><Square size={11} className="mr-1 inline" />取消</button></div></div><div className="mt-4 h-2 overflow-hidden rounded bg-slate-100"><div className="h-full bg-slate-800 transition-all" style={{ width: `${Math.min(100, Math.max(0, pct))}%` }} /></div><div className="mt-2 flex flex-wrap justify-between gap-2 text-[11px] text-slate-500"><span>当前事件 {committed} / {total} · 队列 {Math.max(0, total - committed)}</span><span>水位：{fmtTime(run.watermark_ordinal, run.time_kind)}</span></div></section>
+    <section className="rounded-xl border border-slate-200 bg-white p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-2"><span className={`grid h-8 w-8 place-items-center rounded-full ${run.status === "failed" ? "bg-red-100 text-red-700" : run.status === "completed" || run.status === "published" ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-700"}`}>{run.status === "completed" || run.status === "published" ? <CheckCircle2 size={16} /> : run.status === "failed" ? <TriangleAlert size={16} /> : <Loader2 className="animate-spin" size={16} />}</span><div><p className="text-sm font-medium text-slate-900">{label[run.status] || run.status}</p><p className="mt-0.5 text-xs text-slate-500">{run.error || (terminal ? eventSummary : run.progress?.stage || eventSummary)}</p></div></div><div className="flex flex-wrap items-center gap-2"><label className="text-xs text-slate-500">速度<select value={speed} onChange={(event) => setSpeed(Number(event.target.value))} className="ml-1 rounded border border-slate-300 px-2 py-1"><option value={0.5}>0.5 条/秒</option><option value={1}>1 条/秒</option><option value={2}>2 条/秒</option><option value={5}>5 条/秒</option><option value={10}>10 条/秒</option><option value={20}>20 条/秒</option></select></label><button disabled={!!busy || !["created", "paused", "queued"].includes(run.status)} onClick={() => void control(run.status === "paused" ? "resume" : "start")} className="rounded border border-slate-300 px-2 py-1.5 text-xs disabled:opacity-40"><Play size={12} className="mr-1 inline" />{run.status === "paused" ? "继续" : "开始"}</button><button disabled={!!busy || !["running", "pausing"].includes(run.status)} onClick={() => void control("pause")} className="rounded border border-slate-300 px-2 py-1.5 text-xs disabled:opacity-40"><CirclePause size={12} className="mr-1 inline" />暂停</button><button disabled={!!busy || !["created", "paused"].includes(run.status)} onClick={() => void control("step")} className="rounded border border-slate-300 px-2 py-1.5 text-xs disabled:opacity-40"><SkipForward size={12} className="mr-1 inline" />单步</button><button disabled={!!busy || ["completed", "published", "failed", "cancelled"].includes(run.status)} onClick={() => void control("cancel")} className="rounded border border-red-200 px-2 py-1.5 text-xs text-red-700 disabled:opacity-40"><Square size={11} className="mr-1 inline" />取消</button></div></div><div className="mt-4 h-2 overflow-hidden rounded bg-slate-100"><div className="h-full bg-slate-800 transition-all" style={{ width: `${Math.min(100, Math.max(0, pct))}%` }} /></div><div className="mt-2 flex flex-wrap justify-between gap-2 text-[11px] text-slate-500"><span>已提交 {committed}{total === null ? " 条" : ` / ${total} 条`} · {queueSummary}</span><span>水位：{fmtTime(run.watermark_ordinal, run.time_kind)}</span></div><div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-slate-400"><span>Worker 心跳：{fmt(run.heartbeat_at)}</span><span>租约到期：{fmt(run.worker_lease_expires_at)}</span><span>下次重试：{fmt(run.next_attempt_at)}</span><span>派发尝试：{fmt(run.dispatch_attempts ?? 0)}</span></div></section>
     <section className="rounded-xl border border-slate-200 bg-white p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="text-sm font-medium">{run.time_kind === "event_time" ? "事件时间轴" : "Ordinal 时间轴"}</h3><p className="mt-1 text-[11px] text-slate-500">拖动只改变查看位置，不会修改运行水位。</p></div><div className="flex items-center gap-2"><button onClick={() => { setFollowLatest(true); updateAt(Number(run.current_ordinal ?? end)); }} className={`rounded border px-2 py-1 text-[11px] ${followLatest ? "border-slate-800 bg-slate-800 text-white" : "border-slate-300"}`}>跟随最新</button><button onClick={() => { setAt(start); setFollowLatest(false); }} className="rounded border border-slate-300 p-1.5" title="重置位置"><RotateCcw size={13} /></button></div></div><input aria-label={run.time_kind === "event_time" ? "事件时间轴" : "Ordinal 时间轴"} type="range" min={start} max={Math.max(start, end)} step="any" value={point} onChange={(event) => updateAt(Number(event.target.value))} className="mt-4 w-full accent-slate-800" /><div className="mt-1 flex justify-between text-[11px] text-slate-400"><span>{fmtTime(start, run.time_kind)}</span><span>当前位置 {fmtTime(point, run.time_kind)}</span><span>{fmtTime(end, run.time_kind)}</span></div></section>
+    <TemporalSemanticSearchPanel run={run} at={point} onOpenObject={setSelectedNode} onUseTemporalEvent={(eventId, prompt) => {
+      const next = new URLSearchParams(params);
+      next.set("tab", "agent");
+      next.set("agent_context_kind", "temporal_event");
+      next.set("agent_context_ref", eventId);
+      next.set("agent_task", `请分析这条时序观测，并用固定的历史版本和证据说明依据：${prompt}`.slice(0, 3800));
+      next.set("agent_title", `时序复核：${run.id.slice(0, 8)}`);
+      setParams(next);
+    }} />
+    <TemporalVectorIndexRetentionPanel run={run} />
+    <TemporalObjectReconciliationPanel run={run} />
     <section className="grid grid-cols-2 gap-3 md:grid-cols-5">{([["已提交事件", committed], [run.time_kind === "event_time" ? "当前事件时间" : "当前 Ordinal", fmtTime(run.current_ordinal, run.time_kind)], ["图中节点", graph?.total_instances ?? "—"], ["图中关系", graph?.total_edges ?? "—"], ["状态迁移", run.metrics?.state_transitions ?? 0]] as Array<[string, unknown]>).map(([key, value]) => <div key={key} className="rounded-xl border border-slate-200 bg-white p-3"><p className="text-[11px] text-slate-500">{key}</p><p className="mt-1 text-lg font-semibold tabular-nums text-slate-900">{fmt(value)}</p></div>)}</section>
-    <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_330px]"><div className="rounded-xl border border-slate-200 bg-white p-4"><div className="flex flex-wrap items-center justify-between gap-2"><div><h3 className="text-sm font-medium">动态实例关系</h3><p className="mt-1 text-[11px] text-slate-500">新增观测逐条进入；选择“完整历史”可查看已失效事实。</p></div><div className="flex items-center gap-3"><span className="inline-flex items-center gap-1 text-[10px] text-slate-400"><span className="h-2 w-2 rounded-full bg-blue-600" />最新事件</span><span className="inline-flex items-center gap-1 text-[10px] text-slate-400"><span className="h-px w-4 border-t border-dashed border-slate-400" />历史事实</span><div className="flex gap-1 rounded border border-slate-200 p-0.5"><button onClick={() => setViewMode("current")} className={`rounded px-2 py-1 text-[11px] ${viewMode === "current" ? "bg-slate-800 text-white" : "text-slate-500"}`}>当前状态</button><button onClick={() => setViewMode("history")} className={`rounded px-2 py-1 text-[11px] ${viewMode === "history" ? "bg-slate-800 text-white" : "text-slate-500"}`}>完整历史</button></div></div></div>{graph ? <StreamGraph graph={graph} latestEvent={run.latest_event} sourceId={run.source_id} onSelectNode={(node) => { setSelectedNode(node); setSelectedEdge(null); }} onSelectEdge={(edge) => { setSelectedEdge(edge); setSelectedNode(null); }} /> : <div className="grid h-[430px] place-items-center text-xs text-slate-400">等待第一条事件提交</div>}</div><aside className="space-y-4"><div className="rounded-xl border border-slate-200 bg-white p-4"><h3 className="text-sm font-medium">最新观测</h3>{run.latest_event ? <div className="mt-3 space-y-2 text-[11px]"><p className="break-all font-mono text-slate-600">{run.latest_event.event_key}</p><p>episode：{fmt(run.latest_event.episode_id)} · 时间：{fmt(run.latest_event.event_time || run.latest_event.ordinal)} · 接收：{fmt(run.latest_event.ingestion_time)}</p><KeyValueTable values={latestPayload} /></div> : <p className="mt-3 text-xs text-slate-400">尚未提交事件</p>}</div><div className="rounded-xl border border-slate-200 bg-white p-4"><h3 className="text-sm font-medium">当前状态</h3><div className="mt-3 space-y-2">{stateRows.map(([key, value]) => { const item = value && typeof value === "object" ? value as Record<string, unknown> : null; return <div key={key} className="rounded border border-slate-100 bg-slate-50 p-2 text-[11px]"><span className="text-slate-500">{key}</span><p className="mt-1 break-words text-slate-800">{item ? fmt(item.value || item.object_id) : fmt(value)}</p></div>; })}{!stateRows.length && <p className="text-xs text-slate-400">暂无状态迁移</p>}</div></div>{selectedNode && <ObjectPanel object={{ object_id: selectedNode.id, object_type: selectedNode.entity_type, properties: Object.fromEntries(Object.entries(selectedNode.properties || {}).filter(([key]) => !key.startsWith("_"))) }} onClose={() => setSelectedNode(null)} ontologyId={ontologyId} readOnly><p className="p-3 text-xs">Temporal run {runId} · {viewMode} · {at ?? "latest"}</p></ObjectPanel>}{selectedEdge && <div className="rounded-xl border border-slate-200 bg-white p-4"><div className="flex items-start justify-between gap-2"><div><h3 className="text-sm font-medium">关系检查器</h3><p className="mt-1 break-all font-mono text-[10px] text-slate-500">{selectedEdge.id}</p></div><button onClick={() => setSelectedEdge(null)} className="text-slate-400 hover:text-slate-700" title="关闭"><span aria-hidden="true">×</span></button></div><div className="mt-3 space-y-1 text-[11px] text-slate-600"><p>关系：{selectedEdge.type || selectedEdge.label || "关联"}</p><p>起点：{selectedEdge.source}</p><p>终点：{selectedEdge.target}</p><p>有效区间：{fmt(selectedEdge.properties?.valid_from_ordinal)} → {fmt(selectedEdge.properties?.valid_to_ordinal)}{selectedEdge.properties?.valid_to_ordinal !== null && selectedEdge.properties?.valid_to_ordinal !== undefined ? "（已失效）" : "（当前有效）"}</p><p>来源事件：<span className="font-mono">{fmt(selectedEdge.properties?.source_event_id || selectedEdge.properties?._event_id)}</span></p><p>EvidenceRef：<span className="font-mono">{fmt(selectedEdge.properties?.evidence_ref_id)}</span></p></div><div className="mt-3"><KeyValueTable values={selectedEdge.properties || {}} /></div></div>}</aside></section>
+    <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_330px]"><div className="rounded-xl border border-slate-200 bg-white p-4"><div className="flex flex-wrap items-center justify-between gap-2"><div><h3 className="text-sm font-medium">动态实例关系</h3><p className="mt-1 text-[11px] text-slate-500">新增观测逐条进入；选择“完整历史”可查看已失效事实。</p></div><div className="flex items-center gap-3"><span className="inline-flex items-center gap-1 text-[10px] text-slate-400"><span className="h-2 w-2 rounded-full bg-blue-600" />最新事件</span><span className="inline-flex items-center gap-1 text-[10px] text-slate-400"><span className="h-px w-4 border-t border-dashed border-slate-400" />历史事实</span><div className="flex gap-1 rounded border border-slate-200 p-0.5"><button onClick={() => setViewMode("current")} className={`rounded px-2 py-1 text-[11px] ${viewMode === "current" ? "bg-slate-800 text-white" : "text-slate-500"}`}>当前状态</button><button onClick={() => setViewMode("history")} className={`rounded px-2 py-1 text-[11px] ${viewMode === "history" ? "bg-slate-800 text-white" : "text-slate-500"}`}>完整历史</button></div></div></div>{graph ? <StreamGraph graph={graph} latestEvent={run.latest_event} sourceId={run.source_id} onSelectNode={(node) => { setSelectedNode(node); setSelectedEdge(null); }} onSelectEdge={(edge) => { setSelectedEdge(edge); setSelectedNode(null); }} /> : <div className="grid h-[430px] place-items-center text-xs text-slate-400">等待第一条事件提交</div>}</div><aside className="space-y-4"><div className="rounded-xl border border-slate-200 bg-white p-4"><h3 className="text-sm font-medium">最新观测</h3>{run.latest_event ? <div className="mt-3 space-y-2 text-[11px]"><p className="break-all font-mono text-slate-600">{run.latest_event.event_key}</p><p>episode：{fmt(run.latest_event.episode_id)} · 时间：{fmt(run.latest_event.event_time || run.latest_event.ordinal)} · 接收：{fmt(run.latest_event.ingestion_time)}</p><KeyValueTable values={latestPayload} /></div> : <p className="mt-3 text-xs text-slate-400">尚未提交事件</p>}</div><div className="rounded-xl border border-slate-200 bg-white p-4"><h3 className="text-sm font-medium">当前状态</h3><div className="mt-3 space-y-2">{stateRows.map(([key, value]) => { const item = value && typeof value === "object" ? value as Record<string, unknown> : null; return <div key={key} className="rounded border border-slate-100 bg-slate-50 p-2 text-[11px]"><span className="text-slate-500">{key}</span><p className="mt-1 break-words text-slate-800">{item ? fmt(item.value || item.object_id) : fmt(value)}</p></div>; })}{!stateRows.length && <p className="text-xs text-slate-400">暂无状态迁移</p>}</div></div>{selectedNode && <ObjectPanel object={{ object_id: String(selectedNode.properties?.object_ref_id || selectedNode.id), object_type: selectedNode.entity_type, properties: Object.fromEntries(Object.entries(selectedNode.properties || {}).filter(([key]) => !key.startsWith("_"))) }} onClose={() => setSelectedNode(null)} ontologyId={ontologyId} readOnly><p className="p-3 text-xs">Temporal run {runId} · {viewMode} · {at ?? "latest"}</p></ObjectPanel>}{selectedEdge && <div className="rounded-xl border border-slate-200 bg-white p-4"><div className="flex items-start justify-between gap-2"><div><h3 className="text-sm font-medium">关系检查器</h3><p className="mt-1 break-all font-mono text-[10px] text-slate-500">{selectedEdge.id}</p></div><button onClick={() => setSelectedEdge(null)} className="text-slate-400 hover:text-slate-700" title="关闭"><span aria-hidden="true">×</span></button></div><div className="mt-3 space-y-1 text-[11px] text-slate-600"><p>关系：{selectedEdge.type || selectedEdge.label || "关联"}</p><p>起点：{selectedEdge.source}</p><p>终点：{selectedEdge.target}</p><p>有效区间：{fmt(selectedEdge.properties?.valid_from_ordinal)} → {fmt(selectedEdge.properties?.valid_to_ordinal)}{selectedEdge.properties?.valid_to_ordinal !== null && selectedEdge.properties?.valid_to_ordinal !== undefined ? "（已失效）" : "（当前有效）"}</p><p>来源事件：<span className="font-mono">{fmt(selectedEdge.properties?.source_event_id || selectedEdge.properties?._event_id)}</span></p><p>EvidenceRef：<span className="font-mono">{fmt(selectedEdge.properties?.evidence_ref_id)}</span></p></div><div className="mt-3"><KeyValueTable values={selectedEdge.properties || {}} /></div></div>}</aside></section>
     {run.status === "completed" && <section className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3"><div><p className="text-sm font-medium text-emerald-900">事件已全部处理</p><p className="mt-1 text-xs text-emerald-800">发布前会再次校验事件、事实有效区间和当前状态唯一性。</p></div><button onClick={() => void publish()} disabled={!!busy} className="rounded bg-emerald-700 px-3 py-2 text-xs text-white disabled:opacity-50">{busy === "publish" ? "发布中" : "发布数据模型快照"}</button></section>}
     <section className="rounded-xl border border-slate-200 bg-white p-4"><div className="flex flex-wrap items-center justify-between gap-2"><div><h3 className="text-sm font-medium">事件推送接口</h3><p className="mt-1 text-[11px] text-slate-500">推送模式接收结构化事件；文件回放也使用相同的事件契约。</p></div><span className="rounded bg-slate-100 px-2 py-1 text-[10px] text-slate-500">{run.source_mode === "push" ? `POST /api/v2/temporal-streams/${run.id}/events` : "文件回放 · 推送接口关闭"}</span></div>{run.source_mode === "push" && <pre className="mt-3 max-h-44 overflow-auto rounded-lg bg-slate-950 p-3 text-[10px] leading-5 text-slate-100">{pushExample}</pre>}<div className="mt-3 flex flex-wrap gap-3 text-[11px] text-slate-500"><span>最近接收：{fmt(run.latest_event?.event_key)}</span><span>事件状态：{run.latest_event ? "已提交" : "尚未接收"}</span><span>重复 event_id + 相同载荷会幂等处理</span></div></section>
-    {run.status === "completed" && <section className="rounded-xl border border-slate-200 bg-white p-4"><h3 className="text-sm font-medium">发布校验摘要</h3><div className="mt-3 grid grid-cols-2 gap-2 text-[11px] md:grid-cols-5"><div className="rounded bg-slate-50 p-2"><span className="text-slate-500">事件</span><strong className="mt-1 block text-slate-800">{committed} / {total}</strong></div><div className="rounded bg-slate-50 p-2"><span className="text-slate-500">节点</span><strong className="mt-1 block text-slate-800">{fmt(graph?.total_instances)}</strong></div><div className="rounded bg-slate-50 p-2"><span className="text-slate-500">关系</span><strong className="mt-1 block text-slate-800">{fmt(graph?.total_edges)}</strong></div><div className="rounded bg-slate-50 p-2"><span className="text-slate-500">状态迁移</span><strong className="mt-1 block text-slate-800">{fmt(run.metrics?.state_transitions ?? 0)}</strong></div><div className="rounded bg-slate-50 p-2"><span className="text-slate-500">证据</span><strong className="mt-1 block text-slate-800">{fmt(run.metrics?.evidence_count ?? "待发布校验")}</strong></div></div></section>}
+    <section className="rounded-xl border border-slate-200 bg-white p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2"><div><h3 className="text-sm font-medium">事件投影与 FalkorDB 对账</h3><p className="mt-1 text-[11px] text-slate-500">SQL TemporalFact 是权威事实；已发布回放可按需重建图空间并核对节点、边内容。</p></div><div className="flex items-center gap-3"><span className="text-[11px] text-slate-500">{projectionAttempts.length} 次事件尝试 · {failedEvents.length} 条终态失败</span>{run.status === "published" && <button onClick={() => void rebuildProjection()} disabled={!!busy || projectionHealth?.status === "rebuilding"} className="rounded border border-slate-300 px-2.5 py-1.5 text-[11px] text-slate-700 disabled:opacity-50"><RefreshCw size={12} className={`mr-1 inline ${busy === "projection-rebuild" ? "animate-spin" : ""}`} />{busy === "projection-rebuild" ? "提交中" : "按 SQL 重建并核验"}</button>}</div></div>
+      <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 rounded border border-slate-200 bg-slate-50 px-3 py-2 text-[10px] text-slate-600"><span>FalkorDB：{projectionHealth ? (projectionHealthLabel[projectionHealth.status] || projectionHealth.status) : "读取中"}</span><span>待投影/未知事件：{fmt(projectionHealth?.events_pending_or_unknown)}</span><span>SQL 期望节点/关系：{fmt(projectionHealth?.sql_expected_nodes)} / {fmt(projectionHealth?.sql_expected_edges)}</span><span>图节点/关系：{fmt(projectionHealth?.graph_counts?.nodes)} / {fmt(projectionHealth?.graph_counts?.edges)}</span><span className="text-slate-400">数量相等不代表内容已逐项核验</span></div>
+      {projectionHealth?.last_rebuild && <p className="mt-2 text-[10px] text-slate-500">最近重建：{projectionHealth.last_rebuild.status} · 已核验 {fmt(projectionHealth.last_rebuild.verified_nodes)} 节点 / {fmt(projectionHealth.last_rebuild.verified_edges)} 关系{projectionHealth.last_rebuild.content_digest ? ` · SHA-256 ${projectionHealth.last_rebuild.content_digest.slice(0, 12)}` : ""}{projectionHealth.last_rebuild.error_message ? ` · ${projectionHealth.last_rebuild.error_message}` : ""}</p>}
+      {failedEvents.length ? <div className="mt-3 space-y-3">{failedEvents.map((event) => <div key={event.id} className="rounded-lg border border-red-200 bg-red-50/60 p-3">
+        <div className="flex flex-wrap items-start justify-between gap-2"><div><p className="break-all font-mono text-[11px] text-slate-800">{event.event_key}</p><p className="mt-1 text-[11px] text-red-800">{event.error || "事件投影失败"}</p></div><span className="text-[10px] text-slate-500">Ordinal {fmt(event.ordinal)}</span></div>
+        <div className="mt-3 flex flex-col gap-2 sm:flex-row"><input aria-label={`人工重放原因 ${event.event_key}`} maxLength={1000} value={retryReasons[event.id] || ""} onChange={(change) => setRetryReasons((current) => ({ ...current, [event.id]: change.target.value }))} placeholder="说明人工重放原因（至少 8 个字符）" className="min-w-0 flex-1 rounded border border-slate-300 bg-white px-2.5 py-2 text-xs" /><button onClick={() => void retryEvent(event)} disabled={!!busy || (retryReasons[event.id] || "").trim().length < 8} className="rounded bg-slate-900 px-3 py-2 text-xs text-white disabled:opacity-50">{busy === `retry:${event.id}` ? "授权中" : "授权并重放"}</button></div>
+      </div>)}</div> : <p className="mt-3 text-xs text-slate-400">当前没有终态失败事件。</p>}
+      <details className="mt-3 rounded border border-slate-200 bg-slate-50 px-3 py-2"><summary className="cursor-pointer text-[11px] font-medium text-slate-700">尝试历史（最近 {projectionAttempts.length} 条）</summary>{projectionAttempts.length ? <div className="mt-2 space-y-2">{projectionAttempts.map((attempt) => <div key={attempt.id} className="rounded border border-slate-200 bg-white p-2 text-[10px] text-slate-600"><p className="flex flex-wrap justify-between gap-2"><span>事件 {attempt.event_id.slice(0, 12)} · 第 {attempt.attempt_no} 次 · {attempt.attempt_type === "manual" ? "人工" : "自动"} · {attempt.status}</span><span>{fmt(attempt.created_at)}</span></p>{attempt.reason && <p className="mt-1">人工原因：{attempt.reason}</p>}{attempt.error_message && <p className="mt-1 text-red-700">{attempt.error_message}</p>}</div>)}</div> : <p className="mt-2 text-[11px] text-slate-500">尚无投影尝试记录。</p>}</details>
+    </section>
+    {run.status === "completed" && <section className="rounded-xl border border-slate-200 bg-white p-4"><h3 className="text-sm font-medium">发布校验摘要</h3><div className="mt-3 grid grid-cols-2 gap-2 text-[11px] md:grid-cols-5"><div className="rounded bg-slate-50 p-2"><span className="text-slate-500">事件</span><strong className="mt-1 block text-slate-800">{committed}{total === null ? " 条已提交" : ` / ${total}`}</strong></div><div className="rounded bg-slate-50 p-2"><span className="text-slate-500">节点</span><strong className="mt-1 block text-slate-800">{fmt(graph?.total_instances)}</strong></div><div className="rounded bg-slate-50 p-2"><span className="text-slate-500">关系</span><strong className="mt-1 block text-slate-800">{fmt(graph?.total_edges)}</strong></div><div className="rounded bg-slate-50 p-2"><span className="text-slate-500">状态迁移</span><strong className="mt-1 block text-slate-800">{fmt(run.metrics?.state_transitions ?? 0)}</strong></div><div className="rounded bg-slate-50 p-2"><span className="text-slate-500">证据</span><strong className="mt-1 block text-slate-800">{fmt(run.metrics?.evidence_count ?? "待发布校验")}</strong></div></div></section>}
     {run.status === "published" && <section className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-xs text-slate-600">快照已发布：<span className="font-mono">{run.published_snapshot_id || "—"}</span>。正式“数据模型”将读取该运行的独立图空间。</section>}
   </div>;
 }

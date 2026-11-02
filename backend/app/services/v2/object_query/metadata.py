@@ -151,7 +151,10 @@ def _property_definitions(entity: Entity) -> list[dict[str, Any]]:
 
 def load_sql_metadata(db: Session, ontology_id: str) -> OntologyMetadata:
     """Adapt current and legacy SQL ontology metadata to one query catalog."""
-    entities = db.query(Entity).filter(Entity.ontology_id == ontology_id).all()
+    entities = db.query(Entity).filter(
+        Entity.ontology_id == ontology_id,
+        Entity.is_source_deleted.is_(False),
+    ).all()
     by_id: dict[str, str] = {}
     types: list[TypeMetadata] = []
     for entity in entities:

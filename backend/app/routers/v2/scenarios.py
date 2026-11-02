@@ -1,14 +1,19 @@
 """Persistent Scenario and immutable revision APIs."""
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from app.deps import get_current_user, get_db, require_editor
 from app.models.v2.scenario import ScenarioAudit, ScenarioChangeSet, ScenarioGrant, ScenarioResource, ScenarioRevision, ScenarioRun, ScenarioRunStage
+from app.models.v2.action import OntologyActionRun
 from app.models.v2.logic_asset import LogicAsset
-from app.schemas.v2.scenario import ChangeSetRequest, CreateScenarioRequest, GrantRequest, RevisionRequest, RunRequest, Edit
+from app.schemas.v2.scenario import (BranchScenarioRequest, ChangeSetRequest,
+    CreateScenarioCheckpointRequest, CreateScenarioRequest, GrantRequest,
+    RestoreScenarioCheckpointRequest, RevisionRequest, RunRequest, Edit)
 from uuid import uuid4
 from app.services.v2.logic_assets import ASSET_DEFINITIONS, execute
 from app.services.v2.object_query.normalize import stable_hash
 from app.services.v2.scenarios import ScenarioError, ScenarioService, _summary, error
+from app.services.v2.object_query.data_views import now
 from app.tasks.v2.scenario import STAGES, run_scenario
 
 router = APIRouter()
@@ -33,9 +38,31 @@ def _require_editor(user):
 
 
 def revision_response(row, db):
-    return {"id": row.id, "scenario_id": row.scenario_id, "revision": row.revision, "parent_revision": row.parent_revision,
-            "changeset_id": row.changeset_id, "result_view_id": row.result_view_id, "content_digest": row.content_digest,
-            "status": row.status, "error": row.error_json, "created_by": row.created_by, "created_at": row.created_at.isoformat()}
+    response = {
+        "id": row.id,
+        "scenario_id": row.scenario_id,
+        "revision": row.revision,
+        "parent_revision": row.parent_revision,
+        "changeset_id": row.changeset_id,
+        "result_view_id": row.result_view_id,
+        "content_digest": row.content_digest,
+        "status": row.status,
+        "error": row.error_json,
+        "created_by": row.created_by,
+        "created_at": row.created_at.isoformat(),
+    }
+    changeset = db.get(ScenarioChangeSet, row.changeset_id) if row.changeset_id else None
+    manifest = ((changeset.validation_report or {}).get("runtime_manifest") or {}) if changeset else {}
+    action_run_id = manifest.get("action_run_id")
+    if action_run_id:
+        action_run = db.get(OntologyActionRun, action_run_id)
+        response.update({
+            "action_run_id": action_run_id,
+            "action_run_status": action_run.status if action_run else "unknown",
+            "preview_digest": manifest.get("preview_digest"),
+            "permission_digest": manifest.get("permission_digest"),
+        })
+    return response
 
 
 @router.post("/{ontology_id}/scenarios", status_code=201)
@@ -51,7 +78,11 @@ def create(ontology_id: str, request: CreateScenarioRequest, svc=Depends(service
 def listing(ontology_id: str, include_archived: bool = False, svc=Depends(service)):
     query = svc.db.query(ScenarioResource).filter(ScenarioResource.ontology_id == ontology_id)
     if not include_archived:
-        query = query.filter(ScenarioResource.status == "active")
+        query = query.filter(
+            ScenarioResource.status == "active",
+            ScenarioResource.expired_at.is_(None),
+            or_(ScenarioResource.expires_at.is_(None), ScenarioResource.expires_at > now()),
+        )
     rows = query.order_by(ScenarioResource.updated_at.desc()).all()
     return {"scenarios": [_summary(row) for row in rows]}
 
@@ -66,6 +97,47 @@ def get(ontology_id: str, scenario_id: str, svc=Depends(service)):
         _http(exc)
 
 
+@router.get("/{ontology_id}/scenarios/{scenario_id}/checkpoints")
+def list_checkpoints(ontology_id: str, scenario_id: str, svc=Depends(service)):
+    try:
+        rows = svc.list_checkpoints(scenario_id)
+        return {"checkpoints": [svc.checkpoint_response(row) for row in rows]}
+    except ScenarioError as exc:
+        _http(exc)
+
+
+@router.post("/{ontology_id}/scenarios/{scenario_id}/checkpoints", status_code=201)
+def create_checkpoint(ontology_id: str, scenario_id: str,
+                      request: CreateScenarioCheckpointRequest, svc=Depends(service)):
+    try:
+        _require_editor(svc.user)
+        row = svc.create_checkpoint(scenario_id, request)
+        return svc.checkpoint_response(row)
+    except ScenarioError as exc:
+        _http(exc)
+
+
+@router.post("/{ontology_id}/scenarios/{scenario_id}/checkpoints/{checkpoint_id}:branch", status_code=201)
+def branch_from_checkpoint(ontology_id: str, scenario_id: str, checkpoint_id: str,
+                           request: BranchScenarioRequest, svc=Depends(service)):
+    try:
+        _require_editor(svc.user)
+        return _summary(svc.branch_from_checkpoint(scenario_id, checkpoint_id, request))
+    except ScenarioError as exc:
+        _http(exc)
+
+
+@router.post("/{ontology_id}/scenarios/{scenario_id}/checkpoints/{checkpoint_id}:restore")
+def restore_checkpoint(ontology_id: str, scenario_id: str, checkpoint_id: str,
+                       request: RestoreScenarioCheckpointRequest, svc=Depends(service)):
+    try:
+        _require_editor(svc.user)
+        result = svc.restore_checkpoint(scenario_id, checkpoint_id, request)
+        return result if isinstance(result, dict) else revision_response(result, svc.db)
+    except ScenarioError as exc:
+        _http(exc)
+
+
 @router.post("/{ontology_id}/scenarios/{scenario_id}:duplicate", status_code=201)
 def duplicate(ontology_id: str, scenario_id: str, request: CreateScenarioRequest, svc=Depends(service)):
     try:
@@ -73,15 +145,17 @@ def duplicate(ontology_id: str, scenario_id: str, request: CreateScenarioRequest
         source = svc.get(scenario_id)
         if request.base_view_id != source.base_view_id:
             raise ScenarioError("invalid_base_view", "Scenario duplication must retain the immutable base view", 422, "base_view_id")
-        created = svc.create(request)
-        created.description = request.description or f"Copy of {source.name}"
+        duplicate_request = request.model_copy(update={
+            "description": request.description or f"Copy of {source.name}",
+        })
+        created = svc.create(duplicate_request)
         if source.head_revision:
             latest = svc.db.query(ScenarioRevision).filter_by(scenario_id=source.id,
                       revision=source.head_revision).one()
             changeset = svc.db.get(ScenarioChangeSet, latest.changeset_id)
             if changeset and changeset.validation_report.get("replace_all"):
                 from app.models.v2.action import OntologyActionType
-                from app.services.v2.scenario_actions import compile_actions
+                from app.services.v2.action_runtime import ActionRequest, compile_action_definitions
                 from app.services.v2.object_query.core import FalkorReadAdapter
                 from app.models.v2.query_view import QueryDataView
                 actions = [{"action_type_id": item["action_key"],
@@ -94,12 +168,25 @@ def duplicate(ontology_id: str, scenario_id: str, request: CreateScenarioRequest
                 base_view = svc.db.get(QueryDataView, source.base_view_id)
                 base = FalkorReadAdapter(svc.graph._graph(base_view.graph_key),
                     graph_ontology_id=base_view.graph_key).read(ontology_id)
-                edits = compile_actions(ontology_id, created.id, actions, types, base)
+                action_request = ActionRequest.from_invocations(
+                    ontology_id=ontology_id,
+                    compiler_scope=created.id,
+                    source="scenario.duplicate",
+                    invocations=actions,
+                    action_type_versions={action_id: row.version for action_id, row in types.items()},
+                    execution_context={
+                        "source_scenario_id": source.id,
+                        "target_scenario_id": created.id,
+                    },
+                )
+                edits, permission_digest = compile_action_definitions(
+                    svc.db, action_request, svc.user, types, base)
                 if not edits:
                     edits = [Edit(sequence=0, op="invoke_action", action_key="scenario_reset",
                                   parameters={}, source_action="scenario_reset")]
-                svc.revision(created, RevisionRequest(base_revision=0, expected_etag=created.etag,
-                    client_request_id=f"duplicate:{uuid4()}", edits=edits), replace_all=True)
+                svc.publish_revision(created, RevisionRequest(base_revision=0, expected_etag=created.etag,
+                    client_request_id=f"duplicate:{uuid4()}", permission_digest=permission_digest,
+                    edits=edits), replace_all=True, source="scenario_duplicate")
         svc.db.commit(); svc.db.refresh(created)
         return _summary(created)
     except ScenarioError as exc:
@@ -116,17 +203,57 @@ def validate(ontology_id: str, scenario_id: str, request: ChangeSetRequest, svc=
         _http(exc)
 
 
+@router.post("/{ontology_id}/scenarios/{scenario_id}/revisions:preview")
+def preview_revision(ontology_id: str, scenario_id: str,
+                     request: RevisionRequest, svc=Depends(service)):
+    try:
+        _require_editor(svc.user)
+        if request.preview_digest:
+            raise ScenarioError(
+                "preview_digest_unexpected",
+                "Preview requests must not include a previous preview digest",
+                422,
+                "preview_digest",
+            )
+        row = svc.get(scenario_id, write=True)
+        preview = svc.preview_revision(row, request)
+        return {
+            "valid": True,
+            "scenario_id": preview["scenario_id"],
+            "client_request_id": request.client_request_id,
+            "base_revision": preview["base_revision"],
+            "target_revision": preview["target_revision"],
+            "expected_etag": preview["scenario_etag"],
+            "parent_view_id": preview["parent_view_id"],
+            "parent_content_digest": preview["parent_content_digest"],
+            "edit_count": preview["edit_count"],
+            "edits": preview["edits"],
+            "changes": preview["changes"],
+            "permission_digest": preview["permission_digest"],
+            "preview_digest": preview["preview_digest"],
+        }
+    except ScenarioError as exc:
+        _http(exc)
+
+
 @router.post("/{ontology_id}/scenarios/{scenario_id}/revisions", status_code=201)
 def publish(ontology_id: str, scenario_id: str, request: RevisionRequest, svc=Depends(service)):
     try:
         _require_editor(svc.user)
         row = svc.get(scenario_id, write=True)
-        return revision_response(svc.revision(row, request), svc.db)
+        return revision_response(svc.publish_revision(
+            row, request, source="scenario_revision", require_preview=True,
+        ), svc.db)
     except ScenarioError as exc:
         _http(exc)
     except Exception as exc:
         svc.db.rollback()
-        raise HTTPException(422, detail={"code": "revision_build_failed", "path": "edits", "message": str(exc), "details": {}}) from exc
+        raise HTTPException(500, detail={
+            "code": "revision_build_failed",
+            "path": "edits",
+            "message": "Scenario revision could not be published.",
+            "details": {},
+        }) from exc
 
 
 @router.get("/{ontology_id}/scenarios/{scenario_id}/revisions/{revision}")

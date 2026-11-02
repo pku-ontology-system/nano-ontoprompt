@@ -1,6 +1,8 @@
 import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
-import { X } from "lucide-react";
+import { ExternalLink, X } from "lucide-react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { apiClientV2 } from "@/api/client";
+import { objectRefHref } from "@/api/v2/objectRefs";
 
 export type ObjectPanelRecord = {
   object_id: string;
@@ -42,8 +44,10 @@ export default function ObjectPanel({
   onOpenGraph,
   ontologyId,
   dataViewId,
+  whatIfScenarioId,
   onActionCommitted,
   readOnly = false,
+  fullPage = false,
 }: {
   object: ObjectPanelRecord;
   onClose: () => void;
@@ -54,9 +58,13 @@ export default function ObjectPanel({
   onOpenGraph?: () => void;
   ontologyId?: string;
   dataViewId?: string;
+  whatIfScenarioId?: string;
   onActionCommitted?: (message?: string) => void;
   readOnly?: boolean;
+  fullPage?: boolean;
 }) {
+  const navigate = useNavigate();
+  const location = useLocation();
   const dialog = useRef<HTMLDialogElement>(null);
   const [seriesId, setSeriesId] = useState<string | null>(null);
   const [showActions, setShowActions] = useState(false);
@@ -75,22 +83,41 @@ export default function ObjectPanel({
   const panelTabs = visibleTabs(configured, object, true);
   const fullTabs = visibleTabs(configured, object, false);
   const selectedTab = fullTabs.find(tab => tab.id === activeTab) || fullTabs[0];
+  const openIndependentView = () => {
+    if (!ontologyId) return;
+    const ref = {
+      ontology_id: ontologyId,
+      object_type: object.object_type,
+      object_id: object.object_id,
+      ...(dataViewId ? { data_view_id: dataViewId } : {}),
+      ...(whatIfScenarioId ? { what_if_scenario_id: whatIfScenarioId } : {}),
+    };
+    const returnParams = new URLSearchParams(location.search);
+    returnParams.set("objectType", object.object_type);
+    returnParams.set("activeObject", object.object_id);
+    const returnTo = `${location.pathname}${returnParams.toString() ? `?${returnParams.toString()}` : ""}`;
+    navigate(returnTo, { replace: true });
+    navigate(objectRefHref(ref), { state: { from: returnTo } });
+  };
   return (
-    <aside className={`oe-object-panel ${className}`.trim()} aria-label={`${object.object_id} 对象预览`} data-testid={testId}>
+    <aside className={`oe-object-panel ${fullPage ? 'oe-object-panel--full' : ''} ${className}`.trim()} aria-label={`${object.object_id} 对象${fullPage ? '详情' : '预览'}`} data-testid={testId}>
       <div className="oe-object-panel__header">
         <div className="min-w-0">
           <p className="oe-kicker">{object.object_type}</p>
           <h3 className="truncate">{object.object_id}</h3>
         </div>
-        <button type="button" onClick={onClose} aria-label="关闭对象预览"><X size={16} /></button>
+        {!fullPage && <button type="button" onClick={onClose} aria-label="关闭对象预览"><X size={16} /></button>}
       </div>
       <div className="oe-object-panel__actions">
         <button type="button" disabled={!ontologyId || !!dataViewId || readOnly} title={dataViewId || readOnly ? '当前上下文不能写入正式数据' : undefined} onClick={() => setShowActions(true)}>操作</button>
         {onOpenGraph && <button type="button" onClick={onOpenGraph}>Open in Graph</button>}
-        <button type="button" onClick={() => dialog.current?.showModal()}>完整对象视图</button>
+        <button type="button" onClick={() => dialog.current?.showModal()}>{fullPage ? '配置视图' : '完整对象视图'}</button>
+        {!fullPage && ontologyId && (!readOnly || dataViewId || whatIfScenarioId) && <button type="button" onClick={openIndependentView} aria-label="在独立页面打开对象">
+          <ExternalLink size={13} />独立页面
+        </button>}
       </div>
-      {useConfigured && panelTabs.length ? panelTabs.map(tab => <div key={tab.id}><p className="px-3 pt-3 text-xs font-medium text-slate-500">{tab.title}</p><Properties object={object} names={tab.properties} grid={tab.layout === 'grid'} onSeries={ontologyId && dataViewId ? setSeriesId : undefined} /></div>) : <Properties object={object} names={Object.keys(object.properties)} onSeries={ontologyId && dataViewId ? setSeriesId : undefined} />}
-      {showEmptyState && !Object.keys(object.properties).length && <p className="oe-empty-copy">该对象没有可显示的授权属性。</p>}
+      {!fullPage && (useConfigured && panelTabs.length ? panelTabs.map(tab => <div key={tab.id}><p className="px-3 pt-3 text-xs font-medium text-slate-500">{tab.title}</p><Properties object={object} names={tab.properties} grid={tab.layout === 'grid'} onSeries={ontologyId && dataViewId ? setSeriesId : undefined} /></div>) : <Properties object={object} names={Object.keys(object.properties)} onSeries={ontologyId && dataViewId ? setSeriesId : undefined} />)}
+      {!fullPage && showEmptyState && !Object.keys(object.properties).length && <p className="oe-empty-copy">该对象没有可显示的授权属性。</p>}
       {children}
       {seriesId && ontologyId && dataViewId && <Suspense fallback={<p role="status">正在加载曲线…</p>}><TimeSeriesChart ontologyId={ontologyId} dataViewId={dataViewId} seriesId={seriesId} /></Suspense>}
       {showActions && ontologyId && <Suspense fallback={<p role="status">正在加载操作…</p>}><ObjectActionRunner ontologyId={ontologyId} object={object} onClose={() => setShowActions(false)} onCommitted={onActionCommitted} /></Suspense>}

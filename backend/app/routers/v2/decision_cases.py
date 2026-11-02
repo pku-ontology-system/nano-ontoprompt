@@ -49,6 +49,11 @@ class ReviewBody(BaseModel):
     comment: str = Field(default="", max_length=4000)
 
 
+class ManualProjectionReconcileBody(BaseModel):
+    reason: str = Field(min_length=1, max_length=4000)
+    client_request_id: str = Field(min_length=1, max_length=120)
+
+
 def _service(db: Session, ontology_id: str, user: User) -> DecisionCaseService:
     try:
         return DecisionCaseService(db, ontology_id, user)
@@ -168,17 +173,48 @@ def execute_case(ontology_id: str, case_id: str, db: Session = Depends(get_db),
     case, run = _call(lambda: service.execute(case_id))
     return {"case": case_payload(case, run), "run": {"id": run.id, "status": run.status,
             "projection_status": run.projection_status, "before_digest": run.before_digest,
-            "after_digest": run.after_digest, "trace_id": run.trace_id}}
+            "after_digest": run.after_digest, "trace_id": run.trace_id,
+            "requested_by": run.requested_by, "reviewed_by": run.reviewed_by,
+            "executed_by": run.executed_by}}
 
 
 @router.post("/{ontology_id}/decision-cases/action-runs/{run_id}:reconcile")
-def reconcile_case_run(ontology_id: str, run_id: str, db: Session = Depends(get_db),
+def reconcile_case_run(ontology_id: str, run_id: str, body: ManualProjectionReconcileBody,
+                       db: Session = Depends(get_db),
                        user: User = Depends(require_admin)):
     service = _service(db, ontology_id, user)
     run = db.query(OntologyActionRun).filter_by(id=run_id, ontology_id=ontology_id).first()
     if run is None:
         raise HTTPException(404, {"code": "not_found", "message": "Action 运行不存在"})
-    _call(lambda: service.get_case(run.decision_case_id))
-    run = _call(lambda: service.sync_projection(run))
+    case = _call(lambda: service.case_for_run(run))
+    manual_attempts_before = run.projection_manual_attempts or 0
+    run = _call(lambda: service.sync_projection(
+        run,
+        manual_retry=True,
+        manual_reason=body.reason,
+        client_request_id=body.client_request_id,
+    ))
+    case_id = case.id
+    starts = db.query(DecisionCaseEvent).filter_by(
+        case_id=case_id, event_type="projection_attempt_started", actor_id=user.id,
+    ).order_by(DecisionCaseEvent.sequence.desc()).all()
+    start = next((event for event in starts if (event.payload or {}).get("run_id") == run.id
+                  and (event.payload or {}).get("client_request_id") == body.client_request_id), None)
+    attempt = None
+    if start:
+        attempt_id = (start.payload or {}).get("attempt_id")
+        finish = next((event for event in db.query(DecisionCaseEvent).filter_by(
+            case_id=case_id, event_type="projection_attempt_finished",
+        ).order_by(DecisionCaseEvent.sequence.desc()).all()
+                       if (event.payload or {}).get("attempt_id") == attempt_id), None)
+        attempt = {"id": attempt_id,
+                   "kind": (start.payload or {}).get("attempt_kind"),
+                   "number": (start.payload or {}).get("attempt_number"),
+                   "status": (finish.payload or {}).get("status") if finish else "running",
+                   "reason": (start.payload or {}).get("reason"),
+                   "replayed": (run.projection_manual_attempts or 0) == manual_attempts_before}
     return {"run_id": run.id, "status": run.status, "projection_status": run.projection_status,
-            "projection_error": run.projection_error}
+            "projection_error": run.projection_error,
+            "projection_attempts": run.projection_attempts,
+            "projection_manual_attempts": run.projection_manual_attempts,
+            "attempt": attempt}

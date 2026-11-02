@@ -15,6 +15,53 @@ def aware(value):
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
 
+def retention_pin_reason(db, view, at=None):
+    """Return the live resource that pins an expired view's backing graph."""
+    from app.models.v2.scenario import (
+        ScenarioResource, ScenarioRevision, ScenarioRun, ScenarioRunArtifact,
+        ScenarioStudy,
+    )
+    from app.models.v2.query_view import QueryViewRetentionEvent
+    from app.services.v2.scenarios import scenario_is_expired
+
+    run_at = aware(at) if at else now()
+    if db.query(ScenarioStudy.id).filter(ScenarioStudy.base_view_id == view.id).first():
+        return "scenario_study"
+    if db.query(ScenarioRunArtifact.id).filter(ScenarioRunArtifact.data_view_id == view.id).first():
+        return "scenario_run_artifact"
+    if db.query(ScenarioRun.id).filter(ScenarioRun.result_view_id == view.id).first():
+        return "scenario_run_result"
+
+    base_scenarios = db.query(ScenarioResource).filter(
+        ScenarioResource.base_view_id == view.id,
+        ScenarioResource.status == "active",
+    ).all()
+    if any(not scenario_is_expired(row, at=run_at) for row in base_scenarios):
+        return "active_scenario_base"
+
+    revision_scenarios = (db.query(ScenarioResource)
+        .join(ScenarioRevision, ScenarioRevision.scenario_id == ScenarioResource.id)
+        .filter(ScenarioRevision.result_view_id == view.id,
+                ScenarioResource.status == "active").all())
+    if any(not scenario_is_expired(row, at=run_at) for row in revision_scenarios):
+        return "active_scenario_revision"
+
+    children = db.query(QueryDataView).filter(QueryDataView.base_view_id == view.id).all()
+    for child in children:
+        if child.status in {"building", "validating"}:
+            return "child_view_in_progress"
+        if child.status == "ready":
+            child_deadline = child.retention_until
+            if child_deadline is None or aware(child_deadline) > run_at:
+                return "retained_child_view"
+            child_cleanup = db.query(QueryViewRetentionEvent.id).filter_by(
+                view_id=child.id, event_type="graph_deleted",
+            ).first()
+            if child_cleanup is None:
+                return "expired_child_view_pending_cleanup"
+    return None
+
+
 def as_response(view):
     return {
         "view_id": view.id,
@@ -37,16 +84,19 @@ def as_response(view):
 
 
 def require_ready(db, view_id, ontology_id, *, principal_id=None, is_admin=False):
-    view = db.get(QueryDataView, view_id)
+    # Serialize view reads with the retention worker. Once a caller owns this
+    # row lock, cleanup cannot remove the backing graph until the transaction
+    # finishes; if cleanup wins first, the expired status makes this fail closed.
+    view = db.query(QueryDataView).filter_by(id=view_id).with_for_update().first()
     if view is None or view.ontology_id != ontology_id:
         raise ObjectQueryError("not_found", "context.data_view_id", "Data view not found")
     if principal_id is not None and not is_admin and view.created_by != principal_id:
         raise ObjectQueryError("forbidden", "context.data_view_id", "Data view is not authorized for this principal")
     if view.retention_until and aware(view.retention_until) <= now():
-        if view.status != "expired":
+        if view.status == "ready" and retention_pin_reason(db, view) is None:
             view.status = "expired"
             db.commit()
-        raise ObjectQueryError("view_expired", "context.data_view_id", "Data view has expired")
+            raise ObjectQueryError("view_expired", "context.data_view_id", "Data view has expired")
     if view.status != "ready":
         raise ObjectQueryError("view_unavailable", "context.data_view_id", "Data view is not ready", status=view.status)
     return view

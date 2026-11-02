@@ -11,6 +11,8 @@ from app.services.v2.function_contracts import resolve_version, version_tuple, e
 from app.schemas.v2.object_query import ExecutionContext
 from app.services.v2.logic_contracts import bind_object_fields, normalize_contract, ContractValidationError
 from app.services.v2.graph.falkordb_service import FalkorDBService
+from app.services.v2.object_query.authorization import require_ontology_access
+from app.services.v2.object_query.errors import ObjectQueryError
 
 router = APIRouter()
 
@@ -66,8 +68,12 @@ def _save_derived_facts(db, ontology_id: str, asset: LogicAsset, run: LogicAsset
     return facts
 
 def _authorized(oid, db, user):
-    item=db.get(OntologyProject, oid)
-    if not item or (user.role != 'admin' and item.created_by != user.id):
+    try:
+        require_ontology_access(db, oid, str(user.id), user.role)
+    except ObjectQueryError as exc:
+        raise HTTPException(404, '本体不存在或无访问权限') from exc
+    item = db.get(OntologyProject, oid)
+    if not item:
         raise HTTPException(404, '本体不存在或无访问权限')
     return item
 
@@ -89,6 +95,8 @@ def _as_dict(row):
 @router.get('/{oid}/logic-assets')
 def list_assets(oid: str, seed: bool = False, db: Session = Depends(get_db), user=Depends(get_current_user)):
     _authorized(oid, db, user)
+    if seed and user.role not in ('admin', 'editor'):
+        raise HTTPException(403, 'Editor role required to seed logic assets')
     rows=db.query(LogicAsset).filter_by(ontology_id=oid).order_by(LogicAsset.kind, LogicAsset.asset_key).all()
     if seed: rows=_seed(db, oid)
     return {'assets':[_as_dict(r) for r in rows], 'count':len(rows)}

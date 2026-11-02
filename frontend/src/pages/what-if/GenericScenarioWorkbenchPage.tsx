@@ -6,27 +6,146 @@ import { apiClient, apiClientV2 } from '@/api/client'
 import type { OntologyListItem } from '@/types/ontology'
 import { useAuthStore } from '@/stores/authStore'
 
-type Scenario = { id: string; name: string; description: string; base_view_id: string; head_revision: number; etag: number; status: string; protected_demo: boolean; ttl_seconds: number | null; mode: 'tracking' | 'pinned'; rebase_error?: { code: string }; last_rebased_at?: string }
+type Scenario = { id: string; name: string; description: string; base_view_id: string; head_revision: number; etag: number; status: string; protected_demo: boolean; ttl_seconds: number | null; expires_at?: string | null; expired_at?: string | null; mode: 'tracking' | 'pinned'; rebase_error?: { code: string; conflict_digest?: string; conflict_count?: number }; last_rebased_at?: string; parent_scenario_id?: string | null; parent_checkpoint_id?: string | null }
+type Checkpoint = { id: string; scenario_id: string; revision: number; result_view_id: string; content_digest: string; label: string; source_etag: number; created_by: string; created_at: string }
+type RebaseConflict = { conflict_id: string; reason: string; summary: string; allowed_choices: Array<'keep_scenario' | 'keep_live'>; object_type?: string; object_id?: string; property?: string; relation_type?: string; operation?: string; base_value?: { present: boolean; value?: unknown }; scenario_value?: { present: boolean; value?: unknown }; live_value?: { present: boolean; value?: unknown } }
+type RebaseConflictResponse = { scenario_id: string; scenario_etag: number; head_revision: number; conflict_digest: string; conflicts: RebaseConflict[] }
 type ObjectRow = { object_type: string; object_id: string; properties: Record<string, unknown> }
 type Invocation = { action_type_id: string; parameters: Record<string, unknown> }
+type PreviewValue = { present?: boolean; exists?: boolean; value?: unknown }
+type ActionPreviewChange = {
+  sequence: number
+  op: string
+  target?: { object_type: string; object_id: string }
+  property?: string
+  before?: PreviewValue
+  after?: PreviewValue
+  properties?: Record<string, { before?: PreviewValue; after: PreviewValue }>
+  link?: { relation_type: string; source: { object_type: string; object_id: string }; target: { object_type: string; object_id: string } }
+}
 type Change = { object_type: string; object_id: string; before?: Record<string, unknown>; after?: Record<string, unknown> }
 type Workspace = { scenario: Scenario; revision: number; view_id: string; actions: Invocation[]; base_objects: ObjectRow[]; objects: ObjectRow[]; changes: { created: Change[]; deleted: Change[]; modified: Change[] }; edits: Array<Record<string, unknown>> }
 type Parameter = { name: string; label: string; type: 'string' | 'number' | 'boolean' | 'object'; required: boolean; object_type?: string; default?: unknown; choices?: unknown[] }
 type Rule = { op: string; target_parameter?: string; property?: string; value_parameter?: string; static_value?: unknown; object_type?: string; properties?: Record<string, { parameter?: string; static?: unknown }>; source_parameter?: string; relation_type?: string }
 type ActionType = { id: string; name: string; description: string; version: number; status: string; enabled: boolean; parameters: Parameter[]; rules: Rule[] }
 type Comparison = { baseline: { name: string; objects: number; links: number; metric: number }; metric_options: Array<{ object_type: string; property: string }>; columns: Array<{ id: string; name: string; revision: number; metric: number; created: number; deleted: number; modified: number; links_added: number; links_removed: number }> }
-type MergePreview = { can_merge: boolean; conflicts: Array<{ object_type: string; object_id: string; property: string; reason: string }>; applied_edits: number; already_merged?: boolean }
+type MergePreview = { can_merge: boolean; conflicts: Array<{ object_type: string; object_id: string; property: string; reason: string }>; applied_edits: number; changes?: ActionPreviewChange[]; already_merged?: boolean; preview_digest?: string | null; expected_revision?: number }
+type MergeResult = { action_run_id?: string | null }
 const tabLabels: Record<'Objects' | 'Actions' | 'Compare' | 'Changes' | 'Merge', string> = { Objects: '对象', Actions: '操作', Compare: '对比', Changes: '变化', Merge: '合并' }
 
 const blankParameter = (): Parameter => ({ name: '', label: '', type: 'string', required: true })
 const blankRule = (): Rule => ({ op: 'set_property', target_parameter: '', property: '', value_parameter: '' })
+const mergeRequestStorageKey = (scenarioId: string, previewDigest: string) =>
+  `project4:scenario-merge:${scenarioId}:${previewDigest}`
+const activeMergeStorageKey = (scenarioId: string) => `project4:scenario-merge-active:${scenarioId}`
+const mergeRecoveryStorageKey = (scenarioId: string, mergeRequestId: string) =>
+  `project4:scenario-merge-recovery:${scenarioId}:${mergeRequestId}`
+const conflictReasonLabels: Record<string, string> = {
+  created_object_collision: '新建对象与实时对象冲突',
+  deleted_object_changed: '待删除对象已被实时修改',
+  target_deleted: '修改目标已被实时删除',
+  property_changed: '同一属性已被实时修改',
+  link_endpoint_deleted: '关系端点已被实时删除',
+}
+const conflictChoiceLabels = { keep_scenario: '采用情景侧', keep_live: '采用实时侧' } as const
+const conflictValueText = (value?: { present: boolean; value?: unknown }) => {
+  if (!value) return '当前策略不允许展示此内容'
+  if (!value.present) return '（不存在）'
+  try { return JSON.stringify(value.value, null, 2) ?? 'null' } catch { return String(value.value) }
+}
+function mergeRequestIdFor(scenarioId: string, previewDigest: string): string {
+  const key = mergeRequestStorageKey(scenarioId, previewDigest)
+  try {
+    const existing = window.sessionStorage.getItem(key)
+    if (existing) return existing
+    const requestId = crypto.randomUUID()
+    window.sessionStorage.setItem(key, requestId)
+    return requestId
+  } catch {
+    return crypto.randomUUID()
+  }
+}
+function clearMergeRequestId(scenarioId: string, previewDigest: string) {
+  try { window.sessionStorage.removeItem(mergeRequestStorageKey(scenarioId, previewDigest)) } catch { /* session storage may be unavailable */ }
+}
+function activeMergeRequestIdFor(scenarioId: string): string {
+  try { return window.localStorage.getItem(activeMergeStorageKey(scenarioId)) ?? '' } catch { return '' }
+}
+function rememberActiveMergeRequest(scenarioId: string, requestId: string) {
+  try { window.localStorage.setItem(activeMergeStorageKey(scenarioId), requestId) } catch { /* storage may be unavailable */ }
+}
+function clearActiveMergeRequest(scenarioId: string, requestId: string) {
+  try {
+    if (window.localStorage.getItem(activeMergeStorageKey(scenarioId)) === requestId) {
+      window.localStorage.removeItem(activeMergeStorageKey(scenarioId))
+    }
+    window.localStorage.removeItem(mergeRecoveryStorageKey(scenarioId, requestId))
+  } catch { /* storage may be unavailable */ }
+}
+function mergeRecoveryRequestIdFor(scenarioId: string, mergeRequestId: string, reason: string): string {
+  const key = mergeRecoveryStorageKey(scenarioId, mergeRequestId)
+  try {
+    const current = window.localStorage.getItem(key)
+    if (current) {
+      const parsed = JSON.parse(current) as { reason?: string; request_id?: string }
+      if (parsed.reason === reason && parsed.request_id) return parsed.request_id
+    }
+    const requestId = crypto.randomUUID()
+    window.localStorage.setItem(key, JSON.stringify({ reason, request_id: requestId }))
+    return requestId
+  } catch {
+    return crypto.randomUUID()
+  }
+}
 const labelFor = (row: ObjectRow) => `${String(row.properties.name ?? row.properties.title ?? row.object_id)} · ${row.object_type}`
 const errorText = (error: unknown) => {
-  if (typeof error === 'object' && error && 'detail' in error) {
-    const detail = (error as { detail?: string | { message?: string } }).detail
-    return typeof detail === 'string' ? detail : detail?.message ?? '请求失败'
+  if (typeof error === 'object' && error) {
+    const value = error as { detail?: unknown; response?: { data?: { detail?: unknown } } }
+    const detail = value.response?.data?.detail ?? value.detail
+    if (typeof detail === 'string') return detail
+    if (detail && typeof detail === 'object' && 'message' in detail) {
+      const message = (detail as { message?: unknown }).message
+      if (typeof message === 'string') return message
+    }
   }
   return '请求失败'
+}
+const errorCode = (error: unknown) => {
+  const value = error as { detail?: unknown; response?: { data?: { detail?: unknown } } } | null | undefined
+  const detail = value?.response?.data?.detail ?? value?.detail
+  if (!detail || typeof detail !== 'object') return ''
+  const record = detail as { code?: unknown; error?: unknown }
+  return typeof record.code === 'string' ? record.code : typeof record.error === 'string' ? record.error : ''
+}
+
+function previewValueText(state?: PreviewValue) {
+  if (!state) return '—'
+  if (state.present === false) return '（不存在）'
+  if (typeof state.exists === 'boolean') return state.exists ? '存在' : '不存在'
+  if (state.present) {
+    try { return JSON.stringify(state.value, null, 2) ?? String(state.value) } catch { return String(state.value) }
+  }
+  return '—'
+}
+
+function ActionPreviewChanges({ changes }: { changes: ActionPreviewChange[] }) {
+  const visibleChanges = changes.filter(change => change.op !== 'invoke_action')
+  if (!visibleChanges.length) return <p className="mt-2 text-xs text-slate-500">此操作没有需要写入的对象或关系变化。</p>
+  const labels: Record<string, string> = {
+    set_property: '修改属性',
+    unset_property: '清除属性',
+    create_object: '创建对象',
+    delete_object: '删除对象',
+    add_link: '添加关系',
+    remove_link: '移除关系',
+  }
+  return <div className="mt-2 max-h-64 space-y-2 overflow-auto text-xs">
+    {visibleChanges.map(change => <article key={change.sequence} className="rounded border border-blue-100 bg-white p-2">
+      <p className="font-medium">{labels[change.op] ?? change.op} · {change.target ? `${change.target.object_type} ${change.target.object_id}` : change.link ? `${change.link.source.object_id} → ${change.link.target.object_id} · ${change.link.relation_type}` : ''}{change.property ? ` · ${change.property}` : ''}</p>
+      {change.before && change.after && <div className="mt-1 grid gap-1 sm:grid-cols-2"><p className="break-words"><span className="text-slate-500">之前：</span>{previewValueText(change.before)}</p><p className="break-words"><span className="text-slate-500">之后：</span>{previewValueText(change.after)}</p></div>}
+      {change.properties && Object.entries(change.properties).map(([name, values]) => <div key={name} className={`mt-1 grid gap-1 ${values.before ? 'sm:grid-cols-2' : ''}`}>{values.before && <p className="break-words"><span className="text-slate-500">{name} 之前：</span>{previewValueText(values.before)}</p>}<p className="break-words"><span className="text-slate-500">{name} 之后：</span>{previewValueText(values.after)}</p></div>)}
+    </article>)}
+  </div>
 }
 
 export function ScenarioCatalogPage() {
@@ -50,12 +169,14 @@ export default function GenericScenarioWorkbenchPage() {
   const [settingsName, setSettingsName] = useState('')
   const [settingsDescription, setSettingsDescription] = useState('')
   const [settingsTtlDays, setSettingsTtlDays] = useState(30)
+  const [checkpointLabel, setCheckpointLabel] = useState('')
   const [metricChoice, setMetricChoice] = useState('')
   const [filter, setFilter] = useState('')
   const [objectType, setObjectType] = useState('all')
   const [selectedObject, setSelectedObject] = useState<ObjectRow | null>(null)
   const [draft, setDraft] = useState<Invocation[]>([])
-  const [preview, setPreview] = useState<{ edits: Array<Record<string, unknown>>; edit_count: number } | null>(null)
+  const [preview, setPreview] = useState<{ edits: Array<Record<string, unknown>>; changes: ActionPreviewChange[]; edit_count: number; client_request_id: string; preview_digest: string; permission_digest: string; expected_etag: number | undefined } | null>(null)
+  const [actionRequestId, setActionRequestId] = useState(() => crypto.randomUUID())
   const [designerOpen, setDesignerOpen] = useState(false)
   const [editingType, setEditingType] = useState<string | null>(null)
   const [typeName, setTypeName] = useState('')
@@ -63,7 +184,20 @@ export default function GenericScenarioWorkbenchPage() {
   const [typeParameters, setTypeParameters] = useState<Parameter[]>([blankParameter()])
   const [typeRules, setTypeRules] = useState<Rule[]>([blankRule()])
   const [mergePreview, setMergePreview] = useState<MergePreview | null>(null)
+  const [mergeRequestId, setMergeRequestId] = useState('')
+  const [recoveryMergeRequestId, setRecoveryMergeRequestId] = useState('')
+  const [mergeRecoveryReason, setMergeRecoveryReason] = useState('')
+  const [mergeRecoveryClientRequestId, setMergeRecoveryClientRequestId] = useState('')
+  const [lastMergeRun, setLastMergeRun] = useState<{ scenarioId: string; id: string } | null>(null)
+  useEffect(() => {
+    const requestId = activeMergeRequestIdFor(selectedId)
+    setRecoveryMergeRequestId(requestId)
+    setMergeRequestId(requestId)
+    setMergeRecoveryReason('')
+    setMergeRecoveryClientRequestId('')
+  }, [selectedId])
   const scenarios = useQuery({ queryKey: ['generic-scenarios', ontologyId], queryFn: () => apiClientV2.get<{ scenarios: Scenario[] }>(`/ontologies/${ontologyId}/scenarios`) })
+  const checkpoints = useQuery({ queryKey: ['scenario-checkpoints', ontologyId, selectedId], queryFn: () => apiClientV2.get<{ checkpoints: Checkpoint[] }>(`/ontologies/${ontologyId}/scenarios/${selectedId}/checkpoints`), enabled: !!selectedId })
   const workspace = useQuery({ queryKey: ['generic-workspace', ontologyId, selectedId], queryFn: () => apiClientV2.get<Workspace>(`/ontologies/${ontologyId}/scenarios/${selectedId}/workspace`), enabled: !!selectedId })
   const actionTypes = useQuery({ queryKey: ['scenario-action-types', ontologyId], queryFn: () => apiClientV2.get<{ action_types: ActionType[] }>(`/ontologies/${ontologyId}/scenario-action-types`), enabled: canEdit })
   const comparison = useQuery({ queryKey: ['generic-compare', ontologyId, selectedId, metricChoice], queryFn: () => { const [metric_type = '', metric_property = ''] = metricChoice.split('::'); return apiClientV2.get<Comparison>(`/ontologies/${ontologyId}/scenarios/${selectedId}/compare`, { params: { metric_type, metric_property } }) }, enabled: !!selectedId && tab === 'Compare' })
@@ -77,29 +211,64 @@ export default function GenericScenarioWorkbenchPage() {
   const availableTypes = actionTypes.data?.action_types.filter(item => item.status === 'published' && item.enabled) ?? []
   const [loadedRevision, setLoadedRevision] = useState('')
   const revisionKey = workspace.data ? `${workspace.data.scenario.id}:${workspace.data.revision}` : ''
-  if (workspace.data && revisionKey !== loadedRevision) { setLoadedRevision(revisionKey); setDraft(structuredClone(workspace.data.actions)); setPreview(null); setMergePreview(null); setSelectedObject(null) }
+  if (workspace.data && revisionKey !== loadedRevision) { setLoadedRevision(revisionKey); setDraft(structuredClone(workspace.data.actions)); setPreview(null); setActionRequestId(crypto.randomUUID()); setMergePreview(null); setMergeRequestId(activeMergeRequestIdFor(selectedId)); setSelectedObject(null) }
 
   const create = useMutation({ mutationFn: () => apiClientV2.post<Scenario>(`/ontologies/${ontologyId}/scenarios:from-live`, { name: newName.trim(), description: newDescription, mode: newMode, ttl_seconds: newTtlDays * 86400 }), onSuccess: row => { setNewName(''); setNewDescription(''); queryClient.invalidateQueries({ queryKey: ['generic-scenarios', ontologyId] }); setParams({ scenario: row.id }) } })
   const saveSettings = useMutation({ mutationFn: () => apiClientV2.put<Scenario>(`/ontologies/${ontologyId}/scenarios/${selectedId}/settings`, { name: settingsName.trim(), description: settingsDescription, ttl_seconds: settingsTtlDays * 86400, expected_etag: active?.etag }), onSuccess: () => { setSettingsOpen(false); queryClient.invalidateQueries({ queryKey: ['generic-scenarios', ontologyId] }); queryClient.invalidateQueries({ queryKey: ['generic-workspace', ontologyId, selectedId] }) } })
   const duplicate = useMutation({ mutationFn: () => apiClientV2.post<Scenario>(`/ontologies/${ontologyId}/scenarios/${selectedId}:duplicate`, { name: `${active?.name} copy`, base_view_id: active?.base_view_id, description: active?.description ?? '' }), onSuccess: row => { queryClient.invalidateQueries({ queryKey: ['generic-scenarios', ontologyId] }); setParams({ scenario: row.id }) } })
-  const rebase = useMutation({ mutationFn: () => apiClientV2.post(`/ontologies/${ontologyId}/scenarios/${selectedId}:rebase`, { expected_etag: active?.etag }), onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['generic-scenarios', ontologyId] }); queryClient.invalidateQueries({ queryKey: ['generic-workspace', ontologyId, selectedId] }) } })
+  const createCheckpoint = useMutation({ mutationFn: () => apiClientV2.post<Checkpoint>(`/ontologies/${ontologyId}/scenarios/${selectedId}/checkpoints`, { label: checkpointLabel.trim() || `修订 ${active?.head_revision ?? 0}`, revision: active?.head_revision ?? 0, client_request_id: crypto.randomUUID() }), onSuccess: () => { setCheckpointLabel(''); queryClient.invalidateQueries({ queryKey: ['scenario-checkpoints', ontologyId, selectedId] }) } })
+  const branchCheckpoint = useMutation({ mutationFn: (checkpoint: Checkpoint) => apiClientV2.post<Scenario>(`/ontologies/${ontologyId}/scenarios/${selectedId}/checkpoints/${checkpoint.id}:branch`, { name: `${active?.name ?? '情景'} · ${checkpoint.label}`, description: `从修订 ${checkpoint.revision} 的检查点分支`, client_request_id: crypto.randomUUID() }), onSuccess: row => { queryClient.invalidateQueries({ queryKey: ['generic-scenarios', ontologyId] }); setParams({ scenario: row.id }) } })
+  const restoreCheckpoint = useMutation({ mutationFn: (checkpoint: Checkpoint) => apiClientV2.post(`/ontologies/${ontologyId}/scenarios/${selectedId}/checkpoints/${checkpoint.id}:restore`, { expected_etag: active?.etag, client_request_id: crypto.randomUUID() }), onSuccess: async () => { await Promise.all([queryClient.invalidateQueries({ queryKey: ['generic-scenarios', ontologyId] }), queryClient.invalidateQueries({ queryKey: ['generic-workspace', ontologyId, selectedId] }), queryClient.invalidateQueries({ queryKey: ['generic-compare', ontologyId] })]) } })
+  const rebase = useMutation({ mutationFn: () => apiClientV2.post(`/ontologies/${ontologyId}/scenarios/${selectedId}:rebase`, { expected_etag: active?.etag }), onSuccess: async () => { await Promise.all([queryClient.invalidateQueries({ queryKey: ['generic-scenarios', ontologyId] }), queryClient.invalidateQueries({ queryKey: ['generic-workspace', ontologyId, selectedId] }), queryClient.invalidateQueries({ queryKey: ['generic-compare', ontologyId] }), queryClient.invalidateQueries({ queryKey: ['scenario-rebase-conflicts', ontologyId, selectedId] })]) } })
   const archive = useMutation({ mutationFn: () => apiClientV2.post(`/ontologies/${ontologyId}/scenarios/${selectedId}:archive`), onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['generic-scenarios', ontologyId] }); setParams({}) } })
   const saveType = useMutation({ mutationFn: () => {
     const payload = { name: typeName.trim(), description: typeDescription, parameters: typeParameters.map(item => ({ ...item, label: item.label || item.name })), rules: typeRules }
     return editingType ? apiClientV2.put<ActionType>(`/ontologies/${ontologyId}/scenario-action-types/${editingType}`, payload) : apiClientV2.post<ActionType>(`/ontologies/${ontologyId}/scenario-action-types`, payload)
   }, onSuccess: row => { setEditingType(row.id); queryClient.invalidateQueries({ queryKey: ['scenario-action-types', ontologyId] }) } })
   const publishType = useMutation({ mutationFn: (id: string) => apiClientV2.post(`/ontologies/${ontologyId}/scenario-action-types/${id}:publish`), onSuccess: () => queryClient.invalidateQueries({ queryKey: ['scenario-action-types', ontologyId] }) })
-  const actionPayload = () => ({ expected_etag: active?.etag, client_request_id: crypto.randomUUID(), actions: draft })
-  const previewActions = useMutation({ mutationFn: () => apiClientV2.post<{ edits: Array<Record<string, unknown>>; edit_count: number }>(`/ontologies/${ontologyId}/scenarios/${selectedId}/actions:preview`, actionPayload()), onSuccess: setPreview })
-  const submit = useMutation({ mutationFn: () => apiClientV2.put(`/ontologies/${ontologyId}/scenarios/${selectedId}/actions`, actionPayload()), onSuccess: async () => { await Promise.all([queryClient.invalidateQueries({ queryKey: ['generic-scenarios', ontologyId] }), queryClient.invalidateQueries({ queryKey: ['generic-workspace', ontologyId, selectedId] }), queryClient.invalidateQueries({ queryKey: ['generic-compare', ontologyId] })]); setTab('Changes') } })
-  const checkMerge = useMutation({ mutationFn: () => apiClientV2.post<MergePreview>(`/ontologies/${ontologyId}/scenarios/${selectedId}:merge-preview`), onSuccess: setMergePreview })
-  const merge = useMutation({ mutationFn: () => apiClientV2.post(`/ontologies/${ontologyId}/scenarios/${selectedId}:merge`, { expected_revision: active?.head_revision }), onSuccess: () => { setMergePreview(null); queryClient.invalidateQueries({ queryKey: ['generic-workspace', ontologyId, selectedId] }) } })
+  const actionPayload = (includePreview = false) => ({ expected_etag: active?.etag, client_request_id: actionRequestId, actions: draft, ...(includePreview && preview ? { preview_digest: preview.preview_digest } : {}) })
+  const previewActions = useMutation({ mutationFn: () => apiClientV2.post<{ edits: Array<Record<string, unknown>>; changes: ActionPreviewChange[]; edit_count: number; client_request_id: string; preview_digest: string; permission_digest: string }>(`/ontologies/${ontologyId}/scenarios/${selectedId}/actions:preview`, actionPayload()), onSuccess: result => setPreview({ ...result, expected_etag: active?.etag }) })
+  const submit = useMutation({ mutationFn: () => apiClientV2.put(`/ontologies/${ontologyId}/scenarios/${selectedId}/actions`, actionPayload(true)), onSuccess: async () => { await Promise.all([queryClient.invalidateQueries({ queryKey: ['generic-scenarios', ontologyId] }), queryClient.invalidateQueries({ queryKey: ['generic-workspace', ontologyId, selectedId] }), queryClient.invalidateQueries({ queryKey: ['generic-compare', ontologyId] })]); setTab('Changes') } })
+  const checkMerge = useMutation({ mutationFn: () => apiClientV2.post<MergePreview>(`/ontologies/${ontologyId}/scenarios/${selectedId}:merge-preview`), onSuccess: result => { setMergePreview(result); setMergeRequestId(result.preview_digest ? mergeRequestIdFor(selectedId, result.preview_digest) : '') } })
+  const merge = useMutation({ mutationFn: () => { rememberActiveMergeRequest(selectedId, mergeRequestId); setRecoveryMergeRequestId(mergeRequestId); return apiClientV2.post<MergeResult>(`/ontologies/${ontologyId}/scenarios/${selectedId}:merge`, { expected_revision: mergePreview?.expected_revision, preview_digest: mergePreview?.preview_digest, client_request_id: mergeRequestId }) }, onSuccess: result => { setLastMergeRun(result.action_run_id ? { scenarioId: selectedId, id: result.action_run_id } : null); if (mergePreview?.preview_digest) clearMergeRequestId(selectedId, mergePreview.preview_digest); clearActiveMergeRequest(selectedId, mergeRequestId); setRecoveryMergeRequestId(''); setMergePreview(null); setMergeRequestId(''); queryClient.invalidateQueries({ queryKey: ['generic-workspace', ontologyId, selectedId] }) }, onError: error => {
+    const code = errorCode(error)
+    if (!code || code === 'merge_reconciliation_required' || code === 'merge_reconciliation_in_progress') return
+    if (mergePreview?.preview_digest) clearMergeRequestId(selectedId, mergePreview.preview_digest)
+    clearActiveMergeRequest(selectedId, mergeRequestId)
+    setRecoveryMergeRequestId('')
+    setMergeRequestId('')
+  } })
+  const reconcileMerge = useMutation({ mutationFn: () => {
+    const reason = mergeRecoveryReason.trim()
+    const clientRequestId = mergeRecoveryRequestIdFor(selectedId, recoveryMergeRequestId, reason)
+    setMergeRecoveryClientRequestId(clientRequestId)
+    return apiClientV2.post<MergeResult>(`/ontologies/${ontologyId}/scenarios/${selectedId}:merge-reconcile`, {
+      merge_request_id: recoveryMergeRequestId,
+      reason,
+      client_request_id: clientRequestId,
+    })
+  }, onSuccess: async result => {
+    setLastMergeRun(result.action_run_id ? { scenarioId: selectedId, id: result.action_run_id } : null)
+    clearActiveMergeRequest(selectedId, recoveryMergeRequestId)
+    if (mergePreview?.preview_digest) clearMergeRequestId(selectedId, mergePreview.preview_digest)
+    setRecoveryMergeRequestId('')
+    setMergeRecoveryReason('')
+    setMergeRecoveryClientRequestId('')
+    setMergeRequestId('')
+    setMergePreview(null)
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['generic-scenarios', ontologyId] }),
+      queryClient.invalidateQueries({ queryKey: ['generic-workspace', ontologyId, selectedId] }),
+      queryClient.invalidateQueries({ queryKey: ['generic-compare', ontologyId] }),
+    ])
+  } })
 
   const objectTypes = useMemo(() => [...new Set((workspace.data?.objects ?? []).map(item => item.object_type))].sort(), [workspace.data?.objects])
   const visibleObjects = (workspace.data?.objects ?? []).filter(item => (objectType === 'all' || item.object_type === objectType) && labelFor(item).toLowerCase().includes(filter.toLowerCase()))
-  const errors = [rebase.error, create.error, saveSettings.error, duplicate.error, archive.error, saveType.error, publishType.error, previewActions.error, submit.error, checkMerge.error, merge.error].filter(Boolean)
+  const errors = [rebase.error, create.error, saveSettings.error, duplicate.error, createCheckpoint.error, branchCheckpoint.error, restoreCheckpoint.error, archive.error, saveType.error, publishType.error, previewActions.error, submit.error, checkMerge.error, merge.error, reconcileMerge.error].filter(Boolean)
 
-  function editInvocation(index: number, name: string, value: unknown) { setDraft(current => current.map((item, i) => i === index ? { ...item, parameters: { ...item.parameters, [name]: value } } : item)); setPreview(null) }
+  function resetActionPreview() { setPreview(null); setActionRequestId(crypto.randomUUID()) }
+  function editInvocation(index: number, name: string, value: unknown) { setDraft(current => current.map((item, i) => i === index ? { ...item, parameters: { ...item.parameters, [name]: value } } : item)); resetActionPreview() }
   function beginDesign(row?: ActionType) { setDesignerOpen(true); setEditingType(row?.id ?? null); setTypeName(row?.name ?? ''); setTypeDescription(row?.description ?? ''); setTypeParameters(structuredClone(row?.parameters ?? [blankParameter()])); setTypeRules(structuredClone(row?.rules ?? [blankRule()])) }
   function beginSettings() { if (!active) return; setSettingsName(active.name); setSettingsDescription(active.description); setSettingsTtlDays(Math.round((active.ttl_seconds ?? 30 * 86400) / 86400)); setSettingsOpen(true) }
 
@@ -114,19 +283,113 @@ export default function GenericScenarioWorkbenchPage() {
       <main className="min-w-0 space-y-4">
         {canEdit && !selectedId && <section className="wb-surface p-4"><label className="text-sm">情景模式<select aria-label="情景模式" value={newMode} onChange={event => setNewMode(event.target.value as 'tracking' | 'pinned')}><option value="tracking">跟随实时数据</option><option value="pinned">固定基线</option></select> 情景保留天数<input className="wb-input ml-3 w-28" type="number" min={1} max={365} value={newTtlDays} onChange={event => setNewTtlDays(Number(event.target.value))} /></label></section>}
         {selectedId && active && <section className="wb-surface p-4"><div className="flex items-center justify-between"><div><strong>情景设置</strong><p className="text-xs text-slate-500">{active.description || '暂无说明'} · {Math.round((active.ttl_seconds ?? 30 * 86400) / 86400)} 天保留</p></div>{canEdit && <button className="wb-button-secondary" onClick={beginSettings}>编辑设置</button>}</div>{settingsOpen && canEdit && <div className="mt-3 grid gap-3 md:grid-cols-3"><label className="text-sm">名称<input className="wb-input mt-1 w-full" value={settingsName} onChange={event => setSettingsName(event.target.value)} /></label><label className="text-sm">说明<input className="wb-input mt-1 w-full" value={settingsDescription} onChange={event => setSettingsDescription(event.target.value)} /></label><label className="text-sm">保留天数<input className="wb-input mt-1 w-full" type="number" min={1} max={365} value={settingsTtlDays} onChange={event => setSettingsTtlDays(Number(event.target.value))} /></label><div className="flex gap-2"><button className="wb-button-primary" disabled={!settingsName.trim() || saveSettings.isPending} onClick={() => saveSettings.mutate()}>保存设置</button><button className="wb-button-secondary" onClick={() => setSettingsOpen(false)}>取消</button></div></div>}</section>}
+        {selectedId && active && <section className="wb-surface p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="font-semibold">修订检查点</h3><p className="text-xs text-slate-500">固定当前修订，可从检查点分支，或将当前情景恢复到该状态。</p></div>{canEdit && <div className="flex gap-2"><input className="wb-input" aria-label="检查点名称" placeholder={`修订 ${active.head_revision}`} value={checkpointLabel} onChange={event => setCheckpointLabel(event.target.value)} /><button className="wb-button-primary" disabled={createCheckpoint.isPending} onClick={() => createCheckpoint.mutate()}>保存检查点</button></div>}</div>{checkpoints.isPending && <p className="mt-3 text-xs text-slate-500">正在读取检查点…</p>}{checkpoints.error && <p role="alert" className="mt-3 text-sm text-red-700">检查点读取失败：{errorText(checkpoints.error)}</p>}<div className="mt-3 space-y-2">{checkpoints.data?.checkpoints.map(checkpoint => <article key={checkpoint.id} className="flex flex-wrap items-center justify-between gap-3 rounded border p-3"><div><strong>{checkpoint.label}</strong><p className="text-xs text-slate-500">修订 {checkpoint.revision} · {new Date(checkpoint.created_at).toLocaleString('zh-CN')} · 摘要 {checkpoint.content_digest.slice(0, 12)}</p></div>{canEdit && <div className="flex gap-2"><button className="wb-button-secondary" disabled={branchCheckpoint.isPending} onClick={() => branchCheckpoint.mutate(checkpoint)}>从此处创建分支</button><button className="wb-button-secondary" disabled={restoreCheckpoint.isPending} onClick={() => restoreCheckpoint.mutate(checkpoint)}>恢复到此状态</button></div>}</article>)}</div>{checkpoints.data?.checkpoints.length === 0 && <p className="mt-3 text-sm text-slate-500">还没有检查点。保存当前修订后即可分支或恢复。</p>}</section>}
         {active && <section className="wb-surface p-4"><strong>{active.mode === 'tracking' ? '跟随实时数据（每 10 分钟更新）' : '固定基线（项目扩展）'}</strong>{canEdit && active.mode === 'tracking' && <button className="wb-button-secondary ml-3" disabled={rebase.isPending} onClick={() => rebase.mutate()}>重新同步</button>}{active.rebase_error && <p role="alert">重新同步需要检查：{active.rebase_error.code}。现有修订已保留。</p>}<Link className="ml-3 text-blue-700" to={`/ontologies/${ontologyId}?tab=objects&objectType=${encodeURIComponent(selectedObject?.object_type || '')}&dataView=${encodeURIComponent(workspace.data?.view_id || '')}`}>在数据浏览器中打开修订</Link></section>}
+        {active?.mode === 'tracking' && active.rebase_error?.code === 'rebase_conflict' && <TrackingRebaseConflictReview key={`${active.id}:${active.rebase_error.conflict_digest ?? active.etag}`} ontologyId={ontologyId} scenario={active} canEdit={canEdit} />}
         {selectedId && tab === 'Compare' && <section className="wb-surface p-5"><div className="flex flex-wrap items-end justify-between gap-3"><div><h3 className="font-semibold">结果指标</h3><p className="text-xs text-slate-500">汇总每个隔离情景视图中的数值。</p></div><label className="text-xs">度量<select className="wb-input mt-1 block" value={metricChoice} onChange={event => setMetricChoice(event.target.value)}><option value="">对象数量</option>{comparison.data?.metric_options.map(item => <option key={`${item.object_type}::${item.property}`} value={`${item.object_type}::${item.property}`}>{item.object_type} · 合计（{item.property}）</option>)}</select></label></div><div className="mt-4 flex flex-wrap items-end gap-3">{[{ name: '基线', metric: comparison.data?.baseline.metric ?? 0 }, ...(comparison.data?.columns ?? [])].map((item, index) => <div key={index} className="min-w-32 flex-1 rounded border p-3"><p className="truncate text-xs text-slate-500">{item.name}</p><strong className="text-xl">{Number(item.metric.toFixed(2))}</strong><div className="mt-2 h-12 bg-blue-50"><div className="h-full bg-blue-400" style={{ width: `${Math.max(2, Math.min(100, Math.abs(item.metric) / Math.max(1, ...[comparison.data?.baseline.metric ?? 0, ...(comparison.data?.columns ?? []).map(row => row.metric)].map(Math.abs)) * 100))}%` }} /></div></div>)}</div></section>}
         {canEdit && !selectedId && <section className="wb-surface p-6"><h2 className="text-lg font-semibold">创建情景</h2><p className="mt-1 text-sm text-slate-500">当前本体会被保存为隔离基础视图，无需再次导入数据。</p><div className="mt-4 grid gap-3 md:grid-cols-2"><label className="text-sm">名称<input className="wb-input mt-1 w-full" value={newName} onChange={event => setNewName(event.target.value)} /></label><label className="text-sm">说明<input className="wb-input mt-1 w-full" value={newDescription} onChange={event => setNewDescription(event.target.value)} /></label></div><button className="wb-button-primary mt-4" disabled={!newName.trim() || create.isPending} onClick={() => create.mutate()}>创建情景</button></section>}
-        {selectedId && active && <><section className="wb-surface p-4"><div className="flex flex-wrap items-start justify-between gap-2"><div><h2 className="text-lg font-semibold">{active.name}</h2><p className="text-xs text-slate-500">修订 {active.head_revision} · 基础视图 {active.base_view_id}</p></div>{canEdit && <div className="flex gap-2"><button className="wb-button-secondary" disabled={duplicate.isPending} onClick={() => duplicate.mutate()}>复制</button>{!active.protected_demo && <button className="wb-button-secondary" disabled={archive.isPending} onClick={() => archive.mutate()}>归档</button>}</div>}</div><div className="mt-4 flex flex-wrap gap-2" role="tablist">{(canEdit ? ['Objects', 'Actions', 'Compare', 'Changes', 'Merge'] : ['Objects', 'Compare', 'Changes']).map(item => <button key={item} role="tab" aria-selected={tab === item} onClick={() => setTab(item as typeof tab)} className={`rounded px-3 py-2 text-sm ${tab === item ? 'bg-slate-900 text-white' : 'bg-slate-100'}`}>{tabLabels[item as keyof typeof tabLabels]}</button>)}</div></section>
+        {selectedId && active && <><section className="wb-surface p-4"><div className="flex flex-wrap items-start justify-between gap-2"><div><h2 className="text-lg font-semibold">{active.name}</h2><p className="text-xs text-slate-500">修订 {active.head_revision} · 基础视图 {active.base_view_id}</p><p className="mt-1 text-xs text-slate-500">{active.expires_at ? `到期时间 ${new Date(active.expires_at).toLocaleString('zh-CN')}` : '无到期时间'}</p>{active.parent_checkpoint_id && <p className="mt-1 text-xs text-slate-500">由情景 {active.parent_scenario_id} 的检查点分支</p>}</div>{canEdit && <div className="flex gap-2"><button className="wb-button-secondary" disabled={duplicate.isPending} onClick={() => duplicate.mutate()}>复制</button>{!active.protected_demo && <button className="wb-button-secondary" disabled={archive.isPending} onClick={() => archive.mutate()}>归档</button>}</div>}</div><div className="mt-4 flex flex-wrap gap-2" role="tablist">{(canEdit ? ['Objects', 'Actions', 'Compare', 'Changes', 'Merge'] : ['Objects', 'Compare', 'Changes']).map(item => <button key={item} role="tab" aria-selected={tab === item} onClick={() => setTab(item as typeof tab)} className={`rounded px-3 py-2 text-sm ${tab === item ? 'bg-slate-900 text-white' : 'bg-slate-100'}`}>{tabLabels[item as keyof typeof tabLabels]}</button>)}</div></section>
         {tab === 'Objects' && <section className="wb-surface p-5"><h3 className="font-semibold">情景对象表</h3><p className="text-xs text-slate-500">对象和属性来自当前情景修订。</p><div className="mt-3 flex flex-wrap gap-2"><input className="wb-input min-w-[220px] flex-1" aria-label="搜索情景对象" placeholder="搜索对象" value={filter} onChange={event => setFilter(event.target.value)} /><select className="wb-input" aria-label="对象类型" value={objectType} onChange={event => setObjectType(event.target.value)}><option value="all">全部对象类型</option>{objectTypes.map(kind => <option key={kind}>{kind}</option>)}</select></div><div className="mt-3 grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px]"><div className="max-h-[550px] overflow-auto rounded border"><table className="w-full text-left text-sm"><thead className="sticky top-0 bg-slate-100"><tr><th className="p-2">对象</th><th>类型</th><th>ID</th></tr></thead><tbody>{visibleObjects.slice(0, 500).map(row => <tr key={`${row.object_type}:${row.object_id}`} className="cursor-pointer border-t hover:bg-blue-50" onClick={() => setSelectedObject(row)}><td className="p-2">{String(row.properties.name ?? row.properties.title ?? row.object_id)}</td><td>{row.object_type}</td><td className="max-w-48 truncate font-mono text-xs">{row.object_id}</td></tr>)}</tbody></table></div><div>{selectedObject ? <ObjectPanel object={{ ...selectedObject, properties: Object.fromEntries(Object.entries(selectedObject.properties).filter(([key]) => !key.startsWith('_'))) }} onClose={() => setSelectedObject(null)} ontologyId={ontologyId} readOnly><p className="p-3 text-xs">情景修订 {workspace.data?.revision}</p></ObjectPanel> : <p>{'选择对象查看情景值。'}</p>}</div></div><p className="mt-2 text-xs text-slate-500">显示 {Math.min(visibleObjects.length, 500)} / {visibleObjects.length} 个匹配对象。</p></section>}
-        {canEdit && tab === 'Actions' && <section className="wb-surface p-5"><div className="flex flex-wrap items-center justify-between gap-2"><div><h3 className="font-semibold">此情景中的操作</h3><p className="text-xs text-slate-500">编辑完整操作列表，预览变化后提交新修订。</p></div><button className="wb-button-secondary" onClick={() => beginDesign()}>设计操作类型</button></div><div className="mt-4 space-y-3">{draft.map((item, index) => { const definition = actionTypes.data?.action_types.find(row => row.id === item.action_type_id); return <div key={index} className="rounded border p-3"><div className="flex justify-between gap-2"><strong>{definition?.name ?? '操作类型不可用'}</strong><button className="text-sm text-rose-700" onClick={() => { setDraft(current => current.filter((_, i) => i !== index)); setPreview(null) }}>移除</button></div><p className="text-xs text-slate-500">正在应用于 {active.name}</p><div className="mt-3 grid gap-2 sm:grid-cols-2">{definition?.parameters.map(parameter => <ParameterInput key={parameter.name} parameter={parameter} value={item.parameters[parameter.name]} objects={baseObjects} onChange={value => editInvocation(index, parameter.name, value)} />)}</div></div> })}</div><div className="mt-3 flex flex-wrap gap-2"><select aria-label="Action type to add" className="wb-input" defaultValue="" onChange={event => { if (event.target.value) { setDraft(current => [...current, { action_type_id: event.target.value, parameters: {} }]); event.target.value = ''; setPreview(null) } }}><option value="">＋ 添加操作</option>{availableTypes.map(row => <option key={row.id} value={row.id}>{row.name} v{row.version}</option>)}</select><button className="wb-button-secondary" disabled={previewActions.isPending} onClick={() => previewActions.mutate()}>预览变化</button><button className="wb-button-primary" disabled={submit.isPending} onClick={() => submit.mutate()}>提交操作</button></div>{preview && <div className="mt-4 rounded border border-blue-200 bg-blue-50 p-3 text-sm"><strong>{preview.edit_count} 项待应用修改</strong><div className="mt-2 max-h-40 overflow-auto text-xs">{preview.edits.filter(edit => edit.op !== 'invoke_action').map((edit, i) => <p key={i}>{String(edit.op)} · {String((edit.target as { object_id?: string } | undefined)?.object_id ?? (edit.link as { relation_type?: string } | undefined)?.relation_type ?? '')} {String(edit.property ?? '')}</p>)}</div></div>}</section>}
+        {canEdit && tab === 'Actions' && <section className="wb-surface p-5"><div className="flex flex-wrap items-center justify-between gap-2"><div><h3 className="font-semibold">此情景中的操作</h3><p className="text-xs text-slate-500">编辑完整操作列表，预览变化后提交新修订。</p></div><button className="wb-button-secondary" onClick={() => beginDesign()}>设计操作类型</button></div><div className="mt-4 space-y-3">{draft.map((item, index) => { const definition = actionTypes.data?.action_types.find(row => row.id === item.action_type_id); return <div key={index} className="rounded border p-3"><div className="flex justify-between gap-2"><strong>{definition?.name ?? '操作类型不可用'}</strong><button className="text-sm text-rose-700" onClick={() => { setDraft(current => current.filter((_, i) => i !== index)); resetActionPreview() }}>移除</button></div><p className="text-xs text-slate-500">正在应用于 {active.name}</p><div className="mt-3 grid gap-2 sm:grid-cols-2">{definition?.parameters.map(parameter => <ParameterInput key={parameter.name} parameter={parameter} value={item.parameters[parameter.name]} objects={baseObjects} onChange={value => editInvocation(index, parameter.name, value)} />)}</div></div> })}</div><div className="mt-3 flex flex-wrap gap-2"><select aria-label="Action type to add" className="wb-input" defaultValue="" onChange={event => { if (event.target.value) { setDraft(current => [...current, { action_type_id: event.target.value, parameters: {} }]); event.target.value = ''; resetActionPreview() } }}><option value="">＋ 添加操作</option>{availableTypes.map(row => <option key={row.id} value={row.id}>{row.name} v{row.version}</option>)}</select><button className="wb-button-secondary" disabled={previewActions.isPending} onClick={() => previewActions.mutate()}>预览变化</button><button className="wb-button-primary" disabled={!preview || preview.client_request_id !== actionRequestId || preview.expected_etag !== active?.etag || previewActions.isPending || submit.isPending} onClick={() => submit.mutate()}>提交操作</button></div>{preview && <div className="mt-4 rounded border border-blue-200 bg-blue-50 p-3 text-sm"><strong>{preview.edit_count} 项待应用修改</strong><p className="mt-1 text-xs text-slate-600">权限摘要 {preview.permission_digest.slice(0, 12)} · 预览摘要 {preview.preview_digest.slice(0, 12)}</p><ActionPreviewChanges changes={preview.changes} /></div>}</section>}
         {tab === 'Compare' && <section className="wb-surface p-5"><h3 className="font-semibold">对比情景</h3><p className="mt-1 text-xs text-slate-500">所有列共享同一个不可变基础视图。</p><div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">{comparison.data?.columns.map(row => <div key={row.id} className={`rounded border p-4 ${row.id === selectedId ? 'border-blue-400 bg-blue-50' : ''}`}><h4 className="font-semibold">{row.name}</h4><p className="text-xs text-slate-500">修订 {row.revision}</p><div className="mt-3 space-y-2 text-sm">{([['新增对象', row.created], ['修改对象', row.modified], ['删除对象', row.deleted], ['新增关系', row.links_added], ['移除关系', row.links_removed]] as const).map(([label, value]) => <div key={label} className="flex items-center gap-2"><span className="w-28">{label}</span><span className="h-2 rounded bg-blue-400" style={{ width: `${Math.min(value * 12, 140)}px` }} /><strong>{value}</strong></div>)}</div></div>)}</div></section>}
         {tab === 'Changes' && <section className="wb-surface p-5"><h3 className="font-semibold">情景摘要</h3><p className="mt-1 text-xs text-slate-500">修订 {workspace.data?.revision ?? 0} · 修改保持在情景中，不会写回主本体。</p>{workspace.data?.revision === 0 ? <p className="mt-4 text-sm text-slate-500">此情景暂无变化</p> : <><div className="mt-4 grid gap-3 sm:grid-cols-3">{([['created', '新增对象'], ['modified', '修改对象'], ['deleted', '删除对象']] as const).map(([kind, label]) => <div key={kind} className="rounded border p-3"><p className="text-xs text-slate-500">{label}</p><strong className="text-2xl">{workspace.data?.changes[kind].length ?? 0}</strong></div>)}</div><div className="mt-4 max-h-80 overflow-auto text-sm">{(['created', 'modified', 'deleted'] as const).flatMap(kind => workspace.data?.changes[kind].map(row => <p key={`${kind}:${row.object_type}:${row.object_id}`} className="border-t py-2"><span className="text-blue-700">{kind === 'created' ? '新增' : kind === 'modified' ? '修改' : '删除'}</span> · {row.object_type} · {row.object_id}</p>) ?? [])}</div><details className="mt-3 text-xs"><summary>操作与变更集证据</summary><pre className="mt-2 overflow-auto rounded bg-slate-50 p-3">{JSON.stringify(workspace.data?.edits, null, 2)}</pre></details></>}</section>}
-        {tab === 'Merge' && <section className="wb-surface p-5"><h3 className="font-semibold">合并到主本体</h3><p className="mt-1 text-sm text-slate-500">预览会逐项检查修改与当前主数据的冲突，模型输出不参与合并。</p><div className="mt-4 flex gap-2"><button className="wb-button-secondary" disabled={!active.head_revision || checkMerge.isPending} onClick={() => checkMerge.mutate()}>检查冲突</button><button className="wb-button-primary" disabled={!mergePreview?.can_merge || merge.isPending} onClick={() => merge.mutate()} >合并修订 {active.head_revision}</button></div>{mergePreview && <div className="mt-4 rounded border p-3 text-sm"><p>{mergePreview.can_merge ? `${mergePreview.applied_edits} 项修改可以合并` : `${mergePreview.conflicts.length} 个冲突阻止合并`}</p>{mergePreview.conflicts.map((item, index) => <p key={index} className="mt-1 text-rose-700">{item.object_type} {item.object_id} {item.property}: {item.reason}</p>)}</div>}</section>}</>}
+        {tab === 'Merge' && <section className="wb-surface p-5"><h3 className="font-semibold">合并到主本体</h3><p className="mt-1 text-sm text-slate-500">预览会逐项检查修改与当前主数据的冲突，模型输出不参与合并。</p>{lastMergeRun?.scenarioId === selectedId && <p role="status" className="mt-3 rounded border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">合并已记录为 ActionRun：<code className="break-all">{lastMergeRun.id}</code></p>}<div className="mt-4 flex gap-2"><button className="wb-button-secondary" disabled={!active.head_revision || checkMerge.isPending} onClick={() => checkMerge.mutate()}>检查冲突</button><button className="wb-button-primary" disabled={!mergePreview?.can_merge || !mergePreview.preview_digest || !mergeRequestId || mergePreview.expected_revision !== active.head_revision || merge.isPending || !!recoveryMergeRequestId} onClick={() => merge.mutate()} >合并修订 {active.head_revision}</button></div>{mergePreview && <div className="mt-4 rounded border p-3 text-sm"><p>{mergePreview.can_merge ? `${mergePreview.applied_edits} 项修改可以合并` : `${mergePreview.conflicts.length} 个冲突阻止合并`}</p>{mergePreview.conflicts.map((item, index) => <p key={index} className="mt-1 text-rose-700">{item.object_type} {item.object_id} {item.property}: {item.reason}</p>)}{mergePreview.changes && <><h4 className="mt-3 font-medium">合并候选变化</h4><ActionPreviewChanges changes={mergePreview.changes} /></>}</div>}{recoveryMergeRequestId && <div className="mt-4 rounded border border-amber-300 bg-amber-50 p-4"><h4 className="font-semibold">合并结果需要恢复</h4><p className="mt-1 text-sm text-slate-700">原请求编号 <code className="break-all">{recoveryMergeRequestId}</code> 已有持久审计记录。恢复会按原批准的不可变变更集收敛 SQL 与图数据，并记录操作者和原因。</p><label className="mt-3 block text-sm">恢复原因<textarea className="wb-input mt-1 min-h-24 w-full" value={mergeRecoveryReason} onChange={event => setMergeRecoveryReason(event.target.value)} placeholder="说明为什么需要恢复这次合并，以及已核对的事项" /></label><button className="wb-button-primary mt-3" disabled={!mergeRecoveryReason.trim() || reconcileMerge.isPending} onClick={() => reconcileMerge.mutate()}>{reconcileMerge.isPending ? '正在恢复…' : '按原审批变更恢复'}</button>{mergeRecoveryClientRequestId && <p className="mt-2 text-xs text-slate-500">恢复请求编号：{mergeRecoveryClientRequestId}</p>}</div>}</section>}</>}
         {errors.length > 0 && <p role="alert" className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">{errorText(errors[0])}</p>}
       </main></div>
     {designerOpen && <ActionDesigner name={typeName} description={typeDescription} parameters={typeParameters} rules={typeRules} editingType={editingType} types={actionTypes.data?.action_types ?? []} saving={saveType.isPending} onName={setTypeName} onDescription={setTypeDescription} onParameters={setTypeParameters} onRules={setTypeRules} onSave={() => saveType.mutate()} onPublish={id => publishType.mutate(id)} onEdit={beginDesign} onClose={() => setDesignerOpen(false)} />}
   </div>
+}
+
+function TrackingRebaseConflictReview({ ontologyId, scenario, canEdit }: { ontologyId: string; scenario: Scenario; canEdit: boolean }) {
+  const queryClient = useQueryClient()
+  const [choices, setChoices] = useState<Record<string, 'keep_scenario' | 'keep_live'>>({})
+  const [reason, setReason] = useState('')
+  const [requestId, setRequestId] = useState(() => crypto.randomUUID())
+  const conflictQuery = useQuery({
+    queryKey: ['scenario-rebase-conflicts', ontologyId, scenario.id, scenario.rebase_error?.conflict_digest],
+    queryFn: () => apiClientV2.get<RebaseConflictResponse>('/ontologies/' + ontologyId + '/scenarios/' + scenario.id + '/rebase-conflicts'),
+    enabled: canEdit && scenario.rebase_error?.code === 'rebase_conflict',
+  })
+  const resolve = useMutation({
+    mutationFn: () => {
+      const review = conflictQuery.data
+      if (!review) throw new Error('冲突详情尚未加载')
+      return apiClientV2.post('/ontologies/' + ontologyId + '/scenarios/' + scenario.id + ':rebase-resolve', {
+        expected_etag: scenario.etag,
+        conflict_digest: review.conflict_digest,
+        reason: reason.trim(),
+        client_request_id: requestId,
+        resolutions: review.conflicts.map(conflict => ({
+          conflict_id: conflict.conflict_id,
+          choice: choices[conflict.conflict_id],
+        })),
+      })
+    },
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['generic-scenarios', ontologyId] }),
+        queryClient.invalidateQueries({ queryKey: ['generic-workspace', ontologyId, scenario.id] }),
+        queryClient.invalidateQueries({ queryKey: ['generic-compare', ontologyId] }),
+        queryClient.invalidateQueries({ queryKey: ['scenario-rebase-conflicts', ontologyId, scenario.id] }),
+      ])
+    },
+  })
+  const conflictList = conflictQuery.data?.conflicts ?? []
+  const allChosen = conflictList.length > 0 && conflictList.every(item => choices[item.conflict_id] && item.allowed_choices.includes(choices[item.conflict_id]))
+  const updateChoice = (conflictId: string, choice: 'keep_scenario' | 'keep_live') => {
+    setChoices(current => ({ ...current, [conflictId]: choice }))
+    setRequestId(crypto.randomUUID())
+  }
+  const updateReason = (value: string) => {
+    setReason(value)
+    setRequestId(crypto.randomUUID())
+  }
+
+  return <section className="wb-surface border-amber-300 p-4" aria-labelledby="rebase-conflict-title">
+    <div className="flex flex-wrap items-start justify-between gap-3">
+      <div>
+        <h3 id="rebase-conflict-title" className="font-semibold text-amber-900">Tracking 同步冲突 · 三方差异</h3>
+        <p className="mt-1 text-sm text-slate-600">当前修订仍保留。逐项选择采用情景侧或实时侧，并填写决议原因；提交前会再次检查版本与数据权限。</p>
+      </div>
+      {scenario.rebase_error?.conflict_count != null && <span className="rounded bg-amber-50 px-2 py-1 text-xs text-amber-900">{scenario.rebase_error.conflict_count} 项待决议</span>}
+    </div>
+    {!canEdit && <p className="mt-3 text-sm text-slate-600">当前账号可查看情景，但没有查看或处理冲突详情的权限。</p>}
+    {canEdit && conflictQuery.isPending && <p className="mt-3 text-sm text-slate-500">正在读取经授权的冲突差异…</p>}
+    {canEdit && conflictQuery.error && <p role="alert" className="mt-3 rounded bg-red-50 p-3 text-sm text-red-700">冲突差异读取失败：{errorText(conflictQuery.error)}。请刷新；若基础数据已经变化，请重新同步生成新的冲突清单。</p>}
+    {canEdit && conflictQuery.data && <>
+      <p className="mt-3 break-all text-xs text-slate-500">冲突摘要：{conflictQuery.data.conflict_digest}</p>
+      <div className="mt-3 space-y-3">
+        {conflictList.map((conflict, index) => <article key={conflict.conflict_id} className="rounded border border-slate-200 p-3">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h4 className="font-medium">{index + 1}. {conflictReasonLabels[conflict.reason] ?? conflict.reason}</h4>
+            <span className="font-mono text-xs text-slate-500">{conflict.object_type && (conflict.object_type + ' · ')}{conflict.object_id ?? ''}{conflict.property ? (' · ' + conflict.property) : conflict.relation_type ? (' · ' + conflict.relation_type) : ''}</span>
+          </div>
+          <p className="mt-1 text-sm text-slate-600">{conflict.summary}</p>
+          {(conflict.base_value || conflict.scenario_value || conflict.live_value) && <div className="mt-3 grid gap-2 md:grid-cols-3">
+            <div className="min-w-0 rounded bg-slate-50 p-2"><p className="text-xs font-medium text-slate-600">基线</p><pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words text-xs">{conflictValueText(conflict.base_value)}</pre></div>
+            <div className="min-w-0 rounded bg-blue-50 p-2"><p className="text-xs font-medium text-blue-800">情景侧</p><pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words text-xs">{conflictValueText(conflict.scenario_value)}</pre></div>
+            <div className="min-w-0 rounded bg-amber-50 p-2"><p className="text-xs font-medium text-amber-900">实时侧</p><pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words text-xs">{conflictValueText(conflict.live_value)}</pre></div>
+          </div>}
+          <fieldset className="mt-3 flex flex-wrap gap-4" disabled={resolve.isPending}>
+            <legend className="mb-1 text-xs font-medium">本项决议</legend>
+            {conflict.allowed_choices.map(choice => <label key={choice} className="flex items-center gap-1.5 text-sm">
+              <input type="radio" name={'rebase-' + conflict.conflict_id} value={choice} checked={choices[conflict.conflict_id] === choice} onChange={() => updateChoice(conflict.conflict_id, choice)} />
+              {conflictChoiceLabels[choice]}
+            </label>)}
+          </fieldset>
+        </article>)}
+      </div>
+      <label className="mt-4 block text-sm font-medium">决议原因
+        <textarea className="wb-input mt-1 min-h-24 w-full" maxLength={4000} value={reason} onChange={event => updateReason(event.target.value)} placeholder="记录采用这些选择的业务原因和已核对的信息" />
+      </label>
+      <div className="mt-3 flex flex-wrap items-center gap-3">
+        <button className="wb-button-primary" disabled={!allChosen || !reason.trim() || resolve.isPending || conflictList.length === 0} onClick={() => resolve.mutate()}>{resolve.isPending ? '正在提交决议…' : '确认冲突决议并重新同步'}</button>
+        <span className="text-xs text-slate-500">操作者、原因、冲突摘要和权限范围会写入审计记录。</span>
+      </div>
+      {resolve.error && <p role="alert" className="mt-3 rounded bg-red-50 p-3 text-sm text-red-700">决议未完成：{errorText(resolve.error)}。若提示数据或权限已变化，请刷新冲突清单后重新选择。</p>}
+      {conflictList.length === 0 && <p className="mt-3 text-sm text-slate-600">没有待处理项。刷新情景列表确认同步状态。</p>}
+    </>}
+  </section>
 }
 
 function ParameterInput({ parameter, value, objects, onChange }: { parameter: Parameter; value: unknown; objects: ObjectRow[]; onChange: (value: unknown) => void }) {

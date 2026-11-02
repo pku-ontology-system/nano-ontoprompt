@@ -16,7 +16,8 @@ export default function ObjectGraph({ ontologyId, expression, context }: { ontol
   const ref = useRef<HTMLDivElement>(null);
   const [selected, setSelected] = useState<ObjectPanelRecord | null>(null);
   const [showRelationshipLabels, setShowRelationshipLabels] = useState(true);
-  const result = useQuery({ queryKey: ['explorer-graph', ontologyId, expression, context], enabled: !!context.data_view_id,
+  const hasPinnedSource = !!context.data_view_id || !!context.what_if_scenario_id;
+  const result = useQuery({ queryKey: ['explorer-graph', ontologyId, expression, context], enabled: hasPinnedSource,
     queryFn: ({ signal }) => apiClientV2.post<Graph>(`/ontologies/${ontologyId}/object-query/graph`, { expression, context }, { signal }),
   });
   useEffect(() => {
@@ -65,8 +66,8 @@ export default function ObjectGraph({ ontologyId, expression, context }: { ontol
     const observer = new ResizeObserver(() => { cy.resize(); cy.fit(cy.elements(), 42); }); observer.observe(ref.current);
     return () => { observer.disconnect(); cy.destroy(); };
   }, [result.data, showRelationshipLabels]);
-  if (!context.data_view_id) return <p className="p-4">固定当前数据后即可打开对象关系图。</p>;
-  return <section aria-label="对象关系图"><div className="flex flex-wrap items-center justify-between gap-2 p-3"><p className="text-xs">固定视图 {context.data_view_id} · 当前集合内部关系；通过 Search Around 扩展范围。</p><button onClick={() => setShowRelationshipLabels(value => !value)} className={`rounded-lg border px-3 py-1.5 text-xs ${showRelationshipLabels ? 'border-slate-300 bg-white text-slate-700' : 'border-slate-800 bg-slate-800 text-white'}`} title={showRelationshipLabels ? '隐藏关系文字，保留关系线' : '显示关系文字'} aria-pressed={showRelationshipLabels} data-testid="toggle-object-relationship-labels">{showRelationshipLabels ? '隐藏关系文字' : '显示关系文字'}</button></div>
+  if (!hasPinnedSource) return <p className="p-4">固定当前数据或选择 What-if 情景后即可打开对象关系图。</p>;
+  return <section aria-label="对象关系图"><div className="flex flex-wrap items-center justify-between gap-2 p-3"><p className="text-xs">{context.what_if_scenario_id ? `What-if 基线 ${context.what_if_scenario_id} · 当前集合内部关系` : `固定视图 ${context.data_view_id} · 当前集合内部关系`}；通过 Search Around 扩展范围。</p><button onClick={() => setShowRelationshipLabels(value => !value)} className={`rounded-lg border px-3 py-1.5 text-xs ${showRelationshipLabels ? 'border-slate-300 bg-white text-slate-700' : 'border-slate-800 bg-slate-800 text-white'}`} title={showRelationshipLabels ? '隐藏关系文字，保留关系线' : '显示关系文字'} aria-pressed={showRelationshipLabels} data-testid="toggle-object-relationship-labels">{showRelationshipLabels ? '隐藏关系文字' : '显示关系文字'}</button></div>
     {result.isPending && <p role="status">正在加载关系图…</p>}{result.error && <p role="alert">{explorerError(result.error)}</p>}
     <div className="flex"><div ref={ref} className="h-[440px] min-w-0 flex-1" />{selected && <ObjectPanel object={selected} onClose={() => setSelected(null)} ontologyId={ontologyId} dataViewId={context.data_view_id} />}</div>
     <div className="flex flex-wrap gap-2 p-3" aria-label="图对象列表">{result.data?.objects.map(item => <button key={key(item)} onClick={() => setSelected(item)}>{item.object_type} · {item.object_id}</button>)}</div>

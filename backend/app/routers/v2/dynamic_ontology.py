@@ -23,6 +23,8 @@ from app.services.v2.dynamic_ontology_service import (
     serialize_change,
     validate_batch_changes,
 )
+from app.services.v2.object_query.authorization import require_ontology_access
+from app.services.v2.object_query.errors import ObjectQueryError
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -42,8 +44,16 @@ def _raise(exc: OntologyEditError) -> None:
     )
 
 
+def _require_scope(db: Session, ontology_id: str, user: User) -> None:
+    try:
+        require_ontology_access(db, ontology_id, str(user.id), user.role)
+    except ObjectQueryError:
+        raise HTTPException(404, "Ontology not found or inaccessible") from None
+
+
 @router.get("/{ontology_id}/editor")
-def get_editor(ontology_id: str, db: Session = Depends(get_db)):
+def get_editor(ontology_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    _require_scope(db, ontology_id, user)
     try:
         return editor_payload(db, ontology_id)
     except OntologyEditError as exc:
@@ -51,7 +61,8 @@ def get_editor(ontology_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/{ontology_id}/changes/impact")
-def get_change_impact(ontology_id: str, body: dict, db: Session = Depends(get_db)):
+def get_change_impact(ontology_id: str, body: dict, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    _require_scope(db, ontology_id, user)
     try:
         return impact_for_change(db, ontology_id, body)
     except OntologyEditError as exc:
@@ -66,6 +77,7 @@ def create_change(
     db: Session = Depends(get_db),
     user: User = Depends(require_editor),
 ):
+    _require_scope(db, ontology_id, user)
     try:
         result = apply_change(db, ontology_id, body, user_id=user.id)
         if response is not None:
@@ -84,9 +96,10 @@ def validate_batch_change_set(
     ontology_id: str,
     body: dict,
     db: Session = Depends(get_db),
-    _=Depends(require_editor),
+    user: User = Depends(require_editor),
 ):
     """Dry-run a selected set of model suggestions as one coherent change."""
+    _require_scope(db, ontology_id, user)
     try:
         return validate_batch_changes(db, ontology_id, body)
     except OntologyEditError as exc:
@@ -105,6 +118,7 @@ def create_batch_change(
     user: User = Depends(require_editor),
 ):
     """Apply selected model suggestions atomically as one new revision."""
+    _require_scope(db, ontology_id, user)
     try:
         result = apply_batch_changes(db, ontology_id, body, user_id=user.id)
         if response is not None:
@@ -123,7 +137,9 @@ def list_changes(
     ontology_id: str,
     limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
+    _require_scope(db, ontology_id, user)
     rows = db.query(OntologyChange).filter(OntologyChange.ontology_id == ontology_id).order_by(OntologyChange.created_at.desc()).limit(limit).all()
     return {"ontology_id": ontology_id, "changes": [serialize_change(row) for row in rows], "count": len(rows)}
 
@@ -141,6 +157,7 @@ def model_suggestions(
     never calls a cloud model for a private ontology and never writes ontology
     tables, even when a model is available.
     """
+    _require_scope(db, ontology_id, user)
     body = body or {}
     from app.models.ontology import OntologyProject
     from app.models.v2.construction import ConstructionRun
