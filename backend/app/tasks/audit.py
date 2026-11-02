@@ -5,6 +5,7 @@ from app.tasks.celery_app import celery_app
 def run_audit(self, task_id: str):
     import app.models  # noqa: F401 — register all tables
     from app.database import SessionLocal
+    from app.tasks.task_claims import claim_queued_task, release_task_lease, TaskLeaseHeartbeat
     from app.models.audit_task import AuditTask
     from app.models.model_config import ModelConfig
     # Import every FK target before SQLAlchemy flushes the invocation row.
@@ -23,24 +24,34 @@ def run_audit(self, task_id: str):
     import hashlib
     import json
     import time
+    import uuid
     from datetime import datetime, timezone
 
     db = SessionLocal()
+    lease = None
+    worker_task_id = str(getattr(self.request, "id", None) or uuid.uuid4())
     invocation = None
     invocation_started = time.monotonic()
     try:
-        task = db.query(AuditTask).filter(AuditTask.id == task_id).first()
+        # Duplicate Celery deliveries cannot start a second model invocation.
+        task = claim_queued_task(
+            db,
+            AuditTask,
+            task_id,
+            progress={"stage": "loading ontology", "pct": 10},
+            worker_task_id=worker_task_id,
+        )
         if not task:
             return
-
-        task.status = "running"
-        task.progress = {"stage": "loading ontology", "pct": 10}
-        db.commit()
+        lease = TaskLeaseHeartbeat(
+            db, AuditTask, task.id, worker_task_id, int(task.lease_generation or 0)
+        ).start()
 
         model_cfg = db.query(ModelConfig).filter(ModelConfig.id == task.model_id).first()
         if not model_cfg:
             task.status = "failed"
             task.error = "Model config not found"
+            release_task_lease(task)
             db.commit()
             return
 
@@ -48,6 +59,7 @@ def run_audit(self, task_id: str):
         if not call_kwargs:
             task.status = "waiting_for_model"
             task.error = "模型配置无法解密或网关不可用"
+            release_task_lease(task)
             db.commit()
             return
         model_config = {
@@ -66,7 +78,10 @@ def run_audit(self, task_id: str):
 
         id_to_name = {e.id: e.name_cn for e in entities_raw}
 
-        instance_rows = db.query(EntityInstance).filter(EntityInstance.ontology_id == task.ontology_id).all()
+        instance_rows = db.query(EntityInstance).filter(
+            EntityInstance.ontology_id == task.ontology_id,
+            EntityInstance.is_deleted.is_(False),
+        ).all()
         instance_counts: dict[str, int] = {}
         instance_samples: dict[str, list[dict]] = {}
         for item in instance_rows:
@@ -157,6 +172,12 @@ def run_audit(self, task_id: str):
             if task.cancel_requested:
                 task.status = "cancelled"
                 task.error = "用户取消了审查任务"
+                if invocation is not None:
+                    invocation.status = "cancelled"
+                    invocation.error = task.error
+                    invocation.completed_at = datetime.now(timezone.utc)
+                    invocation.duration_ms = int((time.monotonic() - invocation_started) * 1000)
+                release_task_lease(task)
                 db.commit()
                 raise RuntimeError("AUDIT_CANCELLED")
             pct = 30 + int(current / total * 55)
@@ -194,6 +215,7 @@ def run_audit(self, task_id: str):
         else:
             task.status = "completed"
         task.progress = {"stage": "done", "pct": 100}
+        release_task_lease(task)
         response_payload = json.dumps({"findings": findings, "trace": task.react_trace}, ensure_ascii=False, sort_keys=True, default=str)
         invocation.status = task.status
         invocation.response_ciphertext = encryption_service.encrypt(response_payload)
@@ -205,9 +227,11 @@ def run_audit(self, task_id: str):
     except Exception as e:
         try:
             db.rollback()
-            if str(e) != "AUDIT_CANCELLED":
-                task.status = "failed"
-                task.error = str(e)
+            if str(e) == "AUDIT_CANCELLED":
+                return
+            task.status = "failed"
+            task.error = str(e)
+            release_task_lease(task)
             if invocation is not None:
                 stored = db.query(ModelInvocation).filter(ModelInvocation.id == invocation.id).first()
                 if stored:
@@ -219,4 +243,6 @@ def run_audit(self, task_id: str):
         except Exception:
             pass
     finally:
+        if lease is not None:
+            lease.close()
         db.close()

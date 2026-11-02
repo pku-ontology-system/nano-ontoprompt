@@ -28,10 +28,30 @@ def start_audit(ontology_id: str, body: AuditRequest, db: Session = Depends(get_
     db.commit()
     db.refresh(task)
 
-    try:
-        from app.tasks.audit import run_audit
-        run_audit.delay(task.id)
-    except Exception:
+    from app.tasks.task_claims import celery_dispatch_enabled, fail_queued_task_dispatch
+    if celery_dispatch_enabled():
+        try:
+            from app.tasks.audit import run_audit
+            run_audit.delay(task.id)
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("Celery audit dispatch failed (%s)", type(exc).__name__)
+            marked_failed = fail_queued_task_dispatch(
+                db,
+                AuditTask,
+                task.id,
+                error="Celery queue unavailable; audit was not claimed. Submit a new audit to retry.",
+            )
+            db.refresh(task)
+            return {
+                "data": {"task_id": task.id},
+                "message": (
+                    "Audit queue unavailable; task was marked failed. Submit a new audit to retry."
+                    if marked_failed
+                    else "Dispatch result is uncertain; inspect task status before retrying."
+                ),
+            }
+    else:
         import threading
 
         def run_sync():

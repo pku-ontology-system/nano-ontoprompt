@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 
@@ -8,8 +8,8 @@ class ExtractionRequest(BaseModel):
     prompt_id: str
     model_id: str
     model_name: str
-    file_ids: Optional[list] = None  # If None, use all files
-    constraints: Optional[List[str]] = None  # Extra constraint texts appended to prompt
+    file_ids: Optional[List[str]] = Field(default=None, max_length=500)  # If None, snapshot all current files
+    constraints: Optional[List[str]] = Field(default=None, max_length=100)  # Extra constraint texts appended to prompt
 
 class ExtractionTaskOut(BaseModel):
     model_config = {"from_attributes": True, "protected_namespaces": ()}

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import threading
-import os
 import uuid
 from typing import Any
 
@@ -10,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.models.audit_task import AuditTask
 from app.models.model_config import ModelConfig
+from app.tasks.task_claims import celery_dispatch_enabled, fail_queued_task_dispatch
 
 LOCAL_AUDIT_MODEL = "qwen3.5:0.8b"
 
@@ -28,15 +28,19 @@ def queue_local_audit(db: Session, *, ontology_id: str, revision_id: str | None,
     db.refresh(task)
     task_id = task.id
 
-    if os.getenv("CELERY_ENABLED", "").lower() in {"1", "true", "yes"}:
+    if celery_dispatch_enabled():
         try:
             from app.tasks.audit import run_audit
             run_audit.delay(task_id)
             return task
         except Exception as exc:
-            task.status = "failed"
-            task.error = f"Celery 任务派发失败：{str(exc)[:500]}"
-            db.commit()
+            fail_queued_task_dispatch(
+                db,
+                AuditTask,
+                task_id,
+                error=f"Celery queue unavailable; audit claim was not confirmed ({type(exc).__name__}). Retry the audit.",
+            )
+            db.refresh(task)
             return task
 
     def worker() -> None:

@@ -1,8 +1,9 @@
 """v2 Search API — 关键词/语义统一搜索"""
 from __future__ import annotations
 import json
+from typing import Literal
 from fastapi import APIRouter, Depends, Query, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import cast, or_, String as SAString
 from sqlalchemy.orm import Session
 from app.deps import get_current_user, get_db
@@ -27,10 +28,18 @@ router = APIRouter(dependencies=[Depends(authorize_search)])
 
 
 class SearchRequest(BaseModel):
-    query: str
-    mode: str = "keyword"  # keyword | semantic
-    entity_type: str | None = None
-    n_results: int = 10
+    query: str = Field(min_length=1, max_length=1000)
+    mode: Literal["keyword", "semantic"] = "keyword"
+    entity_type: str | None = Field(default=None, min_length=1, max_length=200)
+    n_results: int = Field(default=10, ge=1, le=100)
+
+    @field_validator("query")
+    @classmethod
+    def reject_blank_query(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("搜索词不能为空")
+        return normalized
 
 
 class ObjectSearchRequest(BaseModel):
@@ -46,6 +55,13 @@ def _request_access(request: Request, db: Session, ontology_id: str, user) -> Au
         access = require_ontology_access(db, ontology_id, str(user.id), user.role)
         request.state.plan_a_search_access = access
     return access
+
+
+def _search_query(value: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        raise HTTPException(status_code=422, detail={"code": "empty_search_query", "message": "搜索词不能为空"})
+    return normalized
 
 
 def _redact_search_results(results: list[dict], access: AuthorizationProjection) -> list[dict]:
@@ -92,6 +108,7 @@ def _sql_keyword_search(db: Session, ontology_id: str, q: str, n: int, access: A
     pattern = f"%{q}%"
     rows = db.query(Entity).filter(
         Entity.ontology_id == ontology_id,
+        Entity.is_source_deleted.is_(False),
         or_(
             Entity.name_cn.ilike(pattern),
             Entity.name_en.ilike(pattern),
@@ -118,14 +135,15 @@ def _sql_keyword_search(db: Session, ontology_id: str, q: str, n: int, access: A
 @router.get("/{ontology_id}/search/keyword")
 def keyword_search(
     ontology_id: str,
-    q: str = Query(..., description="搜索词"),
-    n: int = Query(20, description="结果数"),
+    q: str = Query(..., min_length=1, max_length=1000, description="搜索词"),
+    n: int = Query(20, ge=1, le=100, description="结果数"),
     db: Session = Depends(get_db),
     request: Request = None,
     user=Depends(get_current_user),
 ):
     """关键词搜索 — 优先 ChromaDB，不可用时回退 SQL"""
     from app.services.v2.vector.chroma_service import ChromaService
+    q = _search_query(q)
     access = _request_access(request, db, ontology_id, user)
     svc = ChromaService()
     if not svc.available:
@@ -138,15 +156,16 @@ def keyword_search(
 @router.get("/{ontology_id}/search/semantic")
 def semantic_search(
     ontology_id: str,
-    q: str = Query(..., description="搜索词"),
-    n: int = Query(10, description="结果数"),
-    entity_type: str | None = Query(None, description="实体类型过滤"),
+    q: str = Query(..., min_length=1, max_length=1000, description="搜索词"),
+    n: int = Query(10, ge=1, le=100, description="结果数"),
+    entity_type: str | None = Query(None, min_length=1, max_length=200, description="实体类型过滤"),
     db: Session = Depends(get_db),
     request: Request = None,
     user=Depends(get_current_user),
 ):
     """语义搜索（向量相似度）"""
     from app.services.v2.vector.chroma_service import ChromaService
+    q = _search_query(q)
     access = _request_access(request, db, ontology_id, user)
     svc = ChromaService()
     if not svc.available:

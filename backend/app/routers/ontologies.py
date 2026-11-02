@@ -26,7 +26,10 @@ def list_ontologies(
     result = []
     for item in items:
         d = OntologyListItem.model_validate(item).model_dump()
-        d['entity_count'] = db.query(func.count(Entity.id)).filter(Entity.ontology_id == item.id).scalar() or 0
+        d['entity_count'] = db.query(func.count(Entity.id)).filter(
+            Entity.ontology_id == item.id,
+            Entity.is_source_deleted.is_(False),
+        ).scalar() or 0
         d['relation_count'] = db.query(func.count(Relation.id)).filter(Relation.ontology_id == item.id).scalar() or 0
         result.append(d)
     return {"data": {"items": result, "total": total, "page": page, "page_size": page_size}}

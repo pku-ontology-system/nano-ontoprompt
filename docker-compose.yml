@@ -11,6 +11,21 @@ services:
       # would silently boot an empty database after a container recreation.
       - pg_data:/var/lib/postgresql/data
       - ./docker/postgres/init-litellm-db.sql:/docker-entrypoint-initdb.d/02-litellm-db.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  migrate:
+    build: ./backend
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes: [./backend:/app]
+    command: ["sh", "-c", "alembic upgrade head && alembic check"]
+    restart: "no"
 
   redis:
     image: redis:7-alpine
@@ -36,9 +51,21 @@ services:
       FALKORDB_HOST: ${FALKORDB_HOST:-falkordb}
       FALKORDB_PORT: ${FALKORDB_PORT:-6379}
       MINIMAX_API_KEY: ${MINIMAX_API_KEY:-}
-    depends_on: [db, redis, falkordb]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+      falkordb:
+        condition: service_started
     volumes: [./backend:/app, ./uploads:/uploads, ./data/frepple_demo:/state:ro, ./test_data:/test_data:ro]
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
 
   celery_worker:
     build: ./backend
@@ -47,7 +74,9 @@ services:
       FALKORDB_HOST: ${FALKORDB_HOST:-falkordb}
       FALKORDB_PORT: ${FALKORDB_PORT:-6379}
       MINIMAX_API_KEY: ${MINIMAX_API_KEY:-}
-    depends_on: [db, redis, falkordb]
+    depends_on:
+      backend:
+        condition: service_healthy
     volumes: [./backend:/app, ./uploads:/uploads, ./data/frepple_demo:/state:ro, ./test_data:/test_data:ro]
     command: celery -A app.tasks.celery_app worker --loglevel=info
 
@@ -74,7 +103,9 @@ services:
     ports: ["5173:5173"]
     environment:
       VITE_API_PROXY_TARGET: http://backend:8000
-    depends_on: [backend]
+    depends_on:
+      backend:
+        condition: service_healthy
     volumes: [./frontend:/app, /app/node_modules]
     command: npm run dev -- --host
 
@@ -108,7 +139,9 @@ services:
     build: ./backend
     command: celery -A app.tasks.celery_app beat --loglevel=info
     env_file: .env
-    depends_on: [db, redis]
+    depends_on:
+      backend:
+        condition: service_healthy
     volumes:
       - ./backend:/app
       - ./uploads:/uploads

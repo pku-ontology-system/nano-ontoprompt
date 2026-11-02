@@ -15,6 +15,22 @@ def get_graph(ontology_id: str, limit: int = 300, db: Session = Depends(get_db),
 
     # 优先从 Neo4j 读取；无数据或不可用时回退 SQLite
     neo4j_nodes, neo4j_edges = _try_neo4j(ontology_id, limit)
+    deleted_ids = {
+        row[0] for row in db.query(Entity.id).filter(
+            Entity.ontology_id == ontology_id,
+            Entity.is_source_deleted.is_(True),
+        ).all()
+    }
+    if deleted_ids:
+        neo4j_nodes = [
+            node for node in neo4j_nodes
+            if str((node.get("data") or {}).get("id")) not in deleted_ids
+        ]
+        neo4j_edges = [
+            edge for edge in neo4j_edges
+            if str((edge.get("data") or {}).get("source")) not in deleted_ids
+            and str((edge.get("data") or {}).get("target")) not in deleted_ids
+        ]
     if neo4j_nodes:
         return {
             "data": {
@@ -31,7 +47,10 @@ def get_graph(ontology_id: str, limit: int = 300, db: Session = Depends(get_db),
         }
 
     # SQLite fallback
-    entities = db.query(Entity).filter(Entity.ontology_id == ontology_id).limit(limit).all()
+    entities = db.query(Entity).filter(
+        Entity.ontology_id == ontology_id,
+        Entity.is_source_deleted.is_(False),
+    ).limit(limit).all()
     relations = db.query(Relation).filter(Relation.ontology_id == ontology_id).all()
     entity_ids = {e.id for e in entities}
 

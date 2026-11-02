@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query'
+import { useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
-import { ontologyApi, promptApi, modelApi } from '@/api/ontologies'
+import { ontologyApi } from '@/api/ontologies'
 import { CheckCircle, XCircle, Loader2, ChevronRight, AlertTriangle, AlertCircle, Info } from 'lucide-react'
 import type { OntologyDetail } from '@/types/ontology'
-import { loadRuleStates, getActiveConstraints } from '@/utils/extractionRules'
 
 const SEVERITY_CONFIG = {
   fatal:   { label: 'FATAL',   bg: 'bg-red-50',    border: 'border-red-200',   text: 'text-red-700',   icon: XCircle },
@@ -126,9 +125,6 @@ function StructuredDataLink() {
   )
 }
 type MappingRecord = { mapping_id?: string; id?: string; entity_class?: string; entity_class_cn?: string; status?: string }
-type PromptRecord = { id: string; name: string; domain: string }
-type ModelRecord = { id: string; name: string; provider: string; models?: string[] }
-
 function PipelineMappingInfo({ ontology }: { ontology: OntologyDetail }) {
   const [mappings, setMappings] = useState<MappingRecord[]>([])
   useEffect(() => {
@@ -171,11 +167,9 @@ function PipelineMappingInfo({ ontology }: { ontology: OntologyDetail }) {
 
 export default function InfoTab({ ontology }: { ontology: OntologyDetail }) {
   const { t } = useTranslation()
+  const navigate = useNavigate()
   const qc = useQueryClient()
   const pollRef = useRef<(() => void) | null>(null)
-  const [promptId, setPromptId] = useState('')
-  const [modelId, setModelId] = useState('')
-  const [modelName, setModelName] = useState('')
   const [pollTimedOut, setPollTimedOut] = useState(false)
   const [taskStatus, setTaskStatus] = useState<SavedTask | null>(() => loadSavedTask(ontology.id))
   const [exportingFormat, setExportingFormat] = useState<string | null>(null)
@@ -192,23 +186,6 @@ export default function InfoTab({ ontology }: { ontology: OntologyDetail }) {
       setExportingFormat(null)
     }
   }
-
-  const { data: prompts } = useQuery<PromptRecord[]>({ queryKey: ['prompts'], queryFn: () => promptApi.list() as Promise<PromptRecord[]> })
-  const { data: models } = useQuery<ModelRecord[]>({ queryKey: ['models'], queryFn: () => modelApi.list() as Promise<ModelRecord[]> })
-  const { data: files = [] } = useQuery({
-    queryKey: ['files', ontology.id],
-    queryFn: () => ontologyApi.listFiles(ontology.id),
-  })
-
-  const extractMut = useMutation({
-    mutationFn: (constraints: string[]) =>
-      ontologyApi.startExtraction(ontology.id, {
-        prompt_id: promptId,
-        model_id: modelId,
-        model_name: modelName,
-        constraints,
-      }),
-  })
 
   const startPoll = useCallback((taskId: string) => {
     pollRef.current?.()
@@ -257,26 +234,6 @@ export default function InfoTab({ ontology }: { ontology: OntologyDetail }) {
     return () => { pollRef.current?.() }
   }, [ontology.id, startPoll])
 
-  const handleExtract = async () => {
-    setPollTimedOut(false)
-    setTaskStatus({ status: 'running', progress: { stage: 'queued', pct: 0 }, error: null })
-    const constraints = getActiveConstraints(loadRuleStates())
-    try {
-      const res = await extractMut.mutateAsync(constraints) as { task_id: string }
-      saveTask(ontology.id, { status: 'running', progress: { stage: 'queued', pct: 0 }, task_id: res.task_id })
-      startPoll(res.task_id)
-    } catch (e: unknown) {
-      setTaskStatus({
-        status: 'failed',
-        progress: { stage: 'error', pct: 0 },
-        error: errorMessage(e),
-      })
-    }
-  }
-
-  const selectedModel = models?.find(m => m.id === modelId)
-  const activeConstraints = getActiveConstraints(loadRuleStates())
-  const fileList = Array.isArray(files) ? files : []
   const isExtracting = taskStatus && taskStatus.status !== 'completed' && taskStatus.status !== 'failed'
   const currentPct = taskStatus?.progress?.pct ?? 0
   const currentStage = taskStatus?.progress?.stage ?? ''
@@ -311,65 +268,16 @@ export default function InfoTab({ ontology }: { ontology: OntologyDetail }) {
       {/* Pipeline Mapping 状态（仅 pipeline_mapping 模式显示） */}
       {isPipelineMode && <PipelineMappingInfo ontology={ontology} />}
 
-      {/* LLM Config（仅简易模式显示） */}
+      {/* 旧版直接写入型抽取已关闭 */}
       {!isPipelineMode && <div className="bg-white rounded-xl border p-6">
-        <div className="flex items-center gap-2 mb-4">
-          <h3 className="font-semibold">{t('extract.llm_config')}</h3>
-          {activeConstraints.length > 0 && (
-            <span className="ml-auto text-xs bg-amber-50 border border-amber-200 text-amber-700 px-2 py-0.5 rounded-full">
-              {t('extract.constraints_active', { count: activeConstraints.length })}
-            </span>
-          )}
-        </div>
-
-        <div className="space-y-3">
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">{t('extract.prompt_label')}</label>
-            <select value={promptId} onChange={e => setPromptId(e.target.value)}
-              className="w-full border rounded-lg px-3 py-2 text-sm">
-              <option value="">{t('extract.select_prompt')}</option>
-              {(prompts || []).map((p) => (
-                <option key={p.id} value={p.id}>{p.name}（{p.domain}）</option>
-              ))}
-            </select>
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="max-w-2xl">
+            <h3 className="font-semibold">文档抽取已迁移到版本化构建流程</h3>
+            <p className="mt-2 text-sm leading-6 text-slate-600">旧版抽取会把模型输出直接写入本体，无法先审核映射和来源版本，因此已关闭。请在常规数据构建中选择固定数据集版本、审核映射，再确认构建新修订。</p>
           </div>
-
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">{t('extract.model_label')}</label>
-            <select value={modelId} onChange={e => { setModelId(e.target.value); setModelName('') }}
-              className="w-full border rounded-lg px-3 py-2 text-sm">
-              <option value="">{t('extract.select_model')}</option>
-              {(models || []).map((m) => (
-                <option key={m.id} value={m.id}>{m.name}（{m.provider}）</option>
-              ))}
-            </select>
-          </div>
-
-          {selectedModel && (
-            <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">{t('extract.model_specific')}</label>
-              <select value={modelName} onChange={e => setModelName(e.target.value)}
-                className="w-full border rounded-lg px-3 py-2 text-sm">
-                <option value="">{t('extract.select')}</option>
-                {(selectedModel.models || []).map((m: string) => (
-                  <option key={m} value={m}>{m}</option>
-                ))}
-              </select>
-            </div>
-          )}
-
-          <div className="pt-1 flex items-center gap-3">
-            <button
-              onClick={handleExtract}
-              disabled={!promptId || !modelId || !modelName || extractMut.isPending || isExtracting || fileList.length === 0}
-              className="px-5 py-2 bg-black text-white rounded-lg text-sm disabled:opacity-40 flex items-center gap-2">
-              {isExtracting && <Loader2 size={14} className="animate-spin" />}
-              {isExtracting ? t('extract.extracting') : t('extract.start')}
-            </button>
-            {fileList.length === 0 && (
-              <span className="text-xs text-gray-400">{t('extract.need_files')}</span>
-            )}
-          </div>
+          <button type="button" onClick={() => navigate(`/data/regular/build?ontology_id=${encodeURIComponent(ontology.id)}`)} className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm text-white hover:bg-slate-700">
+            打开常规数据构建 <ChevronRight size={15} />
+          </button>
         </div>
       </div>}
 

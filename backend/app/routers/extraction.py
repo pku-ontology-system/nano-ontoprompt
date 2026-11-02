@@ -1,69 +1,62 @@
+"""Compatibility endpoints for legacy extraction task history.
+
+The direct-write extraction flow is retired. New ontology builds must use the
+versioned Construction workflow, which holds generated mappings for explicit
+review before publishing a new revision.
+"""
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-import logging
+
 from app.deps import get_db, get_current_user, require_editor
 from app.models.extraction_task import ExtractionTask
-from app.models.file import UploadedFile
-from app.models.ontology import OntologyProject
-from app.services.document_service import combine_converted_files
-from app.schemas.extraction import ExtractionRequest, ExtractionTaskOut
-import uuid
+from app.schemas.extraction import ExtractionTaskOut
+from app.services.legacy_extraction_authorization import (
+    LegacyExtractionAccessError,
+    require_extraction_task_visibility,
+    require_legacy_extraction_actor,
+)
 
-logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+
 @router.post("")
-def start_extraction(ontology_id: str, body: ExtractionRequest, db: Session = Depends(get_db), _=Depends(require_editor)):
-    project = db.query(OntologyProject).filter(OntologyProject.id == ontology_id).first()
-    if not project:
-        raise HTTPException(404, "Ontology not found")
-
-    files_query = db.query(UploadedFile).filter(UploadedFile.ontology_id == ontology_id)
-    if body.file_ids:
-        files_query = files_query.filter(UploadedFile.id.in_(body.file_ids))
-    files = files_query.all()
-    if not files:
-        raise HTTPException(422, "请先上传文件")
-    _, convert_error = combine_converted_files(files)
-    if convert_error:
-        raise HTTPException(422, convert_error)
-
-    task = ExtractionTask(
-        id=str(uuid.uuid4()),
-        ontology_id=ontology_id,
-        prompt_id=body.prompt_id,
-        model_id=body.model_id,
-        status="queued",
-        parameters={"model_name": body.model_name, "file_ids": body.file_ids, "constraints": body.constraints or []},
-        progress={"stage": "queued", "pct": 0},
-    )
-    db.add(task); db.commit(); db.refresh(task)
-
-    # Update ontology status
-    project.status = "creating"
-    db.commit()
-
-    # Queue Celery task
+def start_extraction(
+    ontology_id: str,
+    db: Session = Depends(get_db),
+    user=Depends(require_editor),
+):
     try:
-        from app.tasks.extraction import run_extraction
-        run_extraction.delay(task.id)
-    except Exception:
-        # If celery not available, run synchronously in background thread
-        import threading
-        def run_sync():
-            from app.tasks.extraction import run_extraction
-            try:
-                run_extraction(task.id)
-            except Exception:
-                logger.exception("synchronous extraction failed for task %s", task.id)
-        threading.Thread(target=run_sync, daemon=True).start()
+        require_legacy_extraction_actor(db, ontology_id, user)
+    except LegacyExtractionAccessError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    raise HTTPException(status_code=410, detail={
+        "code": "legacy_extraction_retired",
+        "message": "旧版文档抽取会直接写入本体，现已关闭。请使用常规数据构建流程固定来源版本、确认映射并构建新修订。",
+        "next_path": f"/data/regular/build?ontology_id={ontology_id}",
+    })
 
-    return {"data": {"task_id": task.id}, "message": "Extraction queued"}
 
 @router.get("/status")
-def get_extraction_status(ontology_id: str, task_id: str, db: Session = Depends(get_db), _=Depends(get_current_user)):
-    task = db.query(ExtractionTask).filter(ExtractionTask.id == task_id, ExtractionTask.ontology_id == ontology_id).first()
+def get_extraction_status(
+    ontology_id: str,
+    task_id: str,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    task = db.query(ExtractionTask).filter(
+        ExtractionTask.id == task_id,
+        ExtractionTask.ontology_id == ontology_id,
+    ).first()
     if not task:
         raise HTTPException(404, "Task not found")
-    return {"data": ExtractionTaskOut.model_validate(task).model_dump()}
+    try:
+        require_extraction_task_visibility(db, ontology_id, task, user)
+    except LegacyExtractionAccessError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    payload = ExtractionTaskOut.model_validate(task).model_dump()
+    payload["parameters"] = {
+        key: value for key, value in (payload.get("parameters") or {}).items()
+        if not str(key).startswith("_")
+    }
+    return {"data": payload}

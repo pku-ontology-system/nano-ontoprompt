@@ -167,7 +167,7 @@ export default function OntologyDetailPage() {
       {activeTab === "what_if" && temporal && <WhatIfTab ontologyId={id!} />}
       {activeTab === "reasoning" && <ReasoningTab key={id} ontologyId={id!} />}
       {activeTab === "decisions" && <DecisionsTab key={id} ontologyId={id!} />}
-      {activeTab === "agent" && <AgentDecisionTab key={id} ontologyId={id!} />}
+      {activeTab === "agent" && <AgentDecisionTab key={id} ontologyId={id!} defaultSurface="sessions" />}
       {activeTab === "manufacturing" && <ManufacturingDataTab key={id} ontologyId={id!} />}
       {activeTab === "logic-assets" && <LogicAssetsTab key={id} ontologyId={id!} />}
       {showHistory && <ChangeHistoryDrawer ontologyId={id!} onClose={() => setShowHistory(false)} />}

@@ -33,6 +33,7 @@ const GenericScenarioWorkbenchPage = React.lazy(() => import("@/pages/what-if/Ge
 const ScenarioCatalogPage = React.lazy(() => import("@/pages/what-if/GenericScenarioWorkbenchPage").then(module => ({ default: module.ScenarioCatalogPage })));
 const ComponentSpikesPage = React.lazy(() => import("@/pages/component-spikes/ComponentSpikesPage"));
 const OntologyDetailPage = React.lazy(() => import("@/pages/ontologies/detail/OntologyDetailPage"));
+const ObjectFullViewPage = React.lazy(() => import("@/pages/ontologies/detail/object-explorer/ObjectFullViewPage"));
 
 class AppErrorBoundary extends React.Component<
   { children: React.ReactNode },
@@ -260,6 +261,10 @@ export default function App() {
                   <React.Suspense fallback={<div role="status" className="p-6 text-sm text-slate-500">正在加载本体工作台</div>}><OntologyDetailPage /></React.Suspense>
                 </ProtectedRoute>
               }
+            />
+            <Route
+              path="/ontologies/:id/object"
+              element={<ProtectedRoute><ObjectFullViewPage /></ProtectedRoute>}
             />
             <Route
               path="/what-if"
