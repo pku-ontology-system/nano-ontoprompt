@@ -11,6 +11,7 @@ interface CuratedDataset {
   status: string
   row_count: number | null
   quality_score: number | null
+  quality_status?: string | null
 }
 
 interface QualityReport {
@@ -40,7 +41,7 @@ const statusIcon = (status: string) => {
 }
 
 const statusLabel: Record<string, string> = {
-  pending_review: '待审核', approved: '已审批', rejected: '已拒绝',
+  pending_review: '待发起审核', pending: '待独立审核', approved: '已审批', rejected: '已拒绝',
 }
 
 const scoreColor = (s: number) =>
@@ -101,9 +102,11 @@ export default function CuratedTab() {
   const handleReview = async (id: string, action: 'approve' | 'reject') => {
     setReviewing(id)
     try {
-      await apiClientV2.post(`/curated/${id}/review?action=${action}`)
+      const review = action === 'approve'
+        ? await apiClientV2.post<{ status: string }>(`/curated/${id}/review?action=approve`)
+        : await apiClientV2.post<{ status: string }>(`/curated/${id}/review?action=reject`)
       setDatasets(prev =>
-        prev.map(ds => ds.id === id ? { ...ds, status: action === 'approve' ? 'approved' : 'rejected' } : ds)
+        prev.map(ds => ds.id === id ? { ...ds, status: review.status } : ds)
       )
     } finally { setReviewing(null) }
   }
@@ -164,7 +167,9 @@ export default function CuratedTab() {
                       {ds.row_count != null && (
                         <span className="text-xs text-gray-500">{ds.row_count} 行</span>
                       )}
-                      {ds.quality_score != null && (
+                      {ds.quality_status === 'not_evaluated_degraded' ? (
+                        <span className="text-xs font-medium text-amber-700">LLM 降级 · 质量未判定</span>
+                      ) : ds.quality_score != null && (
                         <span className={`text-xs font-medium ${scoreColor(ds.quality_score)}`}>
                           质量 {(ds.quality_score * 100).toFixed(0)}%
                         </span>
@@ -179,7 +184,7 @@ export default function CuratedTab() {
                           onClick={() => handleReview(ds.id, 'approve')}
                           disabled={reviewing === ds.id}
                           className="text-xs px-2 py-1 bg-green-50 text-green-700 border border-green-200 rounded hover:bg-green-100 disabled:opacity-50"
-                        >批准</button>
+                        >发起审核</button>
                         <button
                           onClick={() => handleReview(ds.id, 'reject')}
                           disabled={reviewing === ds.id}
@@ -196,6 +201,12 @@ export default function CuratedTab() {
                 {/* 展开区 */}
                 {isOpen && (
                   <div className="border-t">
+                    {ds.quality_status === 'not_evaluated_degraded' && (
+                      <div className="m-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                        <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+                        <span>此候选按规则回退生成。质量分不作为通过结论；请人工检查来源和提取结果后再审批。</span>
+                      </div>
+                    )}
                     {/* 子标签栏 */}
                     <div className="flex border-b bg-gray-50">
                       <button

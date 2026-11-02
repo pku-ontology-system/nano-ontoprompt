@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""两条路径 × 三业务域 正确测试
+"""两条路径 × 三业务域的本地演示脚本
 
 修正点: Pipeline Mapping 每个业务域只建 **一个** pipeline, 其 connector 节点
 以「文件上传」方式挂载该域文件夹的全部文件 (config.files[]), 后端按每个文件
 的 kind 自动选 A/B/C 路由, 产出多个 curated dataset。
 
-简易 LLM: 每域一个 ontology, 上传该域全部可文本化文件后一次性提取。
+Dataset Construction: 每域选一个 CSV/TSV/XLSX 样本，经私有 Dataset 和确定性映射构筑。
+该路径不调用 LLM，不代表领域语义推理能力。
 
-前置: 后端 8000 + mock LLM 8123 (test_data/mock_llm_server.py) 运行中。
+测试登录从 PROJECT4_E2E_USERNAME / PROJECT4_E2E_PASSWORD 读取。
 """
+import os
 import re
 import sys
 import time
@@ -16,17 +18,17 @@ from collections import Counter
 from pathlib import Path
 
 import requests
+from construction_api_flow import build_private_structured_dataset, first_structured_file, login_reviewer_session, login_session
 
 API = "http://localhost:8000"
 TD = Path(__file__).parent
 DOMAINS = ["供应链", "财务", "医疗"]
-# 简易 LLM 只处理可文本化文件
-TEXT_EXT = {".md", ".docx", ".doc", ".pdf", ".pptx", ".ppt", ".txt", ".csv", ".xlsx"}
+# Pipeline 的历史演示仍读取域目录中的所有支持来源；Dataset Construction
+# 单独选择一份结构化样本，不将文档或多模态来源误标成已支持路径。
 
-s = requests.Session()
-r = s.post(f"{API}/api/v1/auth/login", json={"username": "admin", "password": "admin123"})
-s.headers.update({"Authorization": f"Bearer {r.json()['data']['access_token']}"})
-print("✅ 登录")
+s = login_session(API)
+reviewer = login_reviewer_session(API)
+print("✅ 作者与独立审核人登录")
 
 
 def pascal(fname: str) -> str:
@@ -36,29 +38,15 @@ def pascal(fname: str) -> str:
 
 
 def clean_ontologies():
+    if os.environ.get("PROJECT4_E2E_ALLOW_DESTRUCTIVE_CLEANUP") != "1":
+        print("🛡️ 跳过全库本体删除；如确需清理，请显式设置 PROJECT4_E2E_ALLOW_DESTRUCTIVE_CLEANUP=1")
+        return
     ontos = s.get(f"{API}/api/v1/ontologies").json().get("data", [])
     if isinstance(ontos, dict):
         ontos = ontos.get("items", [])
     for o in ontos:
         s.delete(f"{API}/api/v1/ontologies/{o['id']}")
     print(f"🧹 清理 {len(ontos)} 个旧本体")
-
-
-def ensure_model_prompt():
-    models = s.get(f"{API}/api/v1/models").json().get("data", [])
-    mock = next((m for m in models if m.get("name") == "Mock Extractor (测试)"), None)
-    if not mock:
-        mock = s.post(f"{API}/api/v1/models", json={
-            "name": "Mock Extractor (测试)", "provider": "compatible",
-            "api_key": "mock-key", "api_base": "http://127.0.0.1:8123/v1",
-            "models": ["mock-extractor"]}).json()["data"]
-    prompts = s.get(f"{API}/api/v1/prompts").json().get("data", [])
-    pr = next((p for p in prompts if p.get("name") == "通用本体提取(测试)"), None)
-    if not pr:
-        pr = s.post(f"{API}/api/v1/prompts", json={
-            "name": "通用本体提取(测试)", "domain": "通用",
-            "content": "提取 entities/relations/logic_rules/actions, 只返回 JSON。"}).json()["data"]
-    return mock["id"], pr["id"]
 
 
 # ─────────────────────────── Pipeline Mapping ───────────────────────────
@@ -127,53 +115,33 @@ def run_mapping(domain: str) -> dict:
             "logic": res2.get("total_logic"), "actions": res2.get("total_actions")}
 
 
-# ─────────────────────────── 简易 LLM 提取 ───────────────────────────
-def run_simple(domain: str, model_id: str, prompt_id: str) -> dict:
-    folder = TD / domain
-    files = [f for f in sorted(folder.glob("*")) if f.suffix.lower() in TEXT_EXT]
-    r = s.post(f"{API}/api/v1/ontologies", json={
-        "name": f"{domain}-简易LLM-{int(time.time())}", "domain": domain,
-        "build_mode": "simple_llm", "description": "上传整域文件后一次性 LLM 提取"})
-    oid = r.json()["data"]["id"]
-    print(f"\n══ {domain} 简易 LLM: 上传 {len(files)} 个文件 ══")
-    for f in files:
-        with open(f, "rb") as fh:
-            s.post(f"{API}/api/v1/ontologies/{oid}/files", files={"file": (f.name, fh)})
-
-    r = s.post(f"{API}/api/v1/ontologies/{oid}/execute", json={
-        "prompt_id": prompt_id, "model_id": model_id, "model_name": "mock-extractor"})
-    tid = r.json()["data"]["task_id"]
-    status = "running"
-    for _ in range(90):
-        time.sleep(2)
-        task = s.get(f"{API}/api/v1/ontologies/{oid}/execute/status", params={"task_id": tid}).json().get("data", {})
-        status = task.get("status")
-        if status in ("success", "failed", "completed"):
-            break
-    ents = s.get(f"{API}/api/v1/ontologies/{oid}/entities", params={"page_size": 300}).json()
-    d = ents.get("data", ents)
-    items = d.get("items", d) if isinstance(d, dict) else d
-    g = s.get(f"{API}/api/v2/ontologies/{oid}/graph?limit=800").json()
-    g = g.get("data", g)
-    logic = len(s.get(f"{API}/api/v1/ontologies/{oid}/logic").json().get("data", []))
-    acts = len(s.get(f"{API}/api/v1/ontologies/{oid}/actions").json().get("data", []))
-    print(f"  提取: {status} 实体={len(items)} 边={len(g.get('edges', []))} 逻辑={logic} 动作={acts}")
-    return {"domain": domain, "oid": oid, "files": len(files), "status": status,
-            "nodes": len(items), "edges": len(g.get("edges", [])), "logic": logic, "actions": acts}
+# ─────────────────────────── Dataset Construction ───────────────────────────
+def run_construction(domain: str) -> dict:
+    source = first_structured_file(TD / domain)
+    print(f"\n══ {domain} Dataset Construction: {source.name} ══")
+    return build_private_structured_dataset(
+        s,
+        API,
+        source,
+        reviewer_session=reviewer,
+        domain=domain,
+        ontology_name=f"{domain}-DatasetConstruction-{int(time.time())}",
+    )
 
 
 if __name__ == "__main__":
     clean_ontologies()
-    model_id, prompt_id = ensure_model_prompt()
     mapping_res = [run_mapping(d) for d in DOMAINS]
-    simple_res = [run_simple(d, model_id, prompt_id) for d in DOMAINS]
+    construction_res = [run_construction(d) for d in DOMAINS]
 
     print("\n" + "=" * 60)
     print("Pipeline Mapping 汇总 (每域 1 个 pipeline)")
     for r in mapping_res:
         print(f"  ✅ {r['domain']}: {r['files']}文件→1管道→{r['curated']}curated | "
               f"{r['nodes']}节点 {r['edges']}边 logic={r['logic']} actions={r['actions']} | {r['oid']}")
-    print("简易 LLM 汇总")
-    for r in simple_res:
-        print(f"  {'✅' if r['nodes'] > 0 else '❌'} {r['domain']}: {r['files']}文件 {r['status']} | "
-              f"{r['nodes']}节点 {r['edges']}边 logic={r['logic']} actions={r['actions']} | {r['oid']}")
+    print("私有 Dataset Construction 汇总（确定性结构映射）")
+    for r in construction_res:
+        print(f"  {'✅' if r['status'] == 'completed' and r['entities'] > 0 else '❌'} "
+              f"{r['domain']}: {r['file']} {r['status']} | "
+              f"实体类型={r['entities']} 实例={r['instances']} 边={r['edges']} "
+              f"logic={r['logic']} actions={r['actions']} | {r['ontology_id']}")

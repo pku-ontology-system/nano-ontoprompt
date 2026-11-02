@@ -40,6 +40,9 @@ class ExecutionContext:
     view_id: str | None = None
     snapshot_id: str | None = None
     scenario_id: str | None = None
+    what_if_scenario_id: str | None = None
+    what_if_context_digest: str | None = None
+    what_if_input_digest: str | None = None
     edit_context_id: str | None = None
     permission_digest: str | None = None
     executor_version: str = "ontology-workbench-v2"
@@ -89,6 +92,9 @@ class ResultManifest:
             "view_id": self.context.view_id,
             "snapshot_id": self.context.snapshot_id,
             "scenario_id": self.context.scenario_id,
+            "what_if_scenario_id": self.context.what_if_scenario_id,
+            "what_if_context_digest": self.context.what_if_context_digest,
+            "what_if_input_digest": self.context.what_if_input_digest,
             "permission_digest": self.permission_digest or self.context.permission_digest,
             "executor_version": self.context.executor_version,
             "consistency": asdict(self.context.consistency),

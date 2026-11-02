@@ -4,6 +4,7 @@ import logging
 import uuid as _uuid
 import json
 import re
+from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from app.models.v2.mapping import OntologyMapping
 
@@ -36,47 +37,240 @@ class MappingService:
 
     # ── 单个 Mapping 应用 ─────────────────────────────────────────────
 
-    def apply_mapping(self, mapping_id: str, data: list[dict]) -> dict:
+    def _approved_mapping_view(self, mapping: OntologyMapping, data: list[dict]):
+        """Validate an approved schema without changing its saved mapping.
+
+        New source columns are surfaced in the run report but never silently
+        added to the ontology mapping.  The effective key is resolved from an
+        explicit mapping contract, or from the existing mapped instances on
+        the first run, so later snapshots cannot quietly switch object identity.
+        """
+        import hashlib
+        import json as _json
+        from types import SimpleNamespace
+        from app.models.entity_instance import EntityInstance
+
+        if not data:
+            raise ValueError("SCHEMA_GATE_EMPTY_SNAPSHOT: approved mapping requires a non-empty snapshot")
+        field_map = dict(mapping.field_mapping or {})
+        mapped_columns = sorted(key for key in field_map if not key.startswith("__"))
+        if not mapped_columns:
+            raise ValueError("SCHEMA_GATE_NO_MAPPED_COLUMNS: mapping has no explicit source properties")
+
+        observed = set()
+        for index, row in enumerate(data):
+            if not isinstance(row, dict):
+                raise ValueError(f"SCHEMA_GATE_INVALID_ROW: row {index} is not an object")
+            observed.update(str(key) for key in row)
+        missing = sorted(set(mapped_columns) - observed)
+        if missing:
+            raise ValueError("SCHEMA_DRIFT_MISSING_COLUMNS: " + ", ".join(missing))
+        row_missing = [
+            index for index, row in enumerate(data)
+            if any(column not in row for column in mapped_columns)
+        ]
+        if row_missing:
+            raise ValueError(f"SCHEMA_GATE_ROW_COLUMNS_MISSING: rows {row_missing[:20]}")
+
+        concept_id = str(_uuid.UUID(
+            hashlib.md5(f"{mapping.ontology_id}:{mapping.entity_class}:concept".encode()).hexdigest()
+        ))
+        existing = self._db.query(EntityInstance).filter(
+            EntityInstance.ontology_id == mapping.ontology_id,
+            EntityInstance.entity_id == concept_id,
+            EntityInstance.source_version.isnot(None),
+        ).all()
+        previous_keys = {
+            str(row.row_identity).split(":", 1)[0]
+            for row in existing
+            if getattr(row, "row_identity", None)
+        }
+        configured_key = field_map.get("__primary_key__")
+        if configured_key:
+            primary_key = str(configured_key)
+            if previous_keys and previous_keys != {primary_key}:
+                raise ValueError("SCHEMA_GATE_PRIMARY_KEY_CHANGED: mapping key differs from existing object identities")
+        elif len(previous_keys) == 1:
+            primary_key = next(iter(previous_keys))
+        elif len(previous_keys) > 1:
+            raise ValueError("SCHEMA_GATE_AMBIGUOUS_PRIMARY_KEY: existing objects use multiple source keys")
+        else:
+            primary_key = self._choose_pk_col(data)
+
+        if primary_key == "__row_hash__":
+            raise ValueError("SCHEMA_GATE_UNSTABLE_PRIMARY_KEY: configure a stable source key before approval")
+        if primary_key not in observed:
+            raise ValueError(f"SCHEMA_GATE_PRIMARY_KEY_MISSING: {primary_key}")
+        invalid_key_rows = [
+            index for index, row in enumerate(data)
+            if row.get(primary_key) in (None, "")
+        ]
+        if invalid_key_rows:
+            raise ValueError(f"SCHEMA_GATE_PRIMARY_KEY_EMPTY: rows {invalid_key_rows[:20]}")
+        if not self._is_unique_col(data, primary_key):
+            raise ValueError(
+                f"SCHEMA_GATE_PRIMARY_KEY_NOT_UNIQUE: {primary_key}; "
+                "configure a stable unique row key before applying this snapshot"
+            )
+
+        field_map["__primary_key__"] = primary_key
+        observed_columns = sorted(observed)
+        schema_fingerprint = hashlib.sha256(_json.dumps(
+            observed_columns, ensure_ascii=False, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        schema_report = {
+            "schema_fingerprint": schema_fingerprint,
+            "primary_key_column": primary_key,
+            "mapped_columns": mapped_columns,
+            "observed_columns": observed_columns,
+            "unmapped_columns": sorted(observed - set(mapped_columns)),
+            "row_count": len(data),
+        }
+        view = SimpleNamespace(
+            id=mapping.id,
+            ontology_id=mapping.ontology_id,
+            curated_dataset_id=mapping.curated_dataset_id,
+            entity_class=mapping.entity_class,
+            field_mapping=field_map,
+            confidence=mapping.confidence,
+        )
+        return view, schema_report
+
+    def apply_mapping(self, mapping_id: str, data: list[dict], *,
+                      source_version_id: str | None = None,
+                      strict_source_schema: bool = False,
+                      mapping_apply_run_id: str | None = None) -> dict:
         import hashlib as _hl
         from app.models.entity import Entity
+        from app.models.entity_instance import EntityInstance
+        from app.models.v2.mapping_row_change import MappingRowChange
         mapping = self._db.query(OntologyMapping).filter(OntologyMapping.id == mapping_id).first()
         if not mapping:
             raise ValueError(f"Mapping {mapping_id} not found")
-        if data:
+        if strict_source_schema:
+            sibling = self._db.query(OntologyMapping.id).filter(
+                OntologyMapping.ontology_id == mapping.ontology_id,
+                OntologyMapping.entity_class == mapping.entity_class,
+                OntologyMapping.id != mapping.id,
+            ).limit(1).first()
+            if sibling:
+                raise ValueError(
+                    "MAPPING_SOURCE_OWNERSHIP_AMBIGUOUS: multiple source Mappings target "
+                    "this Object Type; reconcile source ownership before snapshot deletion"
+                )
+        schema_report = None
+        mapping_view = mapping
+        if strict_source_schema:
+            mapping_view, schema_report = self._approved_mapping_view(mapping, data)
+        elif data:
             self._normalize_mapping(mapping, data)
         # 确保概念实体存在
         concept_id = str(_uuid.UUID(
-            _hl.md5(f"{mapping.ontology_id}:{mapping.entity_class}:concept".encode()).hexdigest()
+            _hl.md5(f"{mapping_view.ontology_id}:{mapping_view.entity_class}:concept".encode()).hexdigest()
         ))
-        name_cn = re.sub(r'(?<=[a-z0-9])(?=[A-Z])', ' ', mapping.entity_class).replace('_', ' ').title()
+        if strict_source_schema and mapping_apply_run_id:
+            unresolved = self._db.query(EntityInstance.id).filter(
+                EntityInstance.ontology_id == mapping_view.ontology_id,
+                EntityInstance.entity_id == concept_id,
+                EntityInstance.source_version.isnot(None),
+                EntityInstance.source_mapping_id.is_(None),
+                EntityInstance.is_deleted.is_(False),
+            ).limit(1).first()
+            if unresolved:
+                raise ValueError(
+                    "MAPPING_SOURCE_OWNERSHIP_UNRESOLVED: historical rows cannot be safely "
+                    "assigned to this Mapping; review source ownership before applying"
+                )
+        name_cn = re.sub(r'(?<=[a-z0-9])(?=[A-Z])', ' ', mapping_view.entity_class).replace('_', ' ').title()
         existing = self._db.query(Entity).filter(Entity.id == concept_id).first()
         if not existing:
             self._db.add(Entity(
-                id=concept_id, ontology_id=mapping.ontology_id,
-                name_cn=name_cn, name_en=mapping.entity_class,
-                type=mapping.entity_class, canonical_id=f"concept:{mapping.entity_class}",
+                id=concept_id, ontology_id=mapping_view.ontology_id,
+                name_cn=name_cn, name_en=mapping_view.entity_class,
+                type=mapping_view.entity_class, canonical_id=f"concept:{mapping_view.entity_class}",
                 properties={"is_concept": True, "source": "apply_mapping"},
                 confidence=1.0,
             ))
             self._db.flush()
         self._publish_property_definitions(concept_id, mapping)
         # 写入实例数据（EntityInstance 表）
-        instances = self._rows_to_instances(mapping, concept_id, data)
-        # New construction path: keep the legacy Neo4j concept write for
-        # compatibility, but publish row instances and provenance to FalkorDB.
-        self._write_falkor_instances(mapping, concept_id, instances)
-        # 写入 Neo4j（概念节点）
-        concept_name = getattr(existing, "name_cn", None) if isinstance(existing, Entity) else None
-        concept_dict = {"id": concept_id, "type": mapping.entity_class,
-                        "name_cn": concept_name or name_cn,
-                        "confidence": mapping.confidence or 0.85, "version": "v0.1",
-                        "ontology_id": mapping.ontology_id}
-        self._write_neo4j(mapping.entity_class, [concept_dict])
+        delta_counts = {"added": 0, "updated": 0, "unchanged": 0, "deleted": 0}
+        instances = self._rows_to_instances(
+            mapping_view,
+            concept_id,
+            data,
+            source_version_id=source_version_id,
+            mapping_apply_run_id=mapping_apply_run_id if strict_source_schema else None,
+            delta_counts=delta_counts,
+        )
+        if strict_source_schema and mapping_apply_run_id:
+            now = datetime.now(timezone.utc)
+            incoming_ids = {str(instance.id) for instance in instances}
+            existing_rows = self._db.query(EntityInstance).filter(
+                EntityInstance.ontology_id == mapping_view.ontology_id,
+                EntityInstance.source_mapping_id == mapping_view.id,
+                EntityInstance.is_deleted.is_(False),
+            ).with_for_update().all()
+            for stale in existing_rows:
+                if str(stale.id) in incoming_ids:
+                    continue
+                before_row_data = dict(stale.row_data or {})
+                stale.is_deleted = True
+                stale.deleted_at = now
+                stale.source_version = str(source_version_id)
+                self._db.add(MappingRowChange(
+                    id=str(_uuid.uuid5(_uuid.NAMESPACE_URL,
+                                       f"mapping-row-change:{mapping_apply_run_id}:{stale.id}")),
+                    mapping_apply_run_id=mapping_apply_run_id,
+                    mapping_id=str(mapping_view.id),
+                    ontology_id=str(mapping_view.ontology_id),
+                    object_id=str(stale.id),
+                    row_identity=str(stale.row_identity),
+                    dataset_version_id=str(source_version_id),
+                    operation="delete",
+                    before_row_data=before_row_data,
+                    after_row_data=None,
+                ))
+                mapped_entity = self._db.get(Entity, stale.id)
+                if mapped_entity is not None:
+                    mapped_entity.is_source_deleted = True
+                delta_counts["deleted"] += 1
+            self._db.flush()
+
+        # Approved snapshot writes use PostgreSQL as the authority and persist
+        # row changes before attempting the retryable graph projection. Legacy
+        # construction paths retain their previous best-effort publish order.
+        if not (strict_source_schema and mapping_apply_run_id):
+            self._write_falkor_instances(mapping_view, concept_id, instances)
+        # Approved MappingApplyRun writes its concept and instances through the
+        # durable FalkorDB RowChange projection after this SQL transaction.
+        # Keep the best-effort Neo4j projection only for legacy construction
+        # paths, where no durable projection worker owns the write.
+        if not (strict_source_schema and mapping_apply_run_id):
+            concept_name = getattr(existing, "name_cn", None) if isinstance(existing, Entity) else None
+            concept_dict = {"id": concept_id, "type": mapping_view.entity_class,
+                            "name_cn": concept_name or name_cn,
+                            "confidence": mapping_view.confidence or 0.85, "version": "v0.1",
+                            "ontology_id": mapping_view.ontology_id}
+            self._write_neo4j(mapping_view.entity_class, [concept_dict])
         mapping.status = "applied"
         self._db.commit()
-        return {"mapping_id": mapping_id, "entity_class": mapping.entity_class,
+        projection_summary = None
+        if strict_source_schema and mapping_apply_run_id:
+            from app.services.v2.mapping_row_projection import project_mapping_row_changes
+
+            projection_summary = project_mapping_row_changes(
+                self._db,
+                mapping_apply_run_id=mapping_apply_run_id,
+                batch_size=max(len(instances) + delta_counts["deleted"], 1),
+            )
+        return {"mapping_id": mapping_id, "entity_class": mapping_view.entity_class,
                 "instances_written": len(instances),
-                "errors": 0, "total_rows": len(data)}
+                "errors": 0, "total_rows": len(data),
+                "dataset_version_id": source_version_id,
+                **({"delta_counts": delta_counts} if strict_source_schema and mapping_apply_run_id else {}),
+                **({"projection": projection_summary} if projection_summary is not None else {}),
+                **({"schema_report": schema_report} if schema_report is not None else {})}
 
     # ── 全量构建：Concept Entity → EntityInstance → Relation → ChromaDB ──────
 
@@ -123,16 +317,25 @@ class MappingService:
             if not m.curated_dataset_id:
                 continue
             try:
-                rows = ds_svc.preview(m.curated_dataset_id, 1, limit=10000)
+                source_version, rows, source_manifest = ds_svc.read_latest_complete_snapshot(
+                    m.curated_dataset_id,
+                )
             except Exception as e:
                 logger.warning(f"读取数据集 {m.curated_dataset_id} 失败: {e}")
+                entity_results.append({
+                    "mapping_id": m.id, "entity_class": m.entity_class,
+                    "status": "failed", "instances_written": 0,
+                    "error": str(e)[:400],
+                })
                 continue
 
             if rows:
                 self._normalize_mapping(m, rows)
 
             concept_id = concept_by_mapping[m.id]
-            instances = self._rows_to_instances(m, concept_id, rows)
+            instances = self._rows_to_instances(
+                m, concept_id, rows, source_version_id=source_version.id,
+            )
             self._write_falkor_instances(m, concept_id, instances)
 
             pk_col = (m.field_mapping or {}).get("__primary_key__") or self._choose_pk_col(rows)
@@ -146,6 +349,8 @@ class MappingService:
             mapping_meta[m.id] = {
                 "entity_class": m.entity_class,
                 "concept_id": concept_id,
+                "dataset_version_id": source_version.id,
+                "source_manifest": source_manifest,
                 "pk_col": pk_col,
                 "rows": rows,
                 "entity_id_map": entity_id_map,
@@ -155,7 +360,9 @@ class MappingService:
             m.status = "applied"
             entity_results.append({
                 "mapping_id": m.id, "entity_class": m.entity_class,
-                "instances_written": len(instances),
+                "status": "applied", "instances_written": len(instances),
+                "dataset_version_id": source_version.id,
+                "source_manifest": source_manifest,
             })
 
         self._db.commit()
@@ -987,15 +1194,33 @@ class MappingService:
             entities_by_id[props["id"]] = props
         return list(entities_by_id.values())
 
-    def _rows_to_instances(self, mapping: OntologyMapping, concept_id: str, rows: list[dict]) -> list[dict]:
+    def _rows_to_instances(self, mapping: OntologyMapping, concept_id: str, rows: list[dict],
+                           *, source_version_id: str | None = None,
+                           mapping_apply_run_id: str | None = None,
+                           delta_counts: dict[str, int] | None = None) -> list[dict]:
         """将行数据写入 EntityInstance 表，每条数据对应一个 instance"""
         from app.models.entity_instance import EntityInstance
         from app.models.entity import Entity
         field_map = mapping.field_mapping or {}
         pk_col = field_map.get("__primary_key__") or self._choose_pk_col(rows)
         property_meta = self._property_metadata_by_column(field_map)
+        identities = [
+            (
+                self._row_identity_value(row, pk_col),
+                self._stable_row_id(mapping, row, pk_col if pk_col in row else None),
+            )
+            for row in rows
+        ]
+        existing_by_id: dict[str, EntityInstance] = {}
+        if mapping_apply_run_id and identities:
+            existing_by_id = {
+                str(instance.id): instance
+                for instance in self._db.query(EntityInstance).filter(
+                    EntityInstance.id.in_([instance_id for _, instance_id in identities])
+                ).all()
+            }
         instances = []
-        for index, row in enumerate(rows):
+        for index, (row, (id_val, instance_id)) in enumerate(zip(rows, identities)):
             row_data: dict = {}
             for col, prop in field_map.items():
                 if col.startswith("__"):
@@ -1004,19 +1229,61 @@ class MappingService:
                     continue
                 if col in row:
                     row_data[prop] = row[col]
-            id_val = self._row_identity_value(row, pk_col)
             # 用按列名映射后的属性名构建 display name
             names = self._instance_names(mapping, row, pk_col, index)
             row_data["name_cn"] = names.get("name_cn", id_val)
             row_data["name_en"] = names.get("name_en", id_val)
             row_data["object_type"] = mapping.entity_class
+            prior = existing_by_id.get(instance_id)
+            if prior is None and source_version_id is None and not mapping_apply_run_id:
+                prior = self._db.get(EntityInstance, instance_id)
+            was_deleted = bool(getattr(prior, "is_deleted", False)) if prior is not None else False
+            before_row_data = dict(prior.row_data or {}) if prior is not None else None
+            same_properties = (
+                prior is not None
+                and not was_deleted
+                and json.dumps(before_row_data or {}, sort_keys=True, ensure_ascii=False, default=str)
+                == json.dumps(row_data, sort_keys=True, ensure_ascii=False, default=str)
+            )
+            if delta_counts is not None:
+                if prior is None or was_deleted:
+                    delta_counts["added"] += 1
+                elif same_properties:
+                    delta_counts["unchanged"] += 1
+                else:
+                    delta_counts["updated"] += 1
+            if mapping_apply_run_id and not same_properties:
+                from app.models.v2.mapping_row_change import MappingRowChange
+
+                self._db.merge(MappingRowChange(
+                    id=str(_uuid.uuid5(_uuid.NAMESPACE_URL,
+                                       f"mapping-row-change:{mapping_apply_run_id}:{instance_id}")),
+                    mapping_apply_run_id=mapping_apply_run_id,
+                    mapping_id=str(mapping.id),
+                    ontology_id=str(mapping.ontology_id),
+                    object_id=instance_id,
+                    row_identity=id_val,
+                    dataset_version_id=str(source_version_id),
+                    operation="upsert",
+                    before_row_data=before_row_data,
+                    after_row_data=dict(row_data),
+                ))
             inst = EntityInstance(
-                id=self._stable_row_id(mapping, row, pk_col if pk_col in row else None),
+                id=instance_id,
                 entity_id=concept_id,
                 ontology_id=mapping.ontology_id,
                 row_identity=id_val,
                 row_data=row_data,
+                source_version=(str(source_version_id) if source_version_id is not None
+                                else prior.source_version if isinstance(prior, EntityInstance) else None),
+                source_mapping_id=str(mapping.id),
+                is_deleted=False,
+                deleted_at=None,
+                revision_id=prior.revision_id if prior is not None else None,
+                object_type_resource_id=prior.object_type_resource_id if prior is not None else None,
             )
+            if prior is not None:
+                inst.created_at = prior.created_at
             self._db.merge(inst)
             # Relation is still backed by the legacy Entity FK. Publish a
             # durable row object alongside EntityInstance so inferred links
@@ -1029,8 +1296,15 @@ class MappingService:
                 name_en=names.get("name_en", id_val),
                 type=mapping.entity_class,
                 canonical_id=f"instance:{mapping.entity_class}:{id_val}",
-                properties={**row_data, "is_instance": True, "concept_id": concept_id},
+                properties={
+                    **row_data,
+                    "is_instance": True,
+                    "concept_id": concept_id,
+                    "source_mapping_id": str(mapping.id),
+                    "source_deleted": False,
+                },
                 confidence=mapping.confidence or 0.85,
+                is_source_deleted=False,
             ))
             instances.append(inst)
         self._db.flush()
@@ -1505,6 +1779,8 @@ class MappingService:
                 row_data = dict(inst.row_data or {})
                 row_data.setdefault("row_identity", inst.row_identity)
                 row_data.setdefault("entity_id", concept_id)
+                row_data["_source_mapping_id"] = str(mapping.id)
+                row_data["_source_deleted"] = bool(getattr(inst, "is_deleted", False))
                 nodes.append({"id": instance_id, "entity_type": mapping.entity_class, "properties": row_data})
                 edges.append({"source": instance_id, "target": concept_id, "type": "INSTANCE_OF", "properties": {"ontology_id": mapping.ontology_id, "source": "mapping"}})
             svc.upsert_instances(mapping.ontology_id, nodes)

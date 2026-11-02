@@ -1,0 +1,49 @@
+{
+  "file_sha256": {
+    "ai4i_examples.json": "0fbb84b9237021a880bf5af11bc107882b6c596003293d77a1389592bda29122",
+    "factorynet_examples.json": "cea99ef2c2b28fcac53892b8eb5510c024064194342a9e379a6b5fd88dbb235c",
+    "ibadas_examples.json": "e331ad1ee886b8fc431db628fc1a8e00bf7aed1d09ad28dde8544ea00611c379"
+  },
+  "schema_version": 1,
+  "sources": {
+    "ai4i": {
+      "archive_sha256": "f601f14294bcf190f9d720676b7f0aea46a26cde9ab8ebc7b4f8174d9d26b252",
+      "download_url": "https://archive.ics.uci.edu/static/public/601/ai4i+2020+predictive+maintenance+dataset.zip",
+      "license": "CC BY 4.0",
+      "limitation": "有意分层的演示切片；故障率和规则覆盖率不能外推到总体。",
+      "selected_rows": 29,
+      "selection": "每种故障模式按原始顺序取首、中、末 3 条；每种产品类型取 5 个无故障磨损分位点；重叠行去重。",
+      "source_rows": 10000,
+      "source_sha256": "dc6630cd9b1f0f853922fad78a1b6436570d3f1ec863f1dd5c4340ac56bc8a8e",
+      "url": "https://archive.ics.uci.edu/dataset/601/ai4i%2B2020%2B"
+    },
+    "factorynet": {
+      "download_url": "https://huggingface.co/datasets/factorynet/factorynet/resolve/main/data/cnc_000.parquet?download=true",
+      "episodes": [
+        "UMich_CNC_01",
+        "UMich_CNC_06",
+        "UMich_CNC_08",
+        "UMich_CNC_13"
+      ],
+      "license": "UMich CNC 原始来源条款（待核验）",
+      "limitation": "下采样点不是连续事件窗口；目检结果仅供回看，不是模型预测。",
+      "original_source_url": "https://www.kaggle.com/datasets/shasun/tool-wear-detection-in-cnc-mill",
+      "selected_rows": 256,
+      "selection": "从 4 个指定 CNC 加工批次各等距抽取 64 个原始采样点。",
+      "source_id": "factorynet_cnc",
+      "source_rows": 25286,
+      "source_sha256": "4754f0389c31a13fc84ace615a77d63aa3483ed49b4ab503d70b4c68a4519e6d",
+      "url": "https://huggingface.co/datasets/Forgis/FactoryNet"
+    },
+    "ibadas": {
+      "license": "CC BY-NC 4.0",
+      "limitation": "官方标签只用于回看覆盖情况，不作为在线预测。",
+      "revision": "f7e3812f1984144ae7f388697b4d23e139e30c29",
+      "selected_samples": 12,
+      "selection": "复用已固定下载的 6 组正常与 6 组异常 RGB-D 样本；媒体仍在对象存储。",
+      "source_id": "ibadas_12_demo",
+      "source_sha256": "a112920637af77fdc117823a4e81587c5ec924015054bdd7172c3f1f7cfd048c",
+      "url": "https://huggingface.co/datasets/moiaraya/i-badas"
+    }
+  }
+}

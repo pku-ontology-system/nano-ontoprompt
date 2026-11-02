@@ -1,6 +1,9 @@
 """Model config selection helpers for LLM/VLM call sites."""
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 from typing import Iterable
 
 
@@ -82,6 +85,57 @@ def select_llm_model_config(
     finally:
         if owns_db:
             db.close()
+
+
+def model_config_provenance_snapshot(model_config) -> dict | None:
+    """Return a non-secret fingerprint suitable for an immutable run manifest."""
+    if model_config is None:
+        return None
+
+    def digest(value) -> str:
+        encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    encrypted_credential = getattr(model_config, "api_key_encrypted", None) or ""
+    gateway_base = os.getenv("LITELLM_API_BASE", "").strip()
+    gateway_key = os.getenv("LITELLM_API_KEY", "").strip()
+    snapshot = {
+        "config_id": str(getattr(model_config, "id", "")),
+        "provider": getattr(model_config, "provider", None),
+        "models": [str(item) for item in _as_list(getattr(model_config, "models", None))],
+        "config_type": getattr(model_config, "config_type", None),
+        "updated_at": getattr(model_config, "updated_at", None).isoformat()
+        if getattr(model_config, "updated_at", None) else None,
+        "api_base_digest": digest(getattr(model_config, "api_base", None)) if getattr(model_config, "api_base", None) else None,
+        "options_digest": digest(getattr(model_config, "options", None) or {}),
+        # Store only one-way fingerprints; neither credentials nor endpoints are included.
+        "credential_fingerprint": hashlib.sha256(encrypted_credential.encode("utf-8")).hexdigest() if encrypted_credential else None,
+        "gateway_config_digest": digest({"api_base": gateway_base, "api_key": gateway_key})
+        if gateway_base or gateway_key else None,
+        "provider_model_artifact_reproducibility": "unverified",
+    }
+    snapshot["config_digest"] = digest(snapshot)
+    return snapshot
+
+
+def resolve_pinned_llm_model_config(db, pin: dict):
+    """Resolve an exact Pipeline ModelConfig pin and reject configuration drift."""
+    from app.models.model_config import ModelConfig
+
+    config_id = pin.get("model_config_id") if isinstance(pin, dict) else None
+    expected_digest = pin.get("model_config_digest") if isinstance(pin, dict) else None
+    if not config_id or not expected_digest:
+        return None, "model_unavailable"
+    config = db.query(ModelConfig).filter(
+        ModelConfig.id == config_id,
+        ModelConfig.config_type == "llm",
+    ).first()
+    if config is None:
+        return None, "model_config_missing"
+    snapshot = model_config_provenance_snapshot(config)
+    if not snapshot or snapshot.get("config_digest") != expected_digest:
+        return None, "model_config_changed"
+    return config, None
 
 
 def llm_call_kwargs(model_config) -> dict | None:

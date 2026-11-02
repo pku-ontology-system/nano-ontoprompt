@@ -57,6 +57,23 @@ def setup_db():
     yield
     Base.metadata.drop_all(bind=engine)
 
+@pytest.fixture(autouse=True)
+def schema_ready():
+    """Mark the schema verified: test databases are built from the ORM metadata.
+
+    The API refuses writes until startup has verified the schema (see
+    app.main.schema_write_readiness_gate); test databases match the models by
+    construction, so tests start from the verified state.
+    """
+    from app import main as app_main
+
+    previous = dict(app_main._SCHEMA_READINESS)
+    app_main._SCHEMA_READINESS.update(status="ready", failure=None)
+    yield
+    app_main._SCHEMA_READINESS.clear()
+    app_main._SCHEMA_READINESS.update(previous)
+
+
 @pytest.fixture
 def db():
     session = TestSession()

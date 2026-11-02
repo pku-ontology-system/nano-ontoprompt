@@ -90,6 +90,7 @@ def _run_data_import(task_id: str) -> dict:
                 str(spec.get("dataset_name") or f"{connection.name} / {resource}"),
                 "structured",
                 connection_id=connection.id,
+                created_by=str(connection.created_by) if connection.created_by else None,
                 data_class=task.data_class,
                 privacy_level=str(spec.get("privacy_level") or "standard"),
                 schema_json={"source_resource": resource, "import_mode": spec.get("mode", "snapshot")},

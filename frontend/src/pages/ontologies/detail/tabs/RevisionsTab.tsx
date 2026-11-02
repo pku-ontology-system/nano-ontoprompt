@@ -17,6 +17,7 @@ type Revision = {
 type RevisionResponse = { revisions?: Revision[]; current_revision_id?: string | null }
 type DiffSection = { added?: unknown[]; removed?: unknown[]; changed?: unknown[]; added_count?: number; removed_count?: number; changed_count?: number }
 type DiffResponse = { left: Revision; right: Revision; diff?: Record<string, DiffSection> }
+type RestorePreview = { target_revision: Revision; expected_current_revision_id: string | null; preview_digest: string; can_restore: boolean; blockers: Array<{ entity_id: string; name: string }>; diff: Record<string, { added: number; removed: number; changed: number }>; preserves_instance_rows: boolean }
 
 const sectionLabels: Record<string, string> = { entities: '类与属性', relations: '关系', logic_rules: '规则', actions: '动作' }
 
@@ -30,6 +31,7 @@ export default function RevisionsTab({ ontologyId }: { ontologyId: string }) {
   const [leftId, setLeftId] = useState('')
   const [rightId, setRightId] = useState('')
   const [diff, setDiff] = useState<DiffResponse | null>(null)
+  const [restorePreview, setRestorePreview] = useState<RestorePreview | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -70,11 +72,25 @@ export default function RevisionsTab({ ontologyId }: { ontologyId: string }) {
     } finally { setBusy(false) }
   }
 
-  const restore = async (revision: Revision) => {
-    if (!window.confirm(`以 ${revisionLabel(revision)} 创建新的当前修订？历史版本不会被覆盖。`)) return
+  const previewRestore = async (revision: Revision) => {
     setBusy(true); setError('')
     try {
-      const created = await apiClientV2.post<Revision>(`/ontologies/${ontologyId}/revisions/${revision.id}/restore`)
+      setRestorePreview(await apiClientV2.post<RestorePreview>(`/ontologies/${ontologyId}/revisions/${revision.id}:preview-restore`))
+    } catch (err: unknown) {
+      const error = err as { detail?: string; message?: string }
+      setError(error.detail || error.message || '恢复预览失败')
+    } finally { setBusy(false) }
+  }
+
+  const confirmRestore = async () => {
+    if (!restorePreview?.can_restore) return
+    setBusy(true); setError('')
+    try {
+      const created = await apiClientV2.post<Revision>(`/ontologies/${ontologyId}/revisions/${restorePreview.target_revision.id}/restore`, {
+        expected_current_revision_id: restorePreview.expected_current_revision_id,
+        preview_digest: restorePreview.preview_digest,
+      })
+      setRestorePreview(null)
       await load()
       setRightId(created.id)
     } catch (err: unknown) {
@@ -96,10 +112,11 @@ export default function RevisionsTab({ ontologyId }: { ontologyId: string }) {
           <div className="flex items-center justify-between gap-2"><strong>r{item.revision_no}</strong>{item.id === currentId ? <span className="wb-status wb-status-success"><Check size={11} />当前</span> : <span className="wb-status">历史</span>}</div>
           <p className="mt-2 text-[11px] font-mono text-gray-500 break-all">{item.id}</p>
           <p className="mt-2 text-xs text-gray-500">{item.created_at ? new Date(item.created_at).toLocaleString() : '—'} · {item.summary?.entity_count ?? 0} 类 · {item.summary?.relation_count ?? 0} 关系</p>
-          <button type="button" disabled={busy || item.id === currentId} onClick={() => restore(item)} className="wb-button-secondary mt-3 text-xs disabled:opacity-40"><RotateCcw size={13} />恢复为新修订</button>
+          <button type="button" disabled={busy || item.id === currentId} onClick={() => void previewRestore(item)} className="wb-button-secondary mt-3 text-xs disabled:opacity-40"><RotateCcw size={13} />预览恢复</button>
         </div>)}
       </div>}
     </div>
+    {restorePreview && <section className="wb-surface p-5" data-testid="revision-restore-preview"><div className="flex items-start justify-between gap-3"><div><div className="wb-section-kicker"><RotateCcw size={13} /> 恢复预览</div><h3 className="wb-section-title mt-1">以 {revisionLabel(restorePreview.target_revision)} 创建新修订</h3><p className="mt-2 text-xs text-gray-500">确认前会再次核对当前修订和活动快照；历史版本不会被覆盖。实例行会保留。</p></div></div>{Object.keys(restorePreview.diff).length > 0 && <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{Object.entries(restorePreview.diff).map(([kind, counts]) => <div key={kind} className="rounded-lg border border-gray-200 p-3"><p className="text-sm font-medium">{sectionLabels[kind] || kind}</p><p className="mt-2 text-xs text-gray-600">将新增 {counts.added} · 删除 {counts.removed} · 修改 {counts.changed}</p></div>)}</div>}{restorePreview.blockers.length > 0 && <div className="mt-4 rounded border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950"><strong>当前不能恢复：目标快照会删除仍有关联实例的实体类型。</strong><p className="mt-1">{restorePreview.blockers.map(item => item.name).join('、')}</p></div>}{!restorePreview.can_restore && restorePreview.blockers.length === 0 && <p className="mt-3 text-xs text-gray-600">该版本已经是当前修订，无需恢复。</p>}<div className="mt-4 flex gap-2"><button type="button" className="wb-button-secondary" disabled={busy} onClick={() => setRestorePreview(null)}>取消</button><button type="button" className="wb-button-primary" disabled={busy || !restorePreview.can_restore} onClick={() => void confirmRestore()}>{busy ? '处理中…' : '确认恢复为新修订'}</button></div></section>}
     <div className="wb-surface p-5">
       <div className="flex items-center gap-2"><GitCompareArrows size={16} className="text-blue-600" /><h3 className="text-sm font-semibold">版本对比</h3></div>
       <div className="mt-4 grid md:grid-cols-[1fr_1fr_auto] gap-3 items-end">

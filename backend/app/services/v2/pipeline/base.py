@@ -11,6 +11,9 @@ class PipelineContext:
     route: str  # A | B | C
     spec: dict = field(default_factory=dict)
     meta: dict = field(default_factory=dict)
+    # Runtime-only services (for example, the Run-scoped LLM attempt recorder).
+    # Keep these out of metadata because PipelineContext.meta is persisted as JSON.
+    runtime: dict = field(default_factory=dict)
     result_uri: str | None = None
     rows_in: int = 0
     rows_out: int = 0

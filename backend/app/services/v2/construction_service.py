@@ -11,11 +11,61 @@ from sqlalchemy.orm import Session
 from app.models.v2.construction import ConstructionRun, EvidenceRef
 
 
+_CONSTRUCTION_RUN_ERROR_MESSAGES = {
+    "user_cancelled": "构建任务已取消。",
+    "model_unavailable": "模型当前不可用，请检查模型配置后重试。",
+    "approval_required": "构建审核或本体基线已失效，任务未发布。",
+    "dataset_version_unavailable": "任务固定的数据版本不可用或已变化。",
+    "dataset_empty": "数据集没有可用于构建的记录。",
+    "temporal_data_invalid": "时序数据未通过有效时间或关系校验。",
+    "materialization_failed": "构建结果未能按审核快照发布。",
+    "construction_run_failed": "构建任务执行失败，请检查任务状态并重试。",
+    "background_fallback": "后台队列不可用，任务已切换为本地执行。",
+}
+
+
+def construction_run_error_code(error: str | None) -> str | None:
+    """Convert legacy/free-form errors into a stable, non-sensitive category."""
+    if error is None or not str(error).strip():
+        return None
+    value = str(error).strip()
+    if value in _CONSTRUCTION_RUN_ERROR_MESSAGES:
+        return value
+    lowered = value.casefold()
+    if "取消" in value or "cancelled" in lowered or "canceled" in lowered:
+        return "user_cancelled"
+    if "celery unavailable" in lowered or "temporal_replay_local_fallback" in lowered:
+        return "background_fallback"
+    if "minimax m3" in lowered or "model_unavailable" in lowered:
+        return "model_unavailable"
+    if "审批" in value or "审核" in value or "本体基线" in value:
+        return "approval_required"
+    if (
+        "NO_VALID_TEMPORAL_ROWS" in value
+        or "NO_GRAPH_RELATIONS" in value
+        or "TEMPORAL_REPLAY_NO_VALID_ROWS" in value
+        or "TEMPORAL_REPLAY_NO_GRAPH_RELATIONS" in value
+        or "时序" in value
+        or "时间语义" in value
+    ):
+        return "temporal_data_invalid"
+    if "数据集预览为空" in value or "没有可处理的媒体" in value or "没有可用版本" in value:
+        return "dataset_empty"
+    if "DatasetVersion" in value or "数据版本" in value or "checksum" in lowered or "schema digest" in lowered:
+        return "dataset_version_unavailable"
+    if "物化" in value or "发布修订" in value or "revision" in lowered:
+        return "materialization_failed"
+    if "dataset" in lowered or "数据集" in value:
+        return "dataset_version_unavailable"
+    return "construction_run_failed"
+
+
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
 
 
 def serialize_run(run: ConstructionRun) -> dict[str, Any]:
+    error_code = construction_run_error_code(run.error)
     return {
         "id": run.id,
         "run_id": run.id,
@@ -30,7 +80,10 @@ def serialize_run(run: ConstructionRun) -> dict[str, Any]:
         "progress": run.progress or {},
         "metrics": run.metrics or {},
         "artifact_uri": run.artifact_uri,
-        "error": run.error,
+        # Old rows may contain provider/exception text; never expose it through
+        # the Construction Run API.
+        "error": _CONSTRUCTION_RUN_ERROR_MESSAGES.get(error_code) if error_code else None,
+        "error_code": error_code,
         "created_at": _iso(run.created_at),
         "started_at": _iso(run.started_at),
         "completed_at": _iso(run.completed_at),
@@ -46,8 +99,10 @@ def create_run(
     dataset_id: str | None = None,
     model_name: str | None = None,
     config: dict[str, Any] | None = None,
+    run_id: str | None = None,
 ) -> ConstructionRun:
     run = ConstructionRun(
+        id=run_id,
         ontology_id=ontology_id,
         dataset_id=dataset_id,
         mode=mode,
@@ -88,7 +143,9 @@ def update_run(
     if artifact_uri is not None:
         run.artifact_uri = artifact_uri
     if error is not None:
-        run.error = error
+        # Keep only the stable classification in PostgreSQL. The public
+        # serializer maps it to a safe message, including for legacy rows.
+        run.error = construction_run_error_code(error)
     if cancel_requested is not None:
         run.cancel_requested = cancel_requested
     run.updated_at = datetime.now(timezone.utc)

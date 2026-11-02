@@ -186,6 +186,7 @@ def _property_instances(db: Session, ontology_id: str, row: OntologySemanticReso
     return db.query(EntityInstance).filter(
         EntityInstance.ontology_id == ontology_id,
         EntityInstance.entity_id == entity.id,
+        EntityInstance.is_deleted.is_(False),
     ).all()
 
 

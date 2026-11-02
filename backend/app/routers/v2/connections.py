@@ -18,10 +18,12 @@ from sqlalchemy.orm import Session
 from typing import Optional
 
 from app.database import SessionLocal
-from app.deps import get_current_user
+from app.deps import get_current_user, require_editor
+from app.models.user import User
 from app.models.v2.connection import Connection
 from app.models.v2.workbench_task import DataImportTask
 from app.services.connection.registry import get_connector
+from app.services.v2.connection_authorization import require_connection_access
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 data_imports_router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -59,7 +61,7 @@ class ConnectionResponse(BaseModel):
 # ── 端点 ──────────────────────────────────────────────────────
 
 @router.post("", response_model=ConnectionResponse, status_code=201)
-def create_connection(body: ConnectionCreate, db: Session = Depends(get_db)):
+def create_connection(body: ConnectionCreate, db: Session = Depends(get_db), current_user: User = Depends(require_editor)):
     """创建连接。config 加密后存储。"""
     from app.services import encryption_service
     kind = _normalize_kind(body.kind)
@@ -71,6 +73,7 @@ def create_connection(body: ConnectionCreate, db: Session = Depends(get_db)):
         kind=kind,
         config=encrypted_config,
         status="inactive",
+        created_by=str(current_user.id),
     )
     db.add(conn)
     db.commit()
@@ -79,8 +82,11 @@ def create_connection(body: ConnectionCreate, db: Session = Depends(get_db)):
 
 
 @router.get("", response_model=list[ConnectionResponse])
-def list_connections(db: Session = Depends(get_db)):
-    return db.query(Connection).all()
+def list_connections(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    query = db.query(Connection)
+    if current_user.role != "admin":
+        query = query.filter(Connection.created_by == str(current_user.id))
+    return query.order_by(Connection.created_at.desc()).all()
 
 
 @router.get("/templates")
@@ -151,10 +157,12 @@ class ImportBody(PreviewBody):
     dedupe_key: str | None = None
 
 
-def _connection_or_404(connection_id: str, db: Session) -> Connection:
+def _connection_or_404(connection_id: str, db: Session, user: User | None = None, *, write: bool = False) -> Connection:
     conn = db.query(Connection).filter(Connection.id == connection_id).first()
     if not conn:
         raise HTTPException(status_code=404, detail="连接不存在")
+    if user is not None:
+        require_connection_access(db, conn, user, write=write)
     return conn
 
 
@@ -242,7 +250,7 @@ def _build_db_config(raw_config: dict, db_type: str) -> dict:
 
 
 @router.post("/test-config")
-def test_connection_config(body: TestConfigBody):
+def test_connection_config(body: TestConfigBody, _=Depends(require_editor)):
     """测试连接配置（无需先创建 Connection，供 Builder 使用）"""
     try:
         kind = _normalize_kind(body.type)
@@ -255,14 +263,14 @@ def test_connection_config(body: TestConfigBody):
 
 
 @router.get("/{connection_id}", response_model=ConnectionResponse)
-def get_connection(connection_id: str, db: Session = Depends(get_db)):
-    return _connection_or_404(connection_id, db)
+def get_connection(connection_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    return _connection_or_404(connection_id, db, current_user)
 
 
 @router.get("/{connection_id}/resources")
-def list_connection_resources(connection_id: str, db: Session = Depends(get_db)):
+def list_connection_resources(connection_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """列出资源及字段。SQL 资源会额外返回字段类型，其他连接返回端点/集合。"""
-    conn = _connection_or_404(connection_id, db)
+    conn = _connection_or_404(connection_id, db, current_user)
     try:
         connector = _connector_for(conn)
         resources = connector.list_resources()
@@ -277,9 +285,9 @@ def list_connection_resources(connection_id: str, db: Session = Depends(get_db))
 
 
 @router.post("/{connection_id}/preview")
-def preview_connection(connection_id: str, body: PreviewBody, db: Session = Depends(get_db)):
+def preview_connection(connection_id: str, body: PreviewBody, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """按资源、列和结构化筛选预览数据，不接受任意 SQL。"""
-    conn = _connection_or_404(connection_id, db)
+    conn = _connection_or_404(connection_id, db, current_user)
     try:
         connector = _connector_for(conn)
         if conn.kind in {"mysql", "postgres"}:
@@ -294,9 +302,9 @@ def preview_connection(connection_id: str, body: PreviewBody, db: Session = Depe
 
 
 @router.post("/{connection_id}/imports", status_code=202)
-def create_data_import(connection_id: str, body: ImportBody, db: Session = Depends(get_db)):
+def create_data_import(connection_id: str, body: ImportBody, db: Session = Depends(get_db), current_user: User = Depends(require_editor)):
     """创建统一数据导入任务。MongoDB/REST 本轮只支持测试与预览。"""
-    conn = _connection_or_404(connection_id, db)
+    conn = _connection_or_404(connection_id, db, current_user, write=True)
     if conn.kind not in IMPORTABLE_KINDS:
         raise HTTPException(422, "MongoDB/REST 本轮可测试、预览，暂不导入")
     if body.mode == "append" and (not body.watermark_column or not body.dedupe_key):
@@ -336,9 +344,9 @@ def create_data_import(connection_id: str, body: ImportBody, db: Session = Depen
 
 
 @router.post("/{connection_id}/test")
-def test_connection(connection_id: str, db: Session = Depends(get_db)):
+def test_connection(connection_id: str, db: Session = Depends(get_db), current_user: User = Depends(require_editor)):
     """连接测试。尝试真实连接并返回结果。"""
-    conn = _connection_or_404(connection_id, db)
+    conn = _connection_or_404(connection_id, db, current_user, write=True)
     try:
         connector = _connector_for(conn)
         ok = connector.test_connection()
@@ -352,38 +360,29 @@ def test_connection(connection_id: str, db: Session = Depends(get_db)):
 
 
 @router.delete("/{connection_id}", status_code=204)
-def delete_connection(connection_id: str, db: Session = Depends(get_db)):
-    conn = db.query(Connection).filter(Connection.id == connection_id).first()
-    if not conn:
-        raise HTTPException(status_code=404, detail="Connection not found")
+def delete_connection(connection_id: str, db: Session = Depends(get_db), current_user: User = Depends(require_editor)):
+    conn = _connection_or_404(connection_id, db, current_user, write=True)
     db.delete(conn)
     db.commit()
 
 
 @router.post("/{connection_id}/schedule")
-def set_schedule(connection_id: str, cron_expr: str, db: Session = Depends(get_db)):
-    """为连接设置 Cron 调度表达式"""
-    from app.services.v2.scheduler.cron_service import CronService
-    svc = CronService()
-    if not svc.validate_cron(cron_expr):
-        raise HTTPException(400, f"无效的 cron 表达式: {cron_expr}")
-
-    conn = db.query(Connection).filter(Connection.id == connection_id).first()
-    if not conn:
-        raise HTTPException(404, "Connection not found")
-
-    result = svc.schedule_connection_sync(connection_id, cron_expr)
-    config = conn.config or {}
-    config["schedule_cron"] = cron_expr
-    conn.config = config
-    db.commit()
-    return result
+def set_schedule(connection_id: str, cron_expr: str, db: Session = Depends(get_db), current_user: User = Depends(require_editor)):
+    """拒绝把单纯保存的 cron 文本伪装成已注册的后台任务。"""
+    _connection_or_404(connection_id, db, current_user, write=True)
+    raise HTTPException(
+        501,
+        {
+            "code": "CONNECTION_SCHEDULE_NOT_IMPLEMENTED",
+            "message": "Connection 定时同步尚未接入持久调度器；此请求没有保存 cron 或创建任务。",
+        },
+    )
 
 
 @router.post("/{connection_id}/sync")
-def trigger_sync(connection_id: str, db: Session = Depends(get_db)):
+def trigger_sync(connection_id: str, db: Session = Depends(get_db), current_user: User = Depends(require_editor)):
     """手动触发同步必须有已保存的资源选择，避免空实现伪装成功。"""
-    conn = _connection_or_404(connection_id, db)
+    conn = _connection_or_404(connection_id, db, current_user, write=True)
     latest = db.query(DataImportTask).filter(DataImportTask.connection_id == connection_id).order_by(DataImportTask.created_at.desc()).first()
     if not latest:
         raise HTTPException(422, "尚未配置资源范围；请先在资源预览中选择表/集合并点击导入")
@@ -405,9 +404,13 @@ def trigger_sync(connection_id: str, db: Session = Depends(get_db)):
 
 
 @data_imports_router.get("/data-imports/{task_id}")
-def get_data_import(task_id: str, db: Session = Depends(get_db)):
+def get_data_import(task_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     task = db.query(DataImportTask).filter(DataImportTask.id == task_id).first()
     if not task:
+        raise HTTPException(404, "导入任务不存在")
+    if task.connection_id:
+        require_connection_access(db, task.connection_id, current_user)
+    elif current_user.role != "admin":
         raise HTTPException(404, "导入任务不存在")
     return {
         "id": task.id, "connection_id": task.connection_id, "dataset_id": task.dataset_id,
@@ -417,9 +420,13 @@ def get_data_import(task_id: str, db: Session = Depends(get_db)):
 
 
 @data_imports_router.post("/data-imports/{task_id}/retry")
-def retry_data_import(task_id: str, db: Session = Depends(get_db)):
+def retry_data_import(task_id: str, db: Session = Depends(get_db), current_user: User = Depends(require_editor)):
     task = db.query(DataImportTask).filter(DataImportTask.id == task_id).first()
     if not task:
+        raise HTTPException(404, "导入任务不存在")
+    if task.connection_id:
+        require_connection_access(db, task.connection_id, current_user, write=True)
+    elif current_user.role != "admin":
         raise HTTPException(404, "导入任务不存在")
     if task.status in {"queued", "running"}:
         return {"id": task.id, "status": task.status}
@@ -440,9 +447,13 @@ def retry_data_import(task_id: str, db: Session = Depends(get_db)):
 
 
 @data_imports_router.post("/data-imports/{task_id}/cancel")
-def cancel_data_import(task_id: str, db: Session = Depends(get_db)):
+def cancel_data_import(task_id: str, db: Session = Depends(get_db), current_user: User = Depends(require_editor)):
     task = db.query(DataImportTask).filter(DataImportTask.id == task_id).first()
     if not task:
+        raise HTTPException(404, "导入任务不存在")
+    if task.connection_id:
+        require_connection_access(db, task.connection_id, current_user, write=True)
+    elif current_user.role != "admin":
         raise HTTPException(404, "导入任务不存在")
     if task.status in {"completed", "failed", "cancelled"}:
         return {"id": task.id, "status": task.status}

@@ -424,7 +424,7 @@ def _asset_paths(selection: dict[str, Any], spec: dict[str, Any]) -> list[tuple[
     return paths
 
 
-def _prepare_installation(db: Session, storage) -> tuple[Dataset, DatasetVersion]:
+def _prepare_installation(db: Session, storage, created_by: str | None = None) -> tuple[Dataset, DatasetVersion]:
     dataset = find_ibadas_dataset(db)
     seed_manifest = {
         "source_id": IBADAS_SOURCE_ID,
@@ -433,11 +433,12 @@ def _prepare_installation(db: Session, storage) -> tuple[Dataset, DatasetVersion
         "revision": IBADAS_REVISION,
         "license": IBADAS_LICENSE,
         "status": "installing",
+        "access_scope": "shared_read",
         "sample_count": 12,
         "modalities": ["rgb", "depth", "mask", "point_cloud", "metadata"],
     }
     if dataset is None:
-        dataset = Dataset(name=IBADAS_DATASET_NAME, kind="unstructured", data_class="multimodal", privacy_level="standard", readiness="installing", schema_json=seed_manifest)
+        dataset = Dataset(name=IBADAS_DATASET_NAME, kind="unstructured", data_class="multimodal", privacy_level="standard", readiness="installing", created_by=created_by, schema_json=seed_manifest)
         db.add(dataset)
         db.flush()
     else:
@@ -445,7 +446,7 @@ def _prepare_installation(db: Session, storage) -> tuple[Dataset, DatasetVersion
         dataset.kind = "unstructured"
         dataset.data_class = "multimodal"
         dataset.readiness = "installing"
-        dataset.schema_json = {**seed_manifest, **(dataset.schema_json or {}), "source_id": IBADAS_SOURCE_ID, "status": "installing"}
+        dataset.schema_json = {**seed_manifest, **(dataset.schema_json or {}), "source_id": IBADAS_SOURCE_ID, "status": "installing", "access_scope": "shared_read"}
     version = db.query(DatasetVersion).filter(DatasetVersion.id == dataset.latest_version_id).first() if dataset.latest_version_id else None
     if version is None:
         manifest_key = f"datasets/{dataset.id}/v1/manifest.json"
@@ -461,7 +462,7 @@ def _prepare_installation(db: Session, storage) -> tuple[Dataset, DatasetVersion
     return dataset, version
 
 
-def install_ibadas_dataset(db: Session, progress: Progress = None) -> dict[str, Any]:
+def install_ibadas_dataset(db: Session, progress: Progress = None, created_by: str | None = None) -> dict[str, Any]:
     """Resume or install the pinned twelve-group I-BADAS sample in place.
 
     The dataset identity and each fully downloaded sample group are committed
@@ -469,7 +470,7 @@ def install_ibadas_dataset(db: Session, progress: Progress = None) -> dict[str, 
     so a UI heartbeat can never commit half-written media rows.
     """
     storage = get_storage_service()
-    dataset, version = _prepare_installation(db, storage)
+    dataset, version = _prepare_installation(db, storage, created_by=created_by)
     if progress:
         progress({"stage": "恢复安装记录", "completed": 0, "total": 12, "dataset_id": dataset.id})
 
@@ -599,7 +600,7 @@ def install_ibadas_dataset(db: Session, progress: Progress = None) -> dict[str, 
     version.checksum = hashlib.sha256(manifest_bytes).hexdigest()
     dataset.latest_version_id = version.id
     dataset.readiness = "ready"
-    dataset.schema_json = {**manifest, "status": "ready", "manifest_sha256": version.checksum, "total_bytes": sum(int(asset.get("size") or 0) for sample in manifest_samples for asset in sample["assets"])}
+    dataset.schema_json = {**manifest, "status": "ready", "access_scope": "shared_read", "manifest_sha256": version.checksum, "total_bytes": sum(int(asset.get("size") or 0) for sample in manifest_samples for asset in sample["assets"])}
     db.commit()
     db.refresh(dataset)
     if progress:

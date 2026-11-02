@@ -2,10 +2,20 @@ import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronDown, Download, GitBranch, Layers3, LockKeyhole, Save, Share2, X } from 'lucide-react';
 import { apiClientV2 } from '@/api/client';
+import type { WhatIfScenarioSummary } from '@/api/v2/whatIfScenarioRefs';
 import { setArithmetic, type ObjectSetExpression } from './contract';
 import { explorerError, loadComplete } from './runtime';
 
-export type ExplorerContext = { ontology_id: string; consistency: 'live' | 'snapshot'; data_view_id?: string };
+export type ExplorerContext = {
+  ontology_id: string;
+  consistency: 'live' | 'snapshot';
+  data_view_id?: string;
+  revision_policy?: 'latest' | 'pinned';
+  revision_id?: string;
+  what_if_scenario_id?: string;
+  what_if_context_digest?: string;
+  what_if_input_digest?: string;
+};
 export type Catalog = {
   metadata_digest: string;
   types: Array<{ api_name: string; kind: string; properties: Array<{ api_name: string; data_type: string; searchable: boolean; aggregatable: boolean }> }>;
@@ -30,9 +40,11 @@ function traversals(expression: ObjectSetExpression): Array<{ api_name: string; 
   return [];
 }
 
-export default function ExplorerOperations({ ontologyId, expression, objectType, selectedIds, context, catalog, onExpression, onView }: {
+export default function ExplorerOperations({ ontologyId, expression, objectType, selectedIds, context, catalog, whatIfScenarios = [], whatIfScenariosLoading = false, selectedWhatIfScenarioId = '', selectedWhatIfScenarioName, onWhatIfScenario, onExpression, onView }: {
   ontologyId: string; expression: ObjectSetExpression; objectType: string; selectedIds: string[];
-  context: ExplorerContext; catalog: Catalog; onExpression: (expression: ObjectSetExpression, type: string) => void; onView: (id: string) => void;
+  context: ExplorerContext; catalog: Catalog; whatIfScenarios?: WhatIfScenarioSummary[]; whatIfScenariosLoading?: boolean;
+  selectedWhatIfScenarioId?: string; selectedWhatIfScenarioName?: string;
+  onWhatIfScenario: (id: string) => void; onExpression: (expression: ObjectSetExpression, type: string) => void; onView: (id: string) => void;
 }) {
   const queryClient = useQueryClient();
   const [name, setName] = useState('');
@@ -48,6 +60,10 @@ export default function ExplorerOperations({ ontologyId, expression, objectType,
   const resources = useQuery({ queryKey: ['explorer-resources', ontologyId], queryFn: ({ signal }) => apiClientV2.get<{ resources: Resource[] }>(`${root}/object-sets/resources`, { signal }) });
   const active = resources.data?.resources.filter(item => item.status === 'active' && !item.expired) ?? [];
   const resource = active.find(item => item.id === resourceId);
+  const isWhatIf = !!context.what_if_scenario_id;
+  const hasPinnedSource = !!context.data_view_id || isWhatIf;
+  const selectedScenario = whatIfScenarios.find(item => item.id === selectedWhatIfScenarioId);
+  const scenarioTime = selectedScenario?.baseline?.scenario_context?.time_value;
   const snapshot = useMutation({ mutationFn: () => apiClientV2.post<{ view_id: string; status: string }>(`${root}/object-query/data-views`, {
     source_ontology_id: ontologyId, source_manifest_digest: catalog.metadata_digest,
   }), onSuccess: result => { if (result.status === 'ready') onView(result.view_id); else setNotice(`视图状态：${result.status}`); } });
@@ -100,13 +116,18 @@ export default function ExplorerOperations({ ontologyId, expression, objectType,
 
   return <>
     <div className="oe-resource-bar">
-      <div className="oe-resource-context"><span className={context.data_view_id ? 'is-pinned' : 'is-live'} /> <span role="status">{context.data_view_id ? `固定视图 · ${context.data_view_id}` : 'Live · 实时数据'}</span></div>
+      <div className="oe-resource-context"><span className={hasPinnedSource ? 'is-pinned' : 'is-live'} /> <span role="status">{isWhatIf ? `What-if 基线 · ${selectedWhatIfScenarioName || context.what_if_scenario_id}${scenarioTime ? ` · ${String(scenarioTime)}` : ''}` : context.data_view_id ? `固定视图 · ${context.data_view_id}` : 'Live · 实时数据'}</span></div>
+      <label className="oe-whatif-select"><span>时序情景</span><select aria-label="选择 What-if 情景" value={selectedWhatIfScenarioId} disabled={whatIfScenariosLoading} onChange={event => onWhatIfScenario(event.target.value)}>
+        <option value="">实时或固定视图</option>
+        {whatIfScenarios.map(item => <option key={item.id} value={item.id}>{item.name} · {item.status}</option>)}
+      </select></label>
       <div className="oe-resource-actions">
-        <button type="button" disabled={busy} onClick={() => snapshot.mutate()}><LockKeyhole size={14} />固定当前数据</button>
+        {!isWhatIf && <button type="button" disabled={busy} onClick={() => snapshot.mutate()}><LockKeyhole size={14} />固定当前数据</button>}
         {context.data_view_id && <button type="button" onClick={() => onView('')}>返回 Live</button>}
-        <button type="button" disabled={busy || (!selectedIds.length && !context.data_view_id)} onClick={() => setSaveKind('static')}><Save size={14} />保存列表{selectedIds.length ? `（选中 ${selectedIds.length}）` : '（完整集合）'}</button>
+        {isWhatIf && <button type="button" onClick={() => onWhatIfScenario('')}>退出情景</button>}
+        <button type="button" disabled={busy || (!selectedIds.length && !hasPinnedSource)} onClick={() => setSaveKind('static')}><Save size={14} />保存列表{selectedIds.length ? `（选中 ${selectedIds.length}）` : '（完整集合）'}</button>
         <button type="button" disabled={busy} onClick={() => setSaveKind('dynamic')}><Save size={14} />保存动态查询</button>
-        <button type="button" disabled={busy || !context.data_view_id} onClick={() => exportData.mutate()}><Download size={14} />导出</button>
+        <button type="button" disabled={busy || !hasPinnedSource} onClick={() => exportData.mutate()}><Download size={14} />导出</button>
         <button type="button" aria-expanded={showResources} onClick={() => setShowResources(value => !value)}><Layers3 size={14} />集合工具<ChevronDown size={13} /></button>
       </div>
     </div>

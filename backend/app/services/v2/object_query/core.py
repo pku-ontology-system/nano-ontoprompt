@@ -21,6 +21,15 @@ from .values import bind_parameters, typed
 from .cursor import decode as decode_cursor, encode as encode_cursor
 
 
+def _snapshot_reference(context) -> str | None:
+    if context.data_view_id:
+        return context.data_view_id
+    if context.what_if_scenario_id:
+        digest = context.what_if_context_digest or "unsealed"
+        return f"what-if:{context.what_if_scenario_id}:{digest}"
+    return None
+
+
 def metadata_digest(metadata):
     return stable_hash({'types': [asdict(v) for _, v in sorted(metadata._types.items())],
                         'links': sorted([asdict(v) for v in metadata.links], key=lambda v: (v['api_name'], v['source_type'], v['target_type']))})
@@ -230,19 +239,22 @@ class QueryCore:
         """Build the common Plan A provenance envelope for query terminals."""
         requested_mode = request.context.consistency
         consistency_mode = "snapshot" if requested_mode == "snapshot" else "pinned" if requested_mode == "projection_guarded" else "live"
-        snapshot_id = request.context.data_view_id if consistency_mode == "snapshot" else None
+        snapshot_id = _snapshot_reference(request.context) if consistency_mode == "snapshot" else None
         projection_context = self.policy.projection.context if self.policy.projection is not None else None
         revision_id = request.context.revision_id or (projection_context.metadata_revision_id if projection_context else None)
         context = build_context(
             request.context.ontology_id,
             metadata_revision_id=revision_id,
             metadata_digest=metadata_digest_value,
-            source_manifest_id=request.context.data_view_id,
-            source_version=request.context.projection_token,
+            source_manifest_id=request.context.data_view_id or request.context.what_if_scenario_id,
+            source_version=request.context.projection_token or request.context.what_if_context_digest,
             projection_id=request.context.projection_token,
             view_id=request.context.data_view_id,
             snapshot_id=snapshot_id,
             scenario_id=request.context.scenario_id,
+            what_if_scenario_id=request.context.what_if_scenario_id,
+            what_if_context_digest=request.context.what_if_context_digest,
+            what_if_input_digest=request.context.what_if_input_digest,
             permission_digest=self.policy.digest(),
             consistency={"mode": consistency_mode, "snapshot_id": snapshot_id},
         )
@@ -296,8 +308,8 @@ class QueryCore:
         if request.context.consistency == "live":
             FalkorObjectQueryCompiler._validate_context(request.context, request.read)
         elif request.context.consistency == "snapshot":
-            if not request.context.data_view_id:
-                raise ObjectQueryError("consistency_unavailable", "context.data_view_id", "Snapshot reads require a data view")
+            if not request.context.data_view_id and not request.context.what_if_scenario_id:
+                raise ObjectQueryError("consistency_unavailable", "context.data_view_id", "Snapshot reads require a data view or What-if context")
             if request.read.include_total:
                 raise ObjectQueryError("total_unavailable", "read.include_total", "Exact totals use aggregate terminal")
         else:
@@ -312,8 +324,11 @@ class QueryCore:
             raise ObjectQueryError('metadata_mismatch', 'context.metadata_digest', 'Metadata has changed')
         context = {'ontology_id': request.context.ontology_id, 'consistency': request.context.consistency,
                    'data_view_id': request.context.data_view_id, 'revision_id': request.context.revision_id,
-                   'metadata_digest': digest, 'source_manifest_id': request.context.data_view_id,
-                   'source_version': request.context.projection_token,
+                   'what_if_scenario_id': request.context.what_if_scenario_id,
+                   'what_if_context_digest': request.context.what_if_context_digest,
+                   'what_if_input_digest': request.context.what_if_input_digest,
+                   'metadata_digest': digest, 'source_manifest_id': request.context.data_view_id or request.context.what_if_scenario_id,
+                   'source_version': request.context.projection_token or request.context.what_if_context_digest,
                    'permission_digest': self.policy.digest(), 'references': manifest,
                    'snapshot': request.context.consistency == 'snapshot',
                    'read_digest': stable_hash(request.read.model_dump(mode='python', exclude={'page_token'}))}
@@ -390,7 +405,7 @@ class QueryCore:
 
     def materialize(self, request, resolver=None, max_pages=50):
         """Bounded complete iterator used by compare and SetHandle terminals."""
-        if request.context.consistency != 'snapshot' or not request.context.data_view_id:
+        if request.context.consistency != 'snapshot' or not (request.context.data_view_id or request.context.what_if_scenario_id):
             raise ObjectQueryError('consistency_unavailable', 'context', 'Complete materialization requires a pinned snapshot')
         token = None
         records = []
@@ -407,8 +422,8 @@ class QueryCore:
         raise ObjectQueryError('query_too_complex', 'execution', 'Materialization page budget exceeded')
 
     def aggregate(self, request, resolver=None):
-        if request.context.consistency != "snapshot" or not request.context.data_view_id:
-            raise ObjectQueryError("consistency_unavailable", "context", "Exact aggregate requires a pinned snapshot data view")
+        if request.context.consistency != "snapshot" or not (request.context.data_view_id or request.context.what_if_scenario_id):
+            raise ObjectQueryError("consistency_unavailable", "context", "Exact aggregate requires a pinned snapshot data view or What-if context")
         request = request.model_copy(deep=True)
         expression = request.expression
         original_hash = definition_hash(expression, {k: v.model_dump(mode='python', exclude_unset=True) for k, v in request.parameter_schema.items()})
@@ -441,8 +456,11 @@ class QueryCore:
                 self.policy.field_allowed(result_type.api_name, spec.property.api_name)
         context = {'ontology_id': request.context.ontology_id, 'consistency': request.context.consistency,
                    'data_view_id': request.context.data_view_id, 'revision_id': request.context.revision_id,
-                   'metadata_digest': digest, 'source_manifest_id': request.context.data_view_id,
-                   'source_version': request.context.projection_token,
+                   'what_if_scenario_id': request.context.what_if_scenario_id,
+                   'what_if_context_digest': request.context.what_if_context_digest,
+                   'what_if_input_digest': request.context.what_if_input_digest,
+                   'metadata_digest': digest, 'source_manifest_id': request.context.data_view_id or request.context.what_if_scenario_id,
+                   'source_version': request.context.projection_token or request.context.what_if_context_digest,
                    'permission_digest': self.policy.digest(), 'references': manifest,
                    'snapshot': request.context.consistency == 'snapshot'}
         current_execution_hash = execution_hash(original_hash, parameters=parameters, **context)
@@ -490,9 +508,12 @@ class QueryCore:
                     raise ObjectQueryError("capability_unavailable", "aggregations.op", "Approximate aggregate is not enabled")
             output.append(row)
         context = {"ontology_id": request.context.ontology_id, "data_view_id": request.context.data_view_id,
+                   "what_if_scenario_id": request.context.what_if_scenario_id,
+                   "what_if_context_digest": request.context.what_if_context_digest,
+                   "what_if_input_digest": request.context.what_if_input_digest,
                    "revision_id": request.context.revision_id,
-                   "source_manifest_id": request.context.data_view_id,
-                   "source_version": request.context.projection_token,
+                   "source_manifest_id": request.context.data_view_id or request.context.what_if_scenario_id,
+                   "source_version": request.context.projection_token or request.context.what_if_context_digest,
                    "consistency": "snapshot", "metadata_digest": digest, "permission_digest": self.policy.digest(),
                    "references": manifest, "snapshot": True}
         return AggregateResult(groups=output, exact=True, completeness="complete", definition_hash=original_hash,

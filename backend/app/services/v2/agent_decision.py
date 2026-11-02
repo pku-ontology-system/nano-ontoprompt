@@ -14,18 +14,38 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.models.ontology import OntologyProject
+from app.models.user import User
 from app.models.v2.reasoning import ReasoningRun
 from app.models.v2.logic import OntologyLogicRule
+from app.services.v2.authorization_service import AuthorizationContext, resolve_projection
 from app.services.v2.graph.falkordb_service import FalkorDBService
 
 
 class AgentToolbox:
-    def __init__(self, ontology_id: str, db: Session):
+    def __init__(self, ontology_id: str, db: Session, user: User | None = None):
         self.ontology_id = ontology_id
         self.db = db
+        self.user = user
         self.trace: list[dict[str, Any]] = []
 
+    def _authorize_tool_read(self) -> None:
+        if self.user is None:
+            return
+        ontology = self.db.get(OntologyProject, self.ontology_id)
+        if ontology is None:
+            raise ValueError("本体不存在")
+        projection = resolve_projection(self.db, AuthorizationContext(
+            ontology_id=self.ontology_id, principal_id=str(self.user.id),
+            principal_role=self.user.role,
+            metadata_revision_id=ontology.current_revision_id), records=[])
+        # Legacy Agent tools read graph nodes and saved reasoning payloads
+        # directly. Until they use per-object redaction, a restricted policy
+        # must fail closed rather than pass hidden fields to a model or trace.
+        if not projection.unrestricted:
+            raise ValueError("当前对象或字段权限策略不支持此 Agent 工具读取")
+
     def ontology_context(self) -> dict[str, Any]:
+        self._authorize_tool_read()
         ontology = self.db.get(OntologyProject, self.ontology_id)
         if not ontology:
             raise ValueError("本体不存在")
@@ -40,6 +60,7 @@ class AgentToolbox:
         return result
 
     def object_context(self, object_id: str | None = None) -> dict[str, Any]:
+        self._authorize_tool_read()
         if not object_id:
             result = {"objects": [], "reason": "未指定对象"}
             self.trace.append({"tool": "object_context", "result": result})
@@ -69,6 +90,7 @@ class AgentToolbox:
         This is a source snapshot, not live scenario state and not a simulation.
         Return explicit missing inputs; never invent timing or cost outcomes.
         """
+        self._authorize_tool_read()
         from app.models.v2.construction import ConstructionRun
         from app.services.v2.manufacturing_data import context
         run = self.db.get(ConstructionRun, self.ontology_id + ':import')
@@ -89,12 +111,19 @@ class AgentToolbox:
         return result
 
     def reasoning_context(self, run_id: str | None = None, conclusion: str | None = None) -> dict[str, Any]:
+        self._authorize_tool_read()
+        ontology = self.db.get(OntologyProject, self.ontology_id)
+        if ontology is None or not ontology.current_revision_id:
+            raise ValueError("当前本体没有可验证的版本，请先发布本体修订")
         query = self.db.query(ReasoningRun).filter_by(ontology_id=self.ontology_id)
         run = query.filter_by(id=run_id).first() if run_id else query.order_by(ReasoningRun.created_at.desc()).first()
         if not run:
             result = {"run": None, "conclusions": [], "reason": "没有推理运行记录"}
             self.trace.append({"tool": "reasoning_context", "result": result})
             return result
+        run_revision_id = str((run.payload or {}).get("ontology_revision_id") or "")
+        if run_revision_id != str(ontology.current_revision_id):
+            raise ValueError("推理运行的本体版本缺失或已过期；请在当前修订下重新运行")
         conclusions = (run.payload or {}).get("conclusions", [])
         if conclusion:
             conclusions = [item for item in conclusions if item.get("conclusion") == conclusion]
@@ -109,6 +138,7 @@ class AgentToolbox:
 
     def evaluate_decision_rules(self, objects: list[dict[str, Any]]) -> dict[str, Any]:
         """Evaluate published decision policies against grounded object properties."""
+        self._authorize_tool_read()
         rules = self.db.query(OntologyLogicRule).filter(
             OntologyLogicRule.ontology_id == self.ontology_id,
             OntologyLogicRule.logic_type == "decision",

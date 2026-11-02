@@ -28,6 +28,7 @@ import {
 import { useSearchParams } from 'react-router-dom';
 
 import { apiClientV2 } from '@/api/client';
+import { toWhatIfScenarioRef, type WhatIfScenarioSummary } from '@/api/v2/whatIfScenarioRefs';
 import ObjectPanel, { type ObjectPanelRecord } from '../object-explorer/ObjectPanel';
 import ExplorerOperations, { type Catalog, type ExplorerContext } from '../object-explorer/ExplorerOperations';
 import ExplorerAnalysis from '../object-explorer/ExplorerAnalysis';
@@ -148,7 +149,7 @@ function ExplorerWorkspace({ ontologyId }: { ontologyId: string }) {
   const [appliedQuery, setAppliedQuery] = useState<RuleGroupType>(restored.query);
   const [pageTokens, setPageTokens] = useState<Array<string | null>>([null]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [previewId, setPreviewId] = useState<string | null>(null);
+  const [previewId, setPreviewId] = useState<string | null>(() => searchParams.get('activeObject'));
   const [showGraph, setShowGraph] = useState(false);
   const [showFilters, setShowFilters] = useState(restored.query.rules.length > 0);
   const [showColumns, setShowColumns] = useState(false);
@@ -164,7 +165,26 @@ function ExplorerWorkspace({ ontologyId }: { ontologyId: string }) {
   const [chartRedo, setChartRedo] = useState<string[][]>([]);
   const [toast, setToast] = useState('');
   const viewId = searchParams.get('dataView') || '';
-  const context: ExplorerContext = { ontology_id: ontologyId, consistency: viewId ? 'snapshot' : 'live', ...(viewId ? { data_view_id: viewId } : {}) };
+  const whatIfScenarioId = searchParams.get('whatIfScenario') || '';
+  const whatIfScenarios = useQuery({
+    queryKey: ['object-query-what-if-scenarios', ontologyId],
+    queryFn: ({ signal }) => apiClientV2.get<{ scenarios: WhatIfScenarioSummary[] }>(`/ontologies/${ontologyId}/what-if/scenarios?summary=true`, { signal }),
+  });
+  const selectedWhatIf = useMemo(() => {
+    if (!whatIfScenarioId) return null;
+    const scenario = whatIfScenarios.data?.scenarios.find(item => item.id === whatIfScenarioId);
+    return scenario ? { scenario, reference: toWhatIfScenarioRef(scenario) } : null;
+  }, [whatIfScenarioId, whatIfScenarios.data]);
+  const context: ExplorerContext = selectedWhatIf?.reference ? {
+    ontology_id: ontologyId,
+    consistency: 'snapshot',
+    revision_policy: 'pinned',
+    revision_id: String(selectedWhatIf.reference.scenario_context.schema_revision_id || ''),
+    what_if_scenario_id: selectedWhatIf.reference.ref_id,
+    what_if_context_digest: selectedWhatIf.reference.source_version,
+    what_if_input_digest: selectedWhatIf.reference.scenario_input_digest,
+  } : { ontology_id: ontologyId, consistency: viewId ? 'snapshot' : 'live', ...(viewId ? { data_view_id: viewId } : {}) };
+  const contextReady = !whatIfScenarioId || !!selectedWhatIf?.reference?.scenario_context.schema_revision_id;
 
   const entities = useQuery({
     queryKey: ['object-query-types', ontologyId],
@@ -191,7 +211,7 @@ function ExplorerWorkspace({ ontologyId }: { ontologyId: string }) {
 
   const result = useQuery({
     queryKey: ['object-query-load', ontologyId, expression, context, pageToken],
-    enabled: !!selected && entities.isSuccess && compiled.issues.length === 0 && !expressionState.error,
+    enabled: !!selected && entities.isSuccess && contextReady && compiled.issues.length === 0 && !expressionState.error,
     queryFn: ({ signal }) => apiClientV2.post<LoadResult>(`/ontologies/${ontologyId}/object-query/load`, {
       expression,
       context,
@@ -199,6 +219,17 @@ function ExplorerWorkspace({ ontologyId }: { ontologyId: string }) {
     }, { signal }),
   });
   const objects = result.data?.objects || EMPTY_OBJECTS;
+  const activeObjectId = searchParams.get('activeObject') || '';
+  const activeObjectLoaded = objects.some(object => object.object_id === activeObjectId);
+  const activeObjectQuery = useQuery({
+    queryKey: ['object-query-active-object', ontologyId, selected, activeObjectId, context],
+    enabled: !!activeObjectId && !!selected && contextReady && !activeObjectLoaded,
+    queryFn: ({ signal }) => apiClientV2.post<LoadResult>(`/ontologies/${ontologyId}/object-query/load`, {
+      expression: { kind: 'static', type_ref: { kind: 'object', api_name: selected }, object_ids: [activeObjectId] },
+      context,
+      read: { page_size: 1 },
+    }, { signal }),
+  });
   const availablePropertyNames = useMemo(() => {
     const metadataNames = properties.map(property => property.apiName);
     const observed = objects.flatMap(object => Object.keys(object.properties));
@@ -224,7 +255,10 @@ function ExplorerWorkspace({ ontologyId }: { ontologyId: string }) {
   };
   const activeCharts = chartProperties ?? availablePropertyNames.slice(0, 4);
   const selectedObjects = objects.filter(object => selectedIds.includes(object.object_id));
-  const preview = objects.find(object => object.object_id === previewId) || selectedObjects[0] || null;
+  const preview = objects.find(object => object.object_id === previewId)
+    || activeObjectQuery.data?.objects.find(object => object.object_id === previewId)
+    || selectedObjects[0]
+    || null;
   const displayObjects = useMemo(() => {
     if (!sort) return objects;
     return [...objects].sort((left, right) => {
@@ -366,7 +400,11 @@ function ExplorerWorkspace({ ontologyId }: { ontologyId: string }) {
       <div className="oe-filter-editor"><div className="oe-filter-title"><Filter size={15} /><div><strong>Filter current set</strong><span>支持嵌套 AND / OR / NOT</span></div></div>{fields.length ? <div className="oe-query-builder"><QueryBuilder fields={fields} query={draftQuery} onQueryChange={setDraftQuery} showCombinatorsBetweenRules showNotToggle translations={QUERY_LABELS} /></div> : <p className="oe-empty-copy">该 Object Type 没有已发布的 property metadata。</p>}<div className="oe-filter-footer"><div>{draftIssues.length ? <span role="alert" className="text-red-600">{draftIssues[0]}</span> : <span>筛选在 Apply 后执行并写入可恢复 URL。</span>}</div><button type="button" onClick={apply} disabled={draftIssues.length > 0}>Apply filters</button></div></div>
     </section>}
 
-    {entities.data && <ExplorerOperations ontologyId={ontologyId} expression={expression} objectType={selected} selectedIds={selectedIds} context={context} catalog={entities.data} onExpression={changeExpression} onView={id => { const next = new URLSearchParams(searchParams); if (id) next.set('dataView', id); else next.delete('dataView'); setSearchParams(next); }} />}
+    {entities.data && <ExplorerOperations ontologyId={ontologyId} expression={expression} objectType={selected} selectedIds={selectedIds} context={context} catalog={entities.data}
+      whatIfScenarios={whatIfScenarios.data?.scenarios || []} whatIfScenariosLoading={whatIfScenarios.isPending}
+      selectedWhatIfScenarioId={whatIfScenarioId} selectedWhatIfScenarioName={selectedWhatIf?.scenario.name}
+      onWhatIfScenario={id => { const next = new URLSearchParams(searchParams); if (id) { next.set('whatIfScenario', id); next.delete('dataView'); } else next.delete('whatIfScenario'); setSearchParams(next); }}
+      onExpression={changeExpression} onView={id => { const next = new URLSearchParams(searchParams); if (id) { next.set('dataView', id); next.delete('whatIfScenario'); } else next.delete('dataView'); setSearchParams(next); }} />}
     <ExplorerAnalysis ontologyId={ontologyId} expression={expression} context={context} properties={entities.data?.types.find(item => item.api_name === selected)?.properties.filter(item => item.aggregatable).map(item => item.api_name) ?? []} onFilter={(property, value) => changeExpression({ kind: 'filter', input: expression, where: value === null ? { kind: 'null_test', property: { api_name: property }, is_null: true } : { kind: 'comparison', property: { api_name: property }, op: 'eq', value } }, selected)} />
 
     <div className="oe-workspace-tabs" role="tablist">
@@ -380,6 +418,8 @@ function ExplorerWorkspace({ ontologyId }: { ontologyId: string }) {
     {showColumns && <section className="oe-column-panel" aria-label="配置结果列"><header><div><Settings2 size={15} /><strong>配置结果列</strong></div><button type="button" aria-label="关闭列配置" onClick={() => setShowColumns(false)}><X size={15} /></button></header>{orderedPropertyNames.map((name, index) => <div className="oe-column-option" key={name}><GripVertical size={13} /><label><input type="checkbox" checked={!hiddenColumns.includes(name)} onChange={() => setHiddenColumns(items => items.includes(name) ? items.filter(item => item !== name) : [...items, name])} />{name}</label><button type="button" aria-label={`上移 ${name}`} disabled={index === 0} onClick={() => moveColumn(name, -1)}><ChevronUp size={13} /></button><button type="button" aria-label={`下移 ${name}`} disabled={index === orderedPropertyNames.length - 1} onClick={() => moveColumn(name, 1)}><ChevronDown size={13} /></button><button type="button" className="oe-freeze-toggle" aria-pressed={frozenColumns.includes(name)} aria-label={`冻结 ${name}`} title="冻结到左侧" onClick={() => setFrozenColumns(items => items.includes(name) ? items.filter(item => item !== name) : [...items, name])}><Pin size={13} /></button><label className="oe-width-control">宽度<input type="range" min="80" max="480" value={columnWidths[name] || DEFAULT_WIDTH} onChange={event => setColumnWidths(widths => ({ ...widths, [name]: Number(event.target.value) }))} /></label></div>)}</section>}
 
     {showGraph && <Suspense fallback={<p role="status">正在加载关系图…</p>}><ObjectGraph ontologyId={ontologyId} expression={expression} context={context} /></Suspense>}
+    {whatIfScenarioId && whatIfScenarios.isError && <div role="alert" className="oe-state oe-state--error">What-if 情景列表暂不可用，查询已暂停。<button onClick={() => void whatIfScenarios.refetch()}>重试</button></div>}
+    {whatIfScenarioId && whatIfScenarios.isSuccess && !selectedWhatIf?.reference && <div role="alert" className="oe-state oe-state--error">选定的 What-if 情景已不可用或上下文不完整；请重新选择情景。</div>}
     {result.isLoading && <div role="status" className="oe-state">正在读取对象集合…</div>}
     {result.isFetching && !result.isLoading && <p role="status" className="oe-refresh-status">正在刷新对象集合…</p>}
     {result.error && <div role="alert" className="oe-state oe-state--error">{explorerError(result.error)}<button onClick={() => void result.refetch()}>重试</button></div>}
@@ -403,7 +443,7 @@ function ExplorerWorkspace({ ontologyId }: { ontologyId: string }) {
           {header.id !== 'select' && <span className="oe-col-resizer" role="separator" aria-orientation="vertical" aria-label={`调整 ${header.id} 列宽`} onPointerDown={event => startResize(header.id, event)} />}</th>; })}</tr>)}</thead><tbody>{table.getRowModel().rows.map(row => <tr key={row.id} className={selectedIds.includes(row.original.object_id) ? 'selected' : ''}>{row.getAllCells().map(cell => <td key={cell.id} {...cellProps(cell.column.id)}><table.FlexRender cell={cell} /></td>)}</tr>)}</tbody></table>{!objects.length && <div className="oe-state">当前条件没有对象。</div>}</div>}
         <footer className="oe-pagination"><span>{selectedIds.length} selected · 状态 {result.data.status} · {result.data.page.stability || 'live'}</span><div><button type="button" disabled={currentPage === 0} onClick={() => { setPageTokens(tokens => tokens.slice(0, -1)); setPreviewId(null); }}><ChevronLeft size={14} />上一页</button><span>第 {currentPage + 1} 页</span><button type="button" disabled={!result.data.page.has_more || !result.data.page.next_page_token} onClick={() => { setPageTokens(tokens => [...tokens, result.data.page.next_page_token || null]); setPreviewId(null); }}>下一页<ChevronRight size={14} /></button></div></footer>
       </main>
-      {preview && <aside className="oe-selection-preview" aria-label="Selection Preview">{selectedObjects.length > 0 && <div className="oe-selection-cards"><header><strong>Selection Preview</strong><span>{selectedObjects.length}</span></header><div>{selectedObjects.slice(0, 20).map(object => <button type="button" key={object.object_id} className={preview.object_id === object.object_id ? 'active' : ''} onClick={() => setPreviewId(object.object_id)}><span>{object.object_type.slice(0, 1)}</span><strong>{object.object_id}</strong></button>)}</div></div>}<ObjectPanel object={preview} onClose={() => { setPreviewId(null); setSelectedIds([]); }} onOpenGraph={() => setShowGraph(true)} ontologyId={ontologyId} dataViewId={context.data_view_id} onActionCommitted={message => { void result.refetch(); notify(message); }} /></aside>}
+      {preview && <aside className="oe-selection-preview" aria-label="Selection Preview">{selectedObjects.length > 0 && <div className="oe-selection-cards"><header><strong>Selection Preview</strong><span>{selectedObjects.length}</span></header><div>{selectedObjects.slice(0, 20).map(object => <button type="button" key={object.object_id} className={preview.object_id === object.object_id ? 'active' : ''} onClick={() => setPreviewId(object.object_id)}><span>{object.object_type.slice(0, 1)}</span><strong>{object.object_id}</strong></button>)}</div></div>}<ObjectPanel object={preview} onClose={() => { const next = new URLSearchParams(searchParams); next.delete('activeObject'); setSearchParams(next); setPreviewId(null); setSelectedIds([]); }} onOpenGraph={() => setShowGraph(true)} ontologyId={ontologyId} dataViewId={context.data_view_id} whatIfScenarioId={context.what_if_scenario_id} onActionCommitted={message => { void result.refetch(); notify(message); }} /></aside>}
     </div>}
     {toast && <div className="oe-toast" role="status"><span>✓</span><div><strong>操作成功</strong><p>{toast}</p></div><button type="button" aria-label="关闭成功提示" onClick={() => setToast('')}><X size={15} /></button></div>}
   </section>;

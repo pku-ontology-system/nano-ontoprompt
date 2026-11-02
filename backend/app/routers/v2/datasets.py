@@ -1,10 +1,11 @@
 """v2 Dataset API"""
 from __future__ import annotations
+import logging
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.database import SessionLocal
-from app.deps import get_current_user, require_admin
+from app.deps import get_current_user, require_admin, require_editor
 from app.services.v2.dataset_service import DatasetService, DatasetStorageError
 from app.models.v2.dataset import Dataset, DatasetVersion, MediaItem
 from app.models.v2.connection import Connection
@@ -13,6 +14,11 @@ from app.models.v2.pipeline import Pipeline, PipelineRun
 from app.models.v2.construction import ConstructionRun
 from app.models.v2.mapping import OntologyMapping, OntologyLinkMapping
 from app.services.storage_service import get_storage_service
+from app.services.v2.dataset_authorization import require_dataset_access
+from app.services.v2.connection_authorization import require_connection_access
+from app.models.user import User
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 data_sources_router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -54,7 +60,7 @@ def _dataset_storage_ready(db: Session, dataset: Dataset) -> bool:
 
 
 @data_sources_router.get("/data-sources")
-def unified_data_sources(include_history: bool = Query(False), db: Session = Depends(get_db)):
+def unified_data_sources(include_history: bool = Query(False), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """One source directory for the three construction entry points."""
     cmapss_demo = db.query(Dataset).filter(
         Dataset.name.ilike("%C-MAPSS FD001%"), Dataset.data_class == "regular"
@@ -66,16 +72,26 @@ def unified_data_sources(include_history: bool = Query(False), db: Session = Dep
         Dataset.name.ilike("%I-BADAS%"), Dataset.data_class == "multimodal",
         Dataset.readiness == "ready",
     ).first()
+    def is_accessible(dataset: Dataset | None) -> bool:
+        if not dataset:
+            return False
+        try:
+            require_dataset_access(db, dataset, current_user)
+            return True
+        except HTTPException:
+            return False
+
     cases = [
-        {"id": "cmapss_fd001_regular_subset", "name": "NASA C-MAPSS FD001", "data_class": "regular", "input": ["equipment", "sensor_readings", "100 条下采样读数"], "installed": _dataset_storage_ready(db, cmapss_demo) if cmapss_demo else False},
-        {"id": "factorynet_cnc", "name": "FactoryNet CNC", "data_class": "temporal", "input": ["Parquet"], "installed": _dataset_storage_ready(db, factorynet_demo) if factorynet_demo else False},
-        {"id": "ibadas_12_demo", "name": "I-BADAS RGB-D 12 组", "data_class": "multimodal", "input": ["ZIP + manifest", "RGB", "depth", "mask", "point cloud"], "installed": _dataset_storage_ready(db, ibadas_demo) if ibadas_demo else False},
+        {"id": "cmapss_fd001_regular_subset", "name": "NASA C-MAPSS FD001", "data_class": "regular", "input": ["equipment", "sensor_readings", "100 条下采样读数"], "installed": _dataset_storage_ready(db, cmapss_demo) if is_accessible(cmapss_demo) else False},
+        {"id": "factorynet_cnc", "name": "FactoryNet CNC", "data_class": "temporal", "input": ["Parquet"], "installed": _dataset_storage_ready(db, factorynet_demo) if is_accessible(factorynet_demo) else False},
+        {"id": "ibadas_12_demo", "name": "I-BADAS RGB-D 12 组", "data_class": "multimodal", "input": ["ZIP + manifest", "RGB", "depth", "mask", "point cloud"], "installed": _dataset_storage_ready(db, ibadas_demo) if is_accessible(ibadas_demo) else False},
     ]
     query = db.query(Dataset)
     if not include_history:
         query = query.filter(Dataset.readiness.in_([None, "ready"]))
         datasets = [
             item for item in query.order_by(Dataset.created_at.desc()).all()
+            if is_accessible(item)
             if _dataset_storage_ready(db, item)
             and not bool((item.schema_json or {}).get("technical"))
             and item.name not in {"sensor_readings", "equipment"}
@@ -83,12 +99,15 @@ def unified_data_sources(include_history: bool = Query(False), db: Session = Dep
             and not any(token in item.name.lower() for token in ("_pipeline", " curated", "test"))
         ]
     else:
-        datasets = query.order_by(Dataset.created_at.desc()).all()
-    return {"cases": cases, "datasets": [{"id": item.id, "name": item.name, "data_class": item.data_class, "privacy_level": item.privacy_level, "readiness": item.readiness, "latest_version_id": item.latest_version_id} for item in datasets], "connections": [{"id": item.id, "name": item.name, "kind": item.kind, "status": item.status} for item in db.query(Connection).order_by(Connection.created_at.desc()).all()]}
+        datasets = [item for item in query.order_by(Dataset.created_at.desc()).all() if is_accessible(item)]
+    connections = db.query(Connection)
+    if current_user.role != "admin":
+        connections = connections.filter(Connection.created_by == str(current_user.id))
+    return {"cases": cases, "datasets": [{"id": item.id, "name": item.name, "data_class": item.data_class, "privacy_level": item.privacy_level, "readiness": item.readiness, "latest_version_id": item.latest_version_id} for item in datasets], "connections": [{"id": item.id, "name": item.name, "kind": item.kind, "status": item.status} for item in connections.order_by(Connection.created_at.desc()).all()]}
 
 
 @data_sources_router.get("/storage/integrity")
-def storage_integrity(include_history: bool = Query(True), db: Session = Depends(get_db)):
+def storage_integrity(include_history: bool = Query(True), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """Return a read-only object-storage integrity report for dataset assets.
 
     The report deliberately checks metadata and existence only; it never
@@ -103,6 +122,10 @@ def storage_integrity(include_history: bool = Query(True), db: Session = Depends
     present = 0
     missing: list[dict[str, str]] = []
     for dataset in query.order_by(Dataset.created_at.asc()).all():
+        try:
+            require_dataset_access(db, dataset, current_user)
+        except HTTPException:
+            continue
         versions = db.query(DatasetVersion).filter(DatasetVersion.dataset_id == dataset.id).all()
         for version in versions:
             if version.storage_uri:
@@ -150,6 +173,7 @@ async def upload_dataset(
     privacy_level: str = Query("standard", pattern="^(standard|private)$"),
     connection_id: str | None = Query(None),
     db: Session = Depends(get_db),
+    current_user: User = Depends(require_editor),
 ):
     """上传 CSV/Excel 文件，自动创建 raw Dataset + DatasetVersion"""
     import os
@@ -174,18 +198,19 @@ async def upload_dataset(
 
     if data_class == "multimodal":
         raise HTTPException(422, "多模态数据请使用 ZIP + manifest 导入，保证样本和资产关联完整")
+    if connection_id:
+        require_connection_access(db, connection_id, current_user, write=True)
     svc = DatasetService(db)
-    ds = svc.create_dataset(name=name, kind=kind, connection_id=connection_id, data_class=data_class, privacy_level=privacy_level)
     # Regular uploads stay in the default standard lane.  Multimodal ZIP
     # ingestion uses the dedicated manifest endpoint so every sample/asset
     # relationship is validated before it is committed.
-    # 估算行数
     rowcount = None
-    if ext == "csv":
+    if ext in {"csv", "xlsx", "json"}:
         try:
-            rowcount = content.count(b"\n")
-        except Exception:
-            pass
+            rowcount = DatasetService.count_snapshot_rows(content)
+        except Exception as exc:
+            raise HTTPException(422, "无法完整解析上传文件，未创建数据版本") from exc
+    ds = svc.create_dataset(name=name, kind=kind, connection_id=connection_id, data_class=data_class, privacy_level=privacy_level, created_by=str(current_user.id))
     version = svc.create_version(ds.id, content, rowcount=rowcount)
     media_items = []
     media_exts = {"png": "image", "jpg": "image", "jpeg": "image", "webp": "image",
@@ -204,9 +229,17 @@ async def upload_dataset(
     return {"data": {"id": ds.id, "name": ds.name, "kind": ds.kind, "data_class": ds.data_class, "privacy_level": ds.privacy_level, "dataset_type": "raw_dataset", "schema_type": "tabular", "version_id": version.id, "media_items": media_items}}
 
 @router.get("", response_model=list[DatasetResponse])
-def list_datasets(kind: str | None = None, include_history: bool = Query(False), db: Session = Depends(get_db)):
+def list_datasets(kind: str | None = None, include_history: bool = Query(False), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     svc = DatasetService(db)
     items = svc.list_datasets(kind=kind)
+    accessible = []
+    for item in items:
+        try:
+            require_dataset_access(db, item, current_user)
+            accessible.append(item)
+        except HTTPException:
+            continue
+    items = accessible
     if not include_history:
         items = [
             item for item in items
@@ -237,21 +270,22 @@ def list_datasets(kind: str | None = None, include_history: bool = Query(False),
     return result
 
 @router.get("/{dataset_id}", response_model=DatasetResponse)
-def get_dataset(dataset_id: str, db: Session = Depends(get_db)):
+def get_dataset(dataset_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     svc = DatasetService(db)
     ds = svc.get_dataset(dataset_id)
-    if not ds:
-        raise HTTPException(404, "Dataset not found")
+    require_dataset_access(db, ds or dataset_id, current_user)
     return ds
 
 @router.get("/{dataset_id}/versions")
-def list_versions(dataset_id: str, db: Session = Depends(get_db)):
+def list_versions(dataset_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_dataset_access(db, dataset_id, current_user)
     svc = DatasetService(db)
     versions = svc.list_versions(dataset_id)
     return [{"id": v.id, "version_no": v.version_no, "rowcount": v.rowcount, "storage_uri": v.storage_uri} for v in versions]
 
 @router.get("/{dataset_id}/versions/{version_no}/preview")
-def preview_data(dataset_id: str, version_no: int, limit: int = 100, db: Session = Depends(get_db)):
+def preview_data(dataset_id: str, version_no: int, limit: int = 100, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_dataset_access(db, dataset_id, current_user)
     svc = DatasetService(db)
     try:
         return svc.preview(dataset_id, version_no, limit)
@@ -260,12 +294,11 @@ def preview_data(dataset_id: str, version_no: int, limit: int = 100, db: Session
 
 
 @router.get("/{dataset_id}/schema")
-def get_schema(dataset_id: str, db: Session = Depends(get_db)):
+def get_schema(dataset_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """返回数据集的 schema（列名、类型、样本值）"""
     svc = DatasetService(db)
     ds = svc.get_dataset(dataset_id)
-    if not ds:
-        raise HTTPException(404, "Dataset not found")
+    require_dataset_access(db, ds or dataset_id, current_user)
 
     # Use latest version for schema inference
     versions = svc.list_versions(dataset_id)
@@ -313,12 +346,11 @@ def get_schema(dataset_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/{dataset_id}/stats")
-def get_stats(dataset_id: str, db: Session = Depends(get_db)):
+def get_stats(dataset_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """返回数据集统计信息"""
     svc = DatasetService(db)
     ds = svc.get_dataset(dataset_id)
-    if not ds:
-        raise HTTPException(404, "Dataset not found")
+    require_dataset_access(db, ds or dataset_id, current_user)
 
     versions = svc.list_versions(dataset_id)
     version_count = len(versions)
@@ -364,34 +396,43 @@ def delete_dataset(
     pipeline_run_refs = db.query(PipelineRun.id).join(DatasetVersion, PipelineRun.dataset_version_id == DatasetVersion.id).filter(DatasetVersion.dataset_id == dataset_id).all() if ds else []
     construction_refs = db.query(ConstructionRun.id).filter(ConstructionRun.dataset_id == dataset_id).all()
     mapping_refs = []
+    curated_review_refs = db.query(CuratedReview.id).filter(
+        CuratedReview.curated_dataset_id == dataset_id,
+    ).all()
     if curated:
         mapping_refs = db.query(OntologyMapping.id).filter(OntologyMapping.curated_dataset_id == dataset_id).all()
         mapping_refs += db.query(OntologyLinkMapping.id).filter((OntologyLinkMapping.src_dataset_id == dataset_id) | (OntologyLinkMapping.tgt_dataset_id == dataset_id)).all()
-    references = {"pipelines": [x[0] for x in pipeline_refs], "pipeline_runs": [x[0] for x in pipeline_run_refs], "construction_runs": [x[0] for x in construction_refs], "mappings": [x[0] for x in mapping_refs]}
+    references = {
+        "pipelines": [x[0] for x in pipeline_refs],
+        "pipeline_runs": [x[0] for x in pipeline_run_refs],
+        "construction_runs": [x[0] for x in construction_refs],
+        "mappings": [x[0] for x in mapping_refs],
+        "curated_reviews": [x[0] for x in curated_review_refs],
+    }
     if any(references.values()) and not cascade:
-        raise HTTPException(status_code=409, detail={"error": "DATASET_REFERENCED", "references": references, "message": "数据集仍被 Pipeline/构建任务/映射使用，请先解除引用或显式 cascade=true"})
+        raise HTTPException(status_code=409, detail={"error": "DATASET_REFERENCED", "references": references, "message": "数据集仍被 Pipeline/构建任务/映射/审核记录使用，请先解除引用或显式 cascade=true"})
     if pipeline_refs or pipeline_run_refs:
         raise HTTPException(status_code=409, detail={"error": "PIPELINE_RUN_REFERENCED", "references": references, "message": "Pipeline 运行仍引用版本，不能级联删除；请先删除 Pipeline"})
 
-    storage = get_storage_service()
+    storage_uris: list[str] = []
     if ds:
         versions = db.query(DatasetVersion).filter(DatasetVersion.dataset_id == dataset_id).all()
         for version in versions:
-            uris = [version.storage_uri] if version.storage_uri else []
-            uris += [item.storage_uri for item in db.query(MediaItem).filter(MediaItem.dataset_version_id == version.id).all()]
-            for uri in uris:
-                try:
-                    storage.delete_object(uri)
-                except Exception:
-                    pass
+            if version.storage_uri:
+                storage_uris.append(version.storage_uri)
+            storage_uris.extend(
+                item.storage_uri for item in db.query(MediaItem).filter(
+                    MediaItem.dataset_version_id == version.id,
+                ).all()
+            )
     if mapping_refs and cascade:
         db.query(OntologyMapping).filter(OntologyMapping.curated_dataset_id == dataset_id).delete(synchronize_session=False)
         db.query(OntologyLinkMapping).filter((OntologyLinkMapping.src_dataset_id == dataset_id) | (OntologyLinkMapping.tgt_dataset_id == dataset_id)).delete(synchronize_session=False)
+    if curated_review_refs and cascade:
+        review_ids = [x[0] for x in curated_review_refs]
+        db.query(CuratedRowEdit).filter(CuratedRowEdit.review_id.in_(review_ids)).delete(synchronize_session=False)
+        db.query(CuratedReview).filter(CuratedReview.id.in_(review_ids)).delete(synchronize_session=False)
     if curated and cascade:
-        review_ids = [x[0] for x in db.query(CuratedReview.id).filter(CuratedReview.curated_dataset_id == dataset_id).all()]
-        if review_ids:
-            db.query(CuratedRowEdit).filter(CuratedRowEdit.review_id.in_(review_ids)).delete(synchronize_session=False)
-            db.query(CuratedReview).filter(CuratedReview.id.in_(review_ids)).delete(synchronize_session=False)
         db.query(CuratedDataset).filter(CuratedDataset.id == dataset_id).delete(synchronize_session=False)
     if ds:
         # Bulk deletes avoid loading unrelated legacy FK mappers (some old
@@ -399,3 +440,26 @@ def delete_dataset(
         # request process).
         db.query(Dataset).filter(Dataset.id == dataset_id).delete(synchronize_session=False)
     db.commit()
+    # Object storage is outside the SQL transaction. Delete objects only after
+    # metadata deletion commits, so a rejected or failed database delete never
+    # leaves live rows pointing at missing source data.
+    try:
+        storage = get_storage_service()
+    except Exception as exc:
+        logger.warning(
+            "Dataset storage cleanup unavailable (dataset_id=%s, error_type=%s)",
+            dataset_id,
+            type(exc).__name__,
+        )
+        storage = None
+    for uri in storage_uris:
+        if storage is None:
+            break
+        try:
+            storage.delete_object(uri)
+        except Exception as exc:
+            logger.warning(
+                "Dataset storage cleanup failed (dataset_id=%s, error_type=%s)",
+                dataset_id,
+                type(exc).__name__,
+            )

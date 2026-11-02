@@ -1,0 +1,2306 @@
+[
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": 0.0,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "0",
+    "time_s": 0.0,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -17.9,
+    "setpoint_vel_0": -17.9,
+    "source_row_id": "17",
+    "time_s": 1.7,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -6.0,
+    "setpoint_vel_0": -6.0,
+    "source_row_id": "33",
+    "time_s": 3.3,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -2.03,
+    "setpoint_vel_0": -1.99,
+    "source_row_id": "50",
+    "time_s": 5.0,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": 6.05,
+    "setpoint_vel_0": 5.95,
+    "source_row_id": "67",
+    "time_s": 6.7,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": 5.0,
+    "setpoint_vel_0": 4.81,
+    "source_row_id": "84",
+    "time_s": 8.4,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -0.025,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "100",
+    "time_s": 10.0,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -5.88,
+    "setpoint_vel_0": -6.0,
+    "source_row_id": "117",
+    "time_s": 11.7,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -4.82,
+    "setpoint_vel_0": -4.91,
+    "source_row_id": "134",
+    "time_s": 13.4,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": 0.175,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "151",
+    "time_s": 15.1,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": 6.07,
+    "setpoint_vel_0": 6.0,
+    "source_row_id": "167",
+    "time_s": 16.7,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": 6.1,
+    "setpoint_vel_0": 6.0,
+    "source_row_id": "184",
+    "time_s": 18.4,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -0.2,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "201",
+    "time_s": 20.1,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -5.85,
+    "setpoint_vel_0": -6.0,
+    "source_row_id": "217",
+    "time_s": 21.7,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -3.6,
+    "setpoint_vel_0": -3.59,
+    "source_row_id": "234",
+    "time_s": 23.4,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": 4.88,
+    "setpoint_vel_0": 4.87,
+    "source_row_id": "251",
+    "time_s": 25.1,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": 6.13,
+    "setpoint_vel_0": 6.0,
+    "source_row_id": "268",
+    "time_s": 26.8,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -0.125,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "284",
+    "time_s": 28.4,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -0.125,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "301",
+    "time_s": 30.1,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -5.85,
+    "setpoint_vel_0": -6.0,
+    "source_row_id": "318",
+    "time_s": 31.8,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -5.97,
+    "setpoint_vel_0": -6.0,
+    "source_row_id": "335",
+    "time_s": 33.5,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": 0.025,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "351",
+    "time_s": 35.1,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": 0.025,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "368",
+    "time_s": 36.8,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -5.93,
+    "setpoint_vel_0": -6.0,
+    "source_row_id": "385",
+    "time_s": 38.5,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": 6.82,
+    "setpoint_vel_0": 6.0,
+    "source_row_id": "402",
+    "time_s": 40.2,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": 5.9,
+    "setpoint_vel_0": 6.0,
+    "source_row_id": "418",
+    "time_s": 41.8,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": 2.5,
+    "setpoint_vel_0": 2.36,
+    "source_row_id": "435",
+    "time_s": 43.5,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -1.85,
+    "setpoint_vel_0": -1.88,
+    "source_row_id": "452",
+    "time_s": 45.2,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -5.82,
+    "setpoint_vel_0": -6.0,
+    "source_row_id": "468",
+    "time_s": 46.8,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -1.65,
+    "setpoint_vel_0": -1.45,
+    "source_row_id": "485",
+    "time_s": 48.5,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -0.05,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "502",
+    "time_s": 50.2,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": 5.82,
+    "setpoint_vel_0": 6.0,
+    "source_row_id": "519",
+    "time_s": 51.9,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": 5.93,
+    "setpoint_vel_0": 6.0,
+    "source_row_id": "535",
+    "time_s": 53.5,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -5.75,
+    "setpoint_vel_0": -6.0,
+    "source_row_id": "552",
+    "time_s": 55.2,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -6.05,
+    "setpoint_vel_0": -6.0,
+    "source_row_id": "569",
+    "time_s": 56.9,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -0.075,
+    "setpoint_vel_0": -0.18,
+    "source_row_id": "586",
+    "time_s": 58.6,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": 5.97,
+    "setpoint_vel_0": 5.91,
+    "source_row_id": "602",
+    "time_s": 60.2,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": 5.82,
+    "setpoint_vel_0": 6.0,
+    "source_row_id": "619",
+    "time_s": 61.9,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -0.1,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "636",
+    "time_s": 63.6,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -0.125,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "652",
+    "time_s": 65.2,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -6.2,
+    "setpoint_vel_0": -6.0,
+    "source_row_id": "669",
+    "time_s": 66.9,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -6.47,
+    "setpoint_vel_0": -5.99,
+    "source_row_id": "686",
+    "time_s": 68.6,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": 0.125,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "703",
+    "time_s": 70.3,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": 0.05,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "719",
+    "time_s": 71.9,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -5.88,
+    "setpoint_vel_0": -6.0,
+    "source_row_id": "736",
+    "time_s": 73.6,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": 6.05,
+    "setpoint_vel_0": 6.0,
+    "source_row_id": "753",
+    "time_s": 75.3,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": 5.82,
+    "setpoint_vel_0": 6.0,
+    "source_row_id": "770",
+    "time_s": 77.0,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": 0.625,
+    "setpoint_vel_0": 0.651,
+    "source_row_id": "786",
+    "time_s": 78.6,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -3.42,
+    "setpoint_vel_0": -3.49,
+    "source_row_id": "803",
+    "time_s": 80.3,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -6.03,
+    "setpoint_vel_0": -6.0,
+    "source_row_id": "820",
+    "time_s": 82.0,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -0.175,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "837",
+    "time_s": 83.7,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -0.2,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "853",
+    "time_s": 85.3,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": 6.0,
+    "setpoint_vel_0": 6.0,
+    "source_row_id": "870",
+    "time_s": 87.0,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": 5.8,
+    "setpoint_vel_0": 5.93,
+    "source_row_id": "887",
+    "time_s": 88.7,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -6.07,
+    "setpoint_vel_0": -6.0,
+    "source_row_id": "903",
+    "time_s": 90.3,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -5.93,
+    "setpoint_vel_0": -6.0,
+    "source_row_id": "920",
+    "time_s": 92.0,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -0.125,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "937",
+    "time_s": 93.7,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": 6.13,
+    "setpoint_vel_0": 6.0,
+    "source_row_id": "954",
+    "time_s": 95.4,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": 6.1,
+    "setpoint_vel_0": 6.0,
+    "source_row_id": "970",
+    "time_s": 97.0,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -0.05,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "987",
+    "time_s": 98.7,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -2.7,
+    "setpoint_vel_0": -2.64,
+    "source_row_id": "1004",
+    "time_s": 100.4,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -6.0,
+    "setpoint_vel_0": -6.0,
+    "source_row_id": "1021",
+    "time_s": 102.1,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": -5.4,
+    "setpoint_vel_0": -5.29,
+    "source_row_id": "1037",
+    "time_s": 103.7,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_01",
+    "feedback_vel_0": 0.175,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "1054",
+    "time_s": 105.4,
+    "tool_condition": "unworn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": 0.0,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "5238",
+    "time_s": 0.0,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": 0.075,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "5259",
+    "time_s": 2.1,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": -0.025,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "5279",
+    "time_s": 4.1,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": 0.0,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "5300",
+    "time_s": 6.2,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": -0.125,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "5320",
+    "time_s": 8.2,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": 6.03,
+    "setpoint_vel_0": 6.0,
+    "source_row_id": "5341",
+    "time_s": 10.3,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": -0.025,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "5361",
+    "time_s": 12.3,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": 0.025,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "5382",
+    "time_s": 14.4,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": 0.0,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "5402",
+    "time_s": 16.4,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": -6.13,
+    "setpoint_vel_0": -6.0,
+    "source_row_id": "5423",
+    "time_s": 18.5,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": -0.075,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "5444",
+    "time_s": 20.6,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": 0.125,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "5464",
+    "time_s": 22.6,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": -5.9,
+    "setpoint_vel_0": -6.0,
+    "source_row_id": "5485",
+    "time_s": 24.7,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": -6.07,
+    "setpoint_vel_0": -6.0,
+    "source_row_id": "5505",
+    "time_s": 26.7,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": 2.03,
+    "setpoint_vel_0": 1.95,
+    "source_row_id": "5526",
+    "time_s": 28.8,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": 0.0,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "5546",
+    "time_s": 30.8,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": -4.22,
+    "setpoint_vel_0": -4.25,
+    "source_row_id": "5567",
+    "time_s": 32.9,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": 0.0,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "5587",
+    "time_s": 34.9,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": 0.025,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "5608",
+    "time_s": 37.0,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": 6.15,
+    "setpoint_vel_0": 6.0,
+    "source_row_id": "5629",
+    "time_s": 39.1,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": -1.83,
+    "setpoint_vel_0": -1.79,
+    "source_row_id": "5649",
+    "time_s": 41.1,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": 5.82,
+    "setpoint_vel_0": 6.0,
+    "source_row_id": "5670",
+    "time_s": 43.2,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": 6.2,
+    "setpoint_vel_0": 6.0,
+    "source_row_id": "5690",
+    "time_s": 45.2,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": -5.43,
+    "setpoint_vel_0": -5.55,
+    "source_row_id": "5711",
+    "time_s": 47.3,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": 0.0,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "5731",
+    "time_s": 49.3,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": -6.0,
+    "setpoint_vel_0": -6.0,
+    "source_row_id": "5752",
+    "time_s": 51.4,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": -6.2,
+    "setpoint_vel_0": -6.0,
+    "source_row_id": "5772",
+    "time_s": 53.4,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": 3.83,
+    "setpoint_vel_0": 3.9,
+    "source_row_id": "5793",
+    "time_s": 55.5,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": -0.475,
+    "setpoint_vel_0": -0.289,
+    "source_row_id": "5814",
+    "time_s": 57.6,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": 6.07,
+    "setpoint_vel_0": 6.0,
+    "source_row_id": "5834",
+    "time_s": 59.6,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": -4.7,
+    "setpoint_vel_0": -4.79,
+    "source_row_id": "5855",
+    "time_s": 61.7,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": 4.55,
+    "setpoint_vel_0": 4.66,
+    "source_row_id": "5875",
+    "time_s": 63.7,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": 0.2,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "5896",
+    "time_s": 65.8,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": -6.1,
+    "setpoint_vel_0": -6.0,
+    "source_row_id": "5916",
+    "time_s": 67.8,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": -0.45,
+    "setpoint_vel_0": -0.216,
+    "source_row_id": "5937",
+    "time_s": 69.9,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": 0.0,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "5957",
+    "time_s": 71.9,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": 6.0,
+    "setpoint_vel_0": 6.0,
+    "source_row_id": "5978",
+    "time_s": 74.0,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": 0.0,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "5999",
+    "time_s": 76.1,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": 3.9,
+    "setpoint_vel_0": 3.79,
+    "source_row_id": "6019",
+    "time_s": 78.1,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": 0.2,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "6040",
+    "time_s": 80.2,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": -0.1,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "6060",
+    "time_s": 82.2,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": 5.93,
+    "setpoint_vel_0": 6.0,
+    "source_row_id": "6081",
+    "time_s": 84.3,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": 0.0,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "6101",
+    "time_s": 86.3,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": 0.125,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "6122",
+    "time_s": 88.4,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": -6.15,
+    "setpoint_vel_0": -6.0,
+    "source_row_id": "6142",
+    "time_s": 90.4,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": -17.8,
+    "setpoint_vel_0": -17.9,
+    "source_row_id": "6163",
+    "time_s": 92.5,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": 0.2,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "6184",
+    "time_s": 94.6,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": 0.125,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "6204",
+    "time_s": 96.6,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": -0.4,
+    "setpoint_vel_0": -0.107,
+    "source_row_id": "6225",
+    "time_s": 98.7,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": 0.175,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "6245",
+    "time_s": 100.7,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": -6.03,
+    "setpoint_vel_0": -6.0,
+    "source_row_id": "6266",
+    "time_s": 102.8,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": 0.15,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "6286",
+    "time_s": 104.8,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": 5.0,
+    "setpoint_vel_0": 5.18,
+    "source_row_id": "6307",
+    "time_s": 106.9,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": -6.03,
+    "setpoint_vel_0": -6.0,
+    "source_row_id": "6327",
+    "time_s": 108.9,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": -0.075,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "6348",
+    "time_s": 111.0,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": 5.85,
+    "setpoint_vel_0": 6.0,
+    "source_row_id": "6369",
+    "time_s": 113.1,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": 3.9,
+    "setpoint_vel_0": 4.0,
+    "source_row_id": "6389",
+    "time_s": 115.1,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": 0.05,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "6410",
+    "time_s": 117.2,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": -5.88,
+    "setpoint_vel_0": -6.0,
+    "source_row_id": "6430",
+    "time_s": 119.2,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": -5.9,
+    "setpoint_vel_0": -6.0,
+    "source_row_id": "6451",
+    "time_s": 121.3,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": -0.025,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "6471",
+    "time_s": 123.3,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": -3.4,
+    "setpoint_vel_0": -3.23,
+    "source_row_id": "6492",
+    "time_s": 125.4,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": 0.225,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "6512",
+    "time_s": 127.4,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_06",
+    "feedback_vel_0": -2.25,
+    "setpoint_vel_0": -2.24,
+    "source_row_id": "6533",
+    "time_s": 129.5,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": 3.85,
+    "setpoint_vel_0": 4.69,
+    "source_row_id": "7099",
+    "time_s": 0.0,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": 0.0,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "7109",
+    "time_s": 1.0,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": 0.05,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "7118",
+    "time_s": 1.9,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": -17.9,
+    "setpoint_vel_0": -17.9,
+    "source_row_id": "7128",
+    "time_s": 2.9,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": -10.3,
+    "setpoint_vel_0": -7.36,
+    "source_row_id": "7137",
+    "time_s": 3.8,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": 20.3,
+    "setpoint_vel_0": 20.0,
+    "source_row_id": "7147",
+    "time_s": 4.8,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": 0.0,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "7157",
+    "time_s": 5.8,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": 0.0,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "7166",
+    "time_s": 6.7,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": -0.1,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "7176",
+    "time_s": 7.7,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": -20.1,
+    "setpoint_vel_0": -19.4,
+    "source_row_id": "7185",
+    "time_s": 8.6,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": 13.4,
+    "setpoint_vel_0": 12.2,
+    "source_row_id": "7195",
+    "time_s": 9.6,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": -0.175,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "7204",
+    "time_s": 10.5,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": -0.15,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "7214",
+    "time_s": 11.5,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": 0.125,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "7224",
+    "time_s": 12.5,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": 20.1,
+    "setpoint_vel_0": 20.0,
+    "source_row_id": "7233",
+    "time_s": 13.4,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": -19.8,
+    "setpoint_vel_0": -20.0,
+    "source_row_id": "7243",
+    "time_s": 14.4,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": 0.0,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "7252",
+    "time_s": 15.3,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": 19.9,
+    "setpoint_vel_0": 20.0,
+    "source_row_id": "7262",
+    "time_s": 16.3,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": 0.0,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "7272",
+    "time_s": 17.3,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": 20.0,
+    "setpoint_vel_0": 20.0,
+    "source_row_id": "7281",
+    "time_s": 18.2,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": 1.17,
+    "setpoint_vel_0": -2.0,
+    "source_row_id": "7291",
+    "time_s": 19.2,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": -0.025,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "7300",
+    "time_s": 20.1,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": -0.075,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "7310",
+    "time_s": 21.1,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": -19.3,
+    "setpoint_vel_0": -19.5,
+    "source_row_id": "7320",
+    "time_s": 22.1,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": 0.025,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "7329",
+    "time_s": 23.0,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": -19.9,
+    "setpoint_vel_0": -20.0,
+    "source_row_id": "7339",
+    "time_s": 24.0,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": 0.0,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "7348",
+    "time_s": 24.9,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": -0.025,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "7358",
+    "time_s": 25.9,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": 0.0,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "7367",
+    "time_s": 26.8,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": -0.1,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "7377",
+    "time_s": 27.8,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": -11.6,
+    "setpoint_vel_0": -11.0,
+    "source_row_id": "7387",
+    "time_s": 28.8,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": -0.05,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "7396",
+    "time_s": 29.7,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": -0.175,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "7406",
+    "time_s": 30.7,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": -18.0,
+    "setpoint_vel_0": -17.9,
+    "source_row_id": "7415",
+    "time_s": 31.6,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": 0.05,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "7425",
+    "time_s": 32.6,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": -2.25,
+    "setpoint_vel_0": -2.81,
+    "source_row_id": "7435",
+    "time_s": 33.6,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": 0.05,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "7444",
+    "time_s": 34.5,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": -10.6,
+    "setpoint_vel_0": -11.5,
+    "source_row_id": "7454",
+    "time_s": 35.5,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": -12.3,
+    "setpoint_vel_0": -11.2,
+    "source_row_id": "7463",
+    "time_s": 36.4,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": 11.6,
+    "setpoint_vel_0": 12.3,
+    "source_row_id": "7473",
+    "time_s": 37.4,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": -0.075,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "7482",
+    "time_s": 38.3,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": -0.025,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "7492",
+    "time_s": 39.3,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": 15.4,
+    "setpoint_vel_0": 14.4,
+    "source_row_id": "7502",
+    "time_s": 40.3,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": 0.025,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "7511",
+    "time_s": 41.2,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": -19.5,
+    "setpoint_vel_0": -20.0,
+    "source_row_id": "7521",
+    "time_s": 42.2,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": -17.6,
+    "setpoint_vel_0": -17.3,
+    "source_row_id": "7530",
+    "time_s": 43.1,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": -0.025,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "7540",
+    "time_s": 44.1,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": 19.5,
+    "setpoint_vel_0": 19.3,
+    "source_row_id": "7550",
+    "time_s": 45.1,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": 0.05,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "7559",
+    "time_s": 46.0,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": 0.075,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "7569",
+    "time_s": 47.0,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": -18.4,
+    "setpoint_vel_0": -18.0,
+    "source_row_id": "7578",
+    "time_s": 47.9,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": 18.0,
+    "setpoint_vel_0": 18.6,
+    "source_row_id": "7588",
+    "time_s": 48.9,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": 20.1,
+    "setpoint_vel_0": 20.0,
+    "source_row_id": "7598",
+    "time_s": 49.9,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": -20.0,
+    "setpoint_vel_0": -20.0,
+    "source_row_id": "7607",
+    "time_s": 50.8,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": -0.125,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "7617",
+    "time_s": 51.8,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": 17.9,
+    "setpoint_vel_0": 18.3,
+    "source_row_id": "7626",
+    "time_s": 52.7,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": -0.1,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "7636",
+    "time_s": 53.7,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": -0.025,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "7645",
+    "time_s": 54.6,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": -20.0,
+    "setpoint_vel_0": -20.0,
+    "source_row_id": "7655",
+    "time_s": 55.6,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": -0.025,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "7665",
+    "time_s": 56.6,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": -0.025,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "7674",
+    "time_s": 57.5,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": -20.1,
+    "setpoint_vel_0": -20.0,
+    "source_row_id": "7684",
+    "time_s": 58.5,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": -0.125,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "7693",
+    "time_s": 59.4,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_08",
+    "feedback_vel_0": 0.0,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "7703",
+    "time_s": 60.4,
+    "tool_condition": "worn",
+    "visual_inspection": "no"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": 2.97,
+    "setpoint_vel_0": 2.96,
+    "source_row_id": "14335",
+    "time_s": 0.0,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": -3.05,
+    "setpoint_vel_0": -2.95,
+    "source_row_id": "14370",
+    "time_s": 3.5,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": -3.03,
+    "setpoint_vel_0": -2.89,
+    "source_row_id": "14406",
+    "time_s": 7.1,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": -3.22,
+    "setpoint_vel_0": -3.0,
+    "source_row_id": "14441",
+    "time_s": 10.6,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": -1.58,
+    "setpoint_vel_0": -1.77,
+    "source_row_id": "14477",
+    "time_s": 14.2,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": 0.15,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "14512",
+    "time_s": 17.7,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": -0.025,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "14548",
+    "time_s": 21.3,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": -2.97,
+    "setpoint_vel_0": -2.97,
+    "source_row_id": "14583",
+    "time_s": 24.8,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": 2.9,
+    "setpoint_vel_0": 3.0,
+    "source_row_id": "14618",
+    "time_s": 28.3,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": -0.075,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "14654",
+    "time_s": 31.9,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": -3.08,
+    "setpoint_vel_0": -3.0,
+    "source_row_id": "14689",
+    "time_s": 35.4,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": 0.15,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "14725",
+    "time_s": 39.0,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": 3.08,
+    "setpoint_vel_0": 2.99,
+    "source_row_id": "14760",
+    "time_s": 42.5,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": -2.97,
+    "setpoint_vel_0": -3.0,
+    "source_row_id": "14796",
+    "time_s": 46.1,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": -3.25,
+    "setpoint_vel_0": -3.0,
+    "source_row_id": "14831",
+    "time_s": 49.6,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": -0.175,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "14866",
+    "time_s": 53.1,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": -0.05,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "14902",
+    "time_s": 56.7,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": 0.1,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "14937",
+    "time_s": 60.2,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": -0.575,
+    "setpoint_vel_0": -0.551,
+    "source_row_id": "14973",
+    "time_s": 63.8,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": -1.73,
+    "setpoint_vel_0": -1.59,
+    "source_row_id": "15008",
+    "time_s": 67.3,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": 0.25,
+    "setpoint_vel_0": 0.0509,
+    "source_row_id": "15044",
+    "time_s": 70.9,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": 3.08,
+    "setpoint_vel_0": 3.0,
+    "source_row_id": "15079",
+    "time_s": 74.4,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": 2.83,
+    "setpoint_vel_0": 3.0,
+    "source_row_id": "15114",
+    "time_s": 77.9,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": 3.0,
+    "setpoint_vel_0": 3.0,
+    "source_row_id": "15150",
+    "time_s": 81.5,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": -0.025,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "15185",
+    "time_s": 85.0,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": -0.025,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "15221",
+    "time_s": 88.6,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": 3.2,
+    "setpoint_vel_0": 3.0,
+    "source_row_id": "15256",
+    "time_s": 92.1,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": 2.9,
+    "setpoint_vel_0": 3.0,
+    "source_row_id": "15292",
+    "time_s": 95.7,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": -0.225,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "15327",
+    "time_s": 99.2,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": 0.025,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "15362",
+    "time_s": 102.7,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": -3.08,
+    "setpoint_vel_0": -3.0,
+    "source_row_id": "15398",
+    "time_s": 106.3,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": 0.0,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "15433",
+    "time_s": 109.8,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": -2.75,
+    "setpoint_vel_0": -2.84,
+    "source_row_id": "15469",
+    "time_s": 113.4,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": -1.7,
+    "setpoint_vel_0": -1.66,
+    "source_row_id": "15504",
+    "time_s": 116.9,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": 0.075,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "15540",
+    "time_s": 120.5,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": 0.075,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "15575",
+    "time_s": 124.0,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": 2.92,
+    "setpoint_vel_0": 3.0,
+    "source_row_id": "15610",
+    "time_s": 127.5,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": -2.03,
+    "setpoint_vel_0": -2.03,
+    "source_row_id": "15646",
+    "time_s": 131.1,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": -0.925,
+    "setpoint_vel_0": -1.09,
+    "source_row_id": "15681",
+    "time_s": 134.6,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": -2.88,
+    "setpoint_vel_0": -2.85,
+    "source_row_id": "15717",
+    "time_s": 138.2,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": 0.1,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "15752",
+    "time_s": 141.7,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": 2.75,
+    "setpoint_vel_0": 2.64,
+    "source_row_id": "15788",
+    "time_s": 145.3,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": 0.2,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "15823",
+    "time_s": 148.8,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": -0.2,
+    "setpoint_vel_0": -0.0854,
+    "source_row_id": "15858",
+    "time_s": 152.3,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": 0.15,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "15894",
+    "time_s": 155.9,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": -2.45,
+    "setpoint_vel_0": -2.49,
+    "source_row_id": "15929",
+    "time_s": 159.4,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": -2.95,
+    "setpoint_vel_0": -2.96,
+    "source_row_id": "15965",
+    "time_s": 163.0,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": 0.175,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "16000",
+    "time_s": 166.5,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": -2.6,
+    "setpoint_vel_0": -2.81,
+    "source_row_id": "16036",
+    "time_s": 170.1,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": -2.95,
+    "setpoint_vel_0": -3.0,
+    "source_row_id": "16071",
+    "time_s": 173.6,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": -2.85,
+    "setpoint_vel_0": -2.75,
+    "source_row_id": "16106",
+    "time_s": 177.1,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": 3.05,
+    "setpoint_vel_0": 3.0,
+    "source_row_id": "16142",
+    "time_s": 180.7,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": 0.15,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "16177",
+    "time_s": 184.2,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": 2.85,
+    "setpoint_vel_0": 2.92,
+    "source_row_id": "16213",
+    "time_s": 187.8,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": -2.85,
+    "setpoint_vel_0": -3.0,
+    "source_row_id": "16248",
+    "time_s": 191.3,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": 2.75,
+    "setpoint_vel_0": 2.81,
+    "source_row_id": "16284",
+    "time_s": 194.9,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": 0.175,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "16319",
+    "time_s": 198.4,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": -3.05,
+    "setpoint_vel_0": -3.0,
+    "source_row_id": "16354",
+    "time_s": 201.9,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": 3.1,
+    "setpoint_vel_0": 3.0,
+    "source_row_id": "16390",
+    "time_s": 205.5,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": -0.5,
+    "setpoint_vel_0": -0.298,
+    "source_row_id": "16425",
+    "time_s": 209.0,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": -2.95,
+    "setpoint_vel_0": -3.0,
+    "source_row_id": "16461",
+    "time_s": 212.6,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": 1.5,
+    "setpoint_vel_0": 1.36,
+    "source_row_id": "16496",
+    "time_s": 216.1,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": -2.8,
+    "setpoint_vel_0": -3.0,
+    "source_row_id": "16532",
+    "time_s": 219.7,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  },
+  {
+    "episode_id": "UMich_CNC_13",
+    "feedback_vel_0": 0.125,
+    "setpoint_vel_0": 0.0,
+    "source_row_id": "16567",
+    "time_s": 223.2,
+    "tool_condition": "worn",
+    "visual_inspection": "yes"
+  }
+]

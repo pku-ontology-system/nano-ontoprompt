@@ -76,6 +76,7 @@ export default function OntologyDetailPage() {
     enabled: !!id,
   });
   const temporal = ontology?.data_class === "temporal";
+  const decisionLabDomain = id?.match(/^decision-lab-(ai4i|factorynet|ibadas)-v1$/)?.[1];
   const commonTabs = ["overview", "sources", "graph", "data_model", "entities", "objects", "logic", "audit", "reasoning", "decisions", "agent", "manufacturing", "logic-assets", "alerts", "rules"];
   const validTabs = temporal ? [...commonTabs, "dynamic", "what_if"] : commonTabs;
   const activeTab: Tab = validTabs.includes(requested) ? (requested as Tab) : DEFAULT_TAB;
@@ -119,7 +120,7 @@ export default function OntologyDetailPage() {
           <h1 className="text-xl font-semibold text-slate-900">{sectionLabel}</h1>
         </div>
         {ontology.status && <StatusBadge status={ontology.status} />}
-        <div className="ml-auto flex items-center gap-2"><details className="relative">
+        <div className="ml-auto flex items-center gap-2">{decisionLabDomain && <button onClick={() => navigate(`/decision-lab?demo=${decisionLabDomain}`)} className="wb-button-primary">打开决策分析</button>}<details className="relative">
           <summary className="cursor-pointer list-none rounded-md bg-slate-900 px-3 py-2 text-xs text-white">新建 ▾</summary>
           <div className="absolute right-0 z-20 mt-1 w-44 rounded-md border border-slate-200 bg-white p-1 text-sm shadow-lg" role="menu">
             {[["添加数据", () => select("sources")], ["运行规则", () => select("rules")], ["情景研究", () => navigate(`/ontologies/${id}/scenario-studies`)]].map(([label, run]) =>
@@ -153,7 +154,7 @@ export default function OntologyDetailPage() {
       {activeTab === "what_if" && temporal && <WhatIfTab ontologyId={id!} />}
       {activeTab === "reasoning" && <ReasoningTab key={id} ontologyId={id!} />}
       {activeTab === "decisions" && <DecisionsTab key={id} ontologyId={id!} />}
-      {activeTab === "agent" && <AgentDecisionTab key={id} ontologyId={id!} />}
+      {activeTab === "agent" && <AgentDecisionTab key={id} ontologyId={id!} defaultSurface="sessions" />}
       {activeTab === "manufacturing" && <ManufacturingDataTab key={id} ontologyId={id!} />}
       {activeTab === "logic-assets" && <LogicAssetsTab key={id} ontologyId={id!} />}
       {activeTab === "overview" && <Suspense fallback={<div role="status" className="py-12 text-center text-sm text-slate-500">正在加载总览</div>}><OverviewTab ontologyId={id!} onOpen={(tab, extra) => select(tab as Tab, extra)} /></Suspense>}

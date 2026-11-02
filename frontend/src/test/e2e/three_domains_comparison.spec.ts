@@ -1,6 +1,6 @@
 /**
  * 三领域对比测试：供应链 / 医疗 / 财务
- * 每个业务域跑 Pipeline Mapping + 简易 LLM 两条路径，
+ * 每个业务域跑 Pipeline Mapping + Dataset Construction 两条路径，
  * 最终输出实体数、边数、逻辑数、动作数汇总表。
  */
 
@@ -10,6 +10,7 @@ import { test, expect, type APIRequestContext, type Page } from '@playwright/tes
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { buildPrivateStructuredDataset } from './datasetConstructionFlow'
 
 const BASE = 'http://localhost:5173'
 const API  = 'http://localhost:8000'
@@ -54,22 +55,15 @@ function requiredString(value: string | undefined, label: string): string {
 const DOMAINS = ['供应链', '医疗', '财务'] as const
 type Domain = typeof DOMAINS[number]
 
-// ── 固定 ID（匹配当前 DB 状态） ───────────────────────────────────────────
-const MODEL_ID   = '8f347f97-e844-4d62-b81b-8c655cd3b410'   // deepseek
-const MODEL_NAME = 'deepseek-v4-flash'
-
-const PROMPT_BY_DOMAIN: Record<Domain, string> = {
-  '供应链': '9dad1123-72eb-4b9b-b5b3-1777c54ca3cd',
-  '医疗':   'd9bf7a9a-5313-4be3-b941-88c33f280566',
-  '财务':   'bff40feb-6f53-460e-97d1-b5e8d4f4a9be',
-}
-
 // ── 工具 ─────────────────────────────────────────────────────────────────
 
 async function login(page: Page): Promise<string> {
+  const username = process.env.PROJECT4_E2E_USERNAME
+  const password = process.env.PROJECT4_E2E_PASSWORD
+  if (!username || !password) throw new Error('Set PROJECT4_E2E_USERNAME and PROJECT4_E2E_PASSWORD to run this E2E flow')
   await page.goto(`${BASE}/login`)
-  await page.fill('input[placeholder="用户名"]', 'admin')
-  await page.fill('input[placeholder="密码"]', 'admin123')
+  await page.fill('input[placeholder="用户名"]', username)
+  await page.fill('input[placeholder="密码"]', password)
   await page.click('button[type="submit"]')
   await page.waitForURL(`${BASE}/overview`, { timeout: 10000 })
   const token = await page.evaluate(() => localStorage.getItem('token') ?? '')
@@ -117,24 +111,6 @@ async function collectStats(request: APIRequestContext, token: string, ontologyI
   const actions: number = (actionBody.data ?? []).length
 
   return { entities, edges, logic, actions }
-}
-
-async function pollExtraction(
-  request: APIRequestContext,
-  token: string,
-  ontologyId: string,
-  taskId: string,
-  timeoutMs = 360_000,
-): Promise<string> {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    await new Promise(r => setTimeout(r, 4000))
-    const body = await apiCall(request, 'GET', `/api/v1/ontologies/${ontologyId}/execute/status?task_id=${taskId}`, token)
-    const status = body.data?.status ?? body.status ?? ''
-    console.log(`    polling: status=${status} pct=${body.data?.progress?.pct ?? 0}%`)
-    if (status === 'completed' || status === 'failed') return status
-  }
-  throw new Error('LLM extraction timed out')
 }
 
 // ── Pipeline Mapping 路径 ─────────────────────────────────────────────────
@@ -260,9 +236,9 @@ async function runPipelineMapping(
   return { pipelineId, ontologyId, stats }
 }
 
-// ── 简易 LLM 路径 ────────────────────────────────────────────────────────
+// ── Dataset Construction 路径 ───────────────────────────────────────────
 
-async function runSimpleLLM(
+async function runDatasetConstruction(
   page: Page,
   request: APIRequestContext,
   token: string,
@@ -271,86 +247,52 @@ async function runSimpleLLM(
   outDir: string,
 ) {
   const domainDir = path.join(TEST_DATA, domain)
-  const files = fs.readdirSync(domainDir).filter(f => fs.statSync(path.join(domainDir, f)).isFile()).sort()
-  console.log(`\n  [${domain}][简易LLM] 文件数: ${files.length}`)
+  const structuredFile = fs.readdirSync(domainDir)
+    .filter(file => /\.(csv|xlsx|xls)$/i.test(file) && fs.statSync(path.join(domainDir, file)).isFile())
+    .sort()[0]
+  if (!structuredFile) throw new Error(`${domain} has no CSV or Excel Dataset fixture`)
+  console.log(`\n  [${domain}][Dataset Construction] ${structuredFile} (private, deterministic mapping)`)
 
-  // 1. 创建本体
-  const ontoBody = await apiCall(request, 'POST', '/api/v1/ontologies', token, {
-    name:        `E2E_${domain}_SimpleLLM_${ts}`,
-    domain,
-    description: `三领域对比 — ${domain} 简易LLM`,
-    build_mode:  'simple_llm',
-  })
-  const ontologyId = requiredString(ontoBody.data?.id ?? ontoBody.id, 'ontology id')
-  expect(ontologyId).toBeTruthy()
-  console.log(`    本体: ${ontologyId.slice(0, 8)}`)
-
-  // 2. 截图文件上传 tab
+  const username = process.env.PROJECT4_E2E_USERNAME || ''
+  const role = process.env.PROJECT4_E2E_ROLE || 'editor'
   await page.goto(`${BASE}/login`)
-  await page.evaluate((tok: string) => {
-    localStorage.setItem('token', tok)
-    localStorage.setItem('auth-store', JSON.stringify({ state: { token: tok, user: { username: 'admin', role: 'admin' } }, version: 0 }))
-  }, token)
-  await page.goto(`${BASE}/ontologies/${ontologyId}?tab=files`)
-  await page.waitForTimeout(1500)
-  await shot(page, outDir, `${domain}_llm_01_files_tab`)
+  await page.evaluate((session: { tok: string; user: string; roleName: string }) => {
+    localStorage.setItem('token', session.tok)
+    localStorage.setItem('auth-store', JSON.stringify({ state: { token: session.tok, user: { username: session.user, role: session.roleName } }, version: 0 }))
+  }, { tok: token, user: username, roleName: role })
 
-  // 3. 上传所有领域文件
-  const fileIds: string[] = []
-  for (const filename of files) {
-    const res = await request.post(`${API}/api/v1/ontologies/${ontologyId}/files`, {
-      headers: { Authorization: `Bearer ${token}` },
-      multipart: { file: { name: filename, mimeType: 'application/octet-stream', buffer: fs.readFileSync(path.join(domainDir, filename)) } },
-    })
-    const body = await res.json()
-    expect(res.ok(), `upload ${filename}: ${JSON.stringify(body)}`).toBeTruthy()
-    fileIds.push(body.data.id)
-  }
-  console.log(`    上传完成: ${fileIds.length} 个文件`)
-
-  await page.reload(); await page.waitForTimeout(1000)
-  await shot(page, outDir, `${domain}_llm_02_files_uploaded`)
-
-  // 4. 触发 LLM 提取
-  const execBody = await apiCall(request, 'POST', `/api/v1/ontologies/${ontologyId}/execute`, token, {
-    prompt_id:  PROMPT_BY_DOMAIN[domain],
-    model_id:   MODEL_ID,
-    model_name: MODEL_NAME,
-    file_ids:   fileIds,
-    constraints: [],
+  const built = await buildPrivateStructuredDataset(request, {
+    apiBase: API,
+    token,
+    filePath: path.join(domainDir, structuredFile),
+    domain,
+    ontologyName: `E2E_${domain}_DatasetConstruction_${ts}`,
   })
-  const taskId = requiredString(execBody.data?.task_id ?? execBody.task_id, 'task id')
-  expect(taskId).toBeTruthy()
-  console.log(`    提取任务: ${taskId.slice(0, 8)}, 等待完成...`)
+  console.log(`    ConstructionRun: ${built.runId.slice(0, 8)} · ontology: ${built.ontologyId.slice(0, 8)}`)
 
-  // 截图提取中
-  await page.goto(`${BASE}/ontologies/${ontologyId}?tab=files`)
-  await page.waitForTimeout(1000)
-  await shot(page, outDir, `${domain}_llm_03_extracting`)
+  await page.goto(`${BASE}/data/regular/build?run=${encodeURIComponent(built.runId)}`)
+  await page.waitForTimeout(1500)
+  await shot(page, outDir, `${domain}_construction_01_run`)
 
-  // 5. 轮询
-  const finalStatus = await pollExtraction(request, token, ontologyId, taskId, 1800_000)
-  console.log(`    提取结果: ${finalStatus}`)
-
-  // 6. 前端截图结果
+  const ontologyId = built.ontologyId
   await page.goto(`${BASE}/ontologies/${ontologyId}`)
   await page.waitForTimeout(1500)
-  await shot(page, outDir, `${domain}_llm_04_ontology`)
+  await shot(page, outDir, `${domain}_construction_02_ontology`)
 
   await page.goto(`${BASE}/ontologies/${ontologyId}?tab=graph`)
   await page.waitForTimeout(3000)
-  await shot(page, outDir, `${domain}_llm_05_graph`)
+  await shot(page, outDir, `${domain}_construction_03_graph`)
 
   // 7. 统计
   const stats = await collectStats(request, token, ontologyId)
-  return { ontologyId, taskId, finalStatus, stats }
+  return { ontologyId, taskId: built.mappingTaskId, finalStatus: built.status, stats }
 }
 
 // ── 测试入口 ──────────────────────────────────────────────────────────────
 
 test.describe.configure({ mode: 'serial' })
 
-test.describe('三领域对比：Pipeline Mapping vs 简易 LLM', () => {
+test.describe('三领域对比：Pipeline Mapping vs Dataset Construction', () => {
   const ts = Date.now()
   const outDir = path.resolve(__dirname, '../../../../test-results/three-domains-comparison', String(ts))
   let token = ''
@@ -406,18 +348,18 @@ test.describe('三领域对比：Pipeline Mapping vs 简易 LLM', () => {
     })
   }
 
-  // ── 简易 LLM 路径（3个域）─────────────────────────────────────────────
+  // ── Dataset Construction 路径（3个域）────────────────────────────────
   for (const domain of DOMAINS) {
-    test(`简易 LLM — ${domain}`, async ({ page, request }) => {
-      test.setTimeout(3_600_000) // 60 min: deepseek processes 8 files × ~3 min each
+    test(`Dataset Construction — ${domain}`, async ({ page, request }) => {
+      test.setTimeout(1_800_000)
       try {
-        const result = await runSimpleLLM(page, request, token, domain, ts, outDir)
-        rows.push({ domain, path: '简易 LLM', ...result.stats, ontologyId: result.ontologyId })
-        expect(result.finalStatus, '提取应成功').toBe('completed')
+        const result = await runDatasetConstruction(page, request, token, domain, ts, outDir)
+        rows.push({ domain, path: 'Dataset Construction', ...result.stats, ontologyId: result.ontologyId })
+        expect(result.finalStatus, 'Dataset Construction should complete').toBe('completed')
         expect(result.stats.entities, '应有至少 1 个实体').toBeGreaterThan(0)
       } catch (error: unknown) {
-        rows.push({ domain, path: '简易 LLM', entities: 0, edges: 0, logic: 0, actions: 0, ontologyId: '', error: messageFrom(error) })
-        await page.screenshot({ path: path.join(outDir, `${domain}_llm_ERROR.jpg`), type: 'jpeg', quality: 75 }).catch(() => {})
+        rows.push({ domain, path: 'Dataset Construction', entities: 0, edges: 0, logic: 0, actions: 0, ontologyId: '', error: messageFrom(error) })
+        await page.screenshot({ path: path.join(outDir, `${domain}_construction_ERROR.jpg`), type: 'jpeg', quality: 75 }).catch(() => {})
         throw error
       }
     })

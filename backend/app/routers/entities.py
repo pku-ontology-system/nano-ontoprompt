@@ -9,7 +9,10 @@ router = APIRouter()
 
 @router.get("")
 def list_entities(ontology_id: str, db: Session = Depends(get_db), _=Depends(get_current_user)):
-    items = db.query(Entity).filter(Entity.ontology_id == ontology_id).all()
+    items = db.query(Entity).filter(
+        Entity.ontology_id == ontology_id,
+        Entity.is_source_deleted.is_(False),
+    ).all()
     return {"data": [EntityOut.model_validate(e).model_dump() for e in items]}
 
 @router.post("", status_code=201)
@@ -24,7 +27,11 @@ def create_entity(ontology_id: str, body: EntityCreate, db: Session = Depends(ge
 
 @router.get("/{entity_id}")
 def get_entity(ontology_id: str, entity_id: str, db: Session = Depends(get_db), _=Depends(get_current_user)):
-    e = db.query(Entity).filter(Entity.id == entity_id, Entity.ontology_id == ontology_id).first()
+    e = db.query(Entity).filter(
+        Entity.id == entity_id,
+        Entity.ontology_id == ontology_id,
+        Entity.is_source_deleted.is_(False),
+    ).first()
     if not e:
         raise HTTPException(404, "Not found")
     return {"data": EntityOut.model_validate(e).model_dump()}
@@ -36,7 +43,11 @@ def update_entity(ontology_id: str, entity_id: str, body: EntityUpdate, db: Sess
         apply_change(db, ontology_id, {"target_kind": "entity_type", "operation": "update", "target_id": entity_id, "payload": body.model_dump(exclude_none=True)}, user_id=user.id)
     except OntologyEditError as exc:
         raise HTTPException(404 if exc.code == "NOT_FOUND" else 409 if exc.code in {"CHANGE_BLOCKED", "REVISION_CONFLICT"} else 422, {"code": exc.code, "message": str(exc), **exc.details})
-    e = db.query(Entity).filter(Entity.id == entity_id, Entity.ontology_id == ontology_id).first()
+    e = db.query(Entity).filter(
+        Entity.id == entity_id,
+        Entity.ontology_id == ontology_id,
+        Entity.is_source_deleted.is_(False),
+    ).first()
     return {"data": EntityOut.model_validate(e).model_dump()}
 
 @router.delete("/{entity_id}", status_code=204)
@@ -58,13 +69,17 @@ def list_entity_instances(
     from app.models.entity_instance import EntityInstance
 
     entity = db.query(Entity).filter(
-        Entity.id == entity_id, Entity.ontology_id == ontology_id
+        Entity.id == entity_id,
+        Entity.ontology_id == ontology_id,
+        Entity.is_source_deleted.is_(False),
     ).first()
     if not entity:
         raise HTTPException(status_code=404, detail="Entity not found")
 
     instances = db.query(EntityInstance).filter(
-        EntityInstance.entity_id == entity_id, EntityInstance.ontology_id == ontology_id
+        EntityInstance.entity_id == entity_id,
+        EntityInstance.ontology_id == ontology_id,
+        EntityInstance.is_deleted.is_(False),
     ).order_by(EntityInstance.created_at).all()
 
     return {"data": [

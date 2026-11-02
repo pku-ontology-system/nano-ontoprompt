@@ -1,0 +1,692 @@
+[
+  {
+    "assets": [
+      {
+        "role": "rgb",
+        "sha256": "354e32fd6c6cbea5209c3a954c02de8b3719f9de2babc5a8517b6b64f85beec3",
+        "size": 276424,
+        "source_path": "test/000001/good/rgb/00066.png"
+      },
+      {
+        "role": "depth",
+        "sha256": "be547ad24d3dac60e4eafdf35a0fa6e9fda31b7ab6f7075feb99e42f1171c166",
+        "size": 614528,
+        "source_path": "test/000001/good/depth/00066.npy"
+      },
+      {
+        "role": "mask",
+        "sha256": "e378c436ebb4e3f3dc227b541f98f6d3de2392c9844042cc896053ab57399927",
+        "size": 2559,
+        "source_path": "test/000001/good/mask_visib/00066.png"
+      },
+      {
+        "role": "point_cloud",
+        "sha256": "802e0db66f2e9a7611989cad61a2f4f9811f57dc9987f5f30c421977f835c5c1",
+        "size": 526760,
+        "source_path": "test/000001/good/point_clouds/point_00066.npy"
+      },
+      {
+        "role": "metadata",
+        "sha256": "db3c0b4ae78a491daa600182623009112703d68747cff5699b1534d955c5abe9",
+        "size": 9675,
+        "source_path": "test/000001/good/scene_camera.json"
+      },
+      {
+        "role": "metadata",
+        "sha256": "ba98a87a24af804dec478a2ce65cd7649f69c05ff6c1f7f2d4de803e054b73a1",
+        "size": 13478,
+        "source_path": "test/000001/good/scene_info.json"
+      },
+      {
+        "role": "metadata",
+        "sha256": "1bada36e385bda31c8700498f2912253c52577d5d800189980a0067aa988fefb",
+        "size": 1799745,
+        "source_path": "test/000001/annotations.coco.json"
+      },
+      {
+        "role": "metadata",
+        "sha256": "dc3cadab2c7f10af21ed92c48c56dc6e152a656eb0f1bef2ff952d1d40fadbcb",
+        "size": 147738,
+        "source_path": "test/000001/poses.json"
+      }
+    ],
+    "label": "good",
+    "sample_key": "ibadas:000001:good:00066",
+    "scene_id": "000001"
+  },
+  {
+    "assets": [
+      {
+        "role": "rgb",
+        "sha256": "9940b3bbdc5714db6d619bd2b12379584e94bcf5f938060f1c44b522bd2c166a",
+        "size": 871058,
+        "source_path": "test/000002/good/rgb/00025.png"
+      },
+      {
+        "role": "depth",
+        "sha256": "3b5695a76ede1b085c9bfafc65313fdfffd015eea7066a5134005881ed3e0d41",
+        "size": 5013632,
+        "source_path": "test/000002/good/depth/00025.npy"
+      },
+      {
+        "role": "mask",
+        "sha256": "fdf2aeed0365814dbeb84d42c5759ae647cb932c42c93c843db6ab9633017756",
+        "size": 5408,
+        "source_path": "test/000002/good/mask_visib/00025.png"
+      },
+      {
+        "role": "point_cloud",
+        "sha256": "f6871ed05071d5c5e75f54af5c9d500c98779e3050a1f4ffac7d10e6577d56a6",
+        "size": 578612,
+        "source_path": "test/000002/good/point_clouds/point_00025.npy"
+      },
+      {
+        "role": "metadata",
+        "sha256": "1a14426332c0bd0d29413034764f570c80063310b866b2d5732baacb577f0a13",
+        "size": 11304,
+        "source_path": "test/000002/good/scene_camera.json"
+      },
+      {
+        "role": "metadata",
+        "sha256": "2c7c06891988199f45aec8d97de9fa34b2993e2830e8c4f2dbeb45dab212da23",
+        "size": 16203,
+        "source_path": "test/000002/good/scene_info.json"
+      },
+      {
+        "role": "metadata",
+        "sha256": "a092267832d5d92a48046388319440c226e86fd10e9b7a4a7a7dd3ec80564248",
+        "size": 1022213,
+        "source_path": "test/000002/annotations.coco.json"
+      },
+      {
+        "role": "metadata",
+        "sha256": "bd46023e465fbd8810ccda6351ed1fa5f41b327c777136645fa6d15f0beb8ef1",
+        "size": 73118,
+        "source_path": "test/000002/poses.json"
+      }
+    ],
+    "label": "good",
+    "sample_key": "ibadas:000002:good:00025",
+    "scene_id": "000002"
+  },
+  {
+    "assets": [
+      {
+        "role": "rgb",
+        "sha256": "388dd1e92e6b8e48d740c5b3df5540e616a6692aa8115e7896c69e49f86cbd93",
+        "size": 257062,
+        "source_path": "test/000003/good/rgb/00297.png"
+      },
+      {
+        "role": "depth",
+        "sha256": "7b3eda1b520c300ba189c36a943b2924dfa89e0bf0432c90279c8da5b72cfd84",
+        "size": 614528,
+        "source_path": "test/000003/good/depth/00297.npy"
+      },
+      {
+        "role": "mask",
+        "sha256": "ecd1e7a13f57d5d8ae1f599bde060f9b56fc992d4f181ab7bef0174eac3381cf",
+        "size": 2299,
+        "source_path": "test/000003/good/mask_visib/00297.png"
+      },
+      {
+        "role": "point_cloud",
+        "sha256": "b8e06705cd946cd139404e3ed6d2b72d764a72a545e48fdb1efaf7ed5f9b850d",
+        "size": 526760,
+        "source_path": "test/000003/good/point_clouds/point_00297.npy"
+      },
+      {
+        "role": "metadata",
+        "sha256": "e813962c244b407c77d6e98beb1cd6551db8bc11b1e946ae5d94b5b787737eea",
+        "size": 8172,
+        "source_path": "test/000003/good/scene_camera.json"
+      },
+      {
+        "role": "metadata",
+        "sha256": "8d3a356214cdb8f2a7cb5c1415f75c9145c562e52cbc41443d25df9ce1be4b10",
+        "size": 11395,
+        "source_path": "test/000003/good/scene_info.json"
+      },
+      {
+        "role": "metadata",
+        "sha256": "29d6c8b70553d324027e32e1e8cebefdacc2a9d4aeafa3a8fbf15f9dd85de4b1",
+        "size": 2331030,
+        "source_path": "test/000003/annotations.coco.json"
+      },
+      {
+        "role": "metadata",
+        "sha256": "ffe471d3cd5fb19fd57c599c3f2e74b75975f9221ffc8b4716427ef43b241d9a",
+        "size": 140307,
+        "source_path": "test/000003/poses.json"
+      }
+    ],
+    "label": "good",
+    "sample_key": "ibadas:000003:good:00297",
+    "scene_id": "000003"
+  },
+  {
+    "assets": [
+      {
+        "role": "rgb",
+        "sha256": "bcb338928c7e49a7f237d7c03d67f074f3bd410c5a504aa926130f6edc0519a4",
+        "size": 829602,
+        "source_path": "test/000004/good/rgb/00020.png"
+      },
+      {
+        "role": "depth",
+        "sha256": "1dd0174aa4ae7013b33b78bdc1e05f0a547350e5deb59ffd7ccfbd9db8ad43dd",
+        "size": 5013632,
+        "source_path": "test/000004/good/depth/00020.npy"
+      },
+      {
+        "role": "mask",
+        "sha256": "0fd9e147dcb343b60f09b38d5f939a095da28e46255a525de40694c5e0e6fd62",
+        "size": 5603,
+        "source_path": "test/000004/good/mask_visib/00020.png"
+      },
+      {
+        "role": "point_cloud",
+        "sha256": "b5a8c77cffada812823ca372c017582054eadaaacf3f4d987d316fe59a857833",
+        "size": 578612,
+        "source_path": "test/000004/good/point_clouds/point_00020.npy"
+      },
+      {
+        "role": "metadata",
+        "sha256": "8595b22f776c73d6eb86698c81942b83a325eccd81aeface70a78454901d574c",
+        "size": 12601,
+        "source_path": "test/000004/good/scene_camera.json"
+      },
+      {
+        "role": "metadata",
+        "sha256": "db51f0219d93cb922af4bb6af3ae706401eb3bb95028827f5653d7e03c15d4ac",
+        "size": 18058,
+        "source_path": "test/000004/good/scene_info.json"
+      },
+      {
+        "role": "metadata",
+        "sha256": "bd9013b27fec64f8aab5cbd3871cb9881caee407a5c51cb9088c4b69c9d8293f",
+        "size": 1540767,
+        "source_path": "test/000004/annotations.coco.json"
+      },
+      {
+        "role": "metadata",
+        "sha256": "640c71b8f1fcd5c3284cb32ac10495fd5cc6e3c13a18031bc6b94a7f3b8ed1eb",
+        "size": 71333,
+        "source_path": "test/000004/poses.json"
+      }
+    ],
+    "label": "good",
+    "sample_key": "ibadas:000004:good:00020",
+    "scene_id": "000004"
+  },
+  {
+    "assets": [
+      {
+        "role": "rgb",
+        "sha256": "af4b2ed8c920bf0b5e4b30fc3ef832c75631e3ec27935643bc5e701d4236fd73",
+        "size": 415727,
+        "source_path": "test/000005/good/rgb/00001.png"
+      },
+      {
+        "role": "depth",
+        "sha256": "138bad73c94639fda2209aae93b75274af579b14eba37bbac454d2f944db8088",
+        "size": 614528,
+        "source_path": "test/000005/good/depth/00001.npy"
+      },
+      {
+        "role": "mask",
+        "sha256": "648d01f32b33cac0cd3181fdc123f8f6ec513d68304f86764aec8a8d68f0b990",
+        "size": 3214,
+        "source_path": "test/000005/good/mask_visib/00001.png"
+      },
+      {
+        "role": "point_cloud",
+        "sha256": "4dad5c3613acc11a6b16027e3510ac3076df07d55298b24a2cef0222e0801101",
+        "size": 526760,
+        "source_path": "test/000005/good/point_clouds/point_00001.npy"
+      },
+      {
+        "role": "metadata",
+        "sha256": "6f47c89af9c60ed836b0e96af32cef4adeb97f2528280dda7a4955fde104020c",
+        "size": 11177,
+        "source_path": "test/000005/good/scene_camera.json"
+      },
+      {
+        "role": "metadata",
+        "sha256": "4b2114b997536b7c6a54eacf0135a1bc7ff1779f5572cf1b83af5650d552e783",
+        "size": 15612,
+        "source_path": "test/000005/good/scene_info.json"
+      },
+      {
+        "role": "metadata",
+        "sha256": "0556f0685a41ed77a87909f294a71c5c1679f115c1d93e539019f78b51e85054",
+        "size": 1552162,
+        "source_path": "test/000005/annotations.coco.json"
+      },
+      {
+        "role": "metadata",
+        "sha256": "f03670409cd6ed9e3c2fac7d1d23f26fe7f0cc317379f5bb9bc757765f259756",
+        "size": 107262,
+        "source_path": "test/000005/poses.json"
+      }
+    ],
+    "label": "good",
+    "sample_key": "ibadas:000005:good:00001",
+    "scene_id": "000005"
+  },
+  {
+    "assets": [
+      {
+        "role": "rgb",
+        "sha256": "64b74295a040c4ed963981bd8f5e36dd6236cdfdb08a672942c750d15accb18c",
+        "size": 1104207,
+        "source_path": "test/000006/good/rgb/00008.png"
+      },
+      {
+        "role": "depth",
+        "sha256": "3b3f591ccdc57bcb8974013f03375eb972a13b754fcfb983c8cb1fdcf3f64a2c",
+        "size": 5013632,
+        "source_path": "test/000006/good/depth/00008.npy"
+      },
+      {
+        "role": "mask",
+        "sha256": "47475a0d94a21cabdd4d2de1ce3651cf980f93290fa9b74bdc460ea25c739833",
+        "size": 6175,
+        "source_path": "test/000006/good/mask_visib/00008.png"
+      },
+      {
+        "role": "point_cloud",
+        "sha256": "6878cba42b8ae77a18920fecc9ebc58165e98d91a72105ae04c408a804674444",
+        "size": 578612,
+        "source_path": "test/000006/good/point_clouds/point_00008.npy"
+      },
+      {
+        "role": "metadata",
+        "sha256": "50d97a604fd2399823632784e1284fb03d8d240508a6501f3256e6852ccf64cd",
+        "size": 15356,
+        "source_path": "test/000006/good/scene_camera.json"
+      },
+      {
+        "role": "metadata",
+        "sha256": "d88a0e949cbc83f58d2eee9167135f7546a4a6dca09b16ef947caaa66b01712d",
+        "size": 1142907,
+        "source_path": "test/000006/annotations.coco.json"
+      },
+      {
+        "role": "metadata",
+        "sha256": "7d0bc8953f4f4e615468939d12006b6b19c9e2c6fd8ae9b7ce97d9a700c15827",
+        "size": 64870,
+        "source_path": "test/000006/poses.json"
+      }
+    ],
+    "label": "good",
+    "sample_key": "ibadas:000006:good:00008",
+    "scene_id": "000006"
+  },
+  {
+    "assets": [
+      {
+        "role": "rgb",
+        "sha256": "8548030a84a978c1e272f5e90c5b3ed132d732c1ac4a2cd1fe4fa4062fac1ce7",
+        "size": 375620,
+        "source_path": "test/000001/anomaly/rgb/00018.png"
+      },
+      {
+        "role": "depth",
+        "sha256": "816dd8bcaed3f661e2c3a8574c612be2bc4da6f584e1755b758e1cc0f7e30741",
+        "size": 614528,
+        "source_path": "test/000001/anomaly/depth/00018.npy"
+      },
+      {
+        "role": "mask",
+        "sha256": "b2e9ff2c9ce20dc2d36844a7fadfc30f2f11eb53b971cb534b970fee9ac9e0ff",
+        "size": 2510,
+        "source_path": "test/000001/anomaly/mask_all/00018.png"
+      },
+      {
+        "role": "mask_visible",
+        "sha256": "10b62aa1693dbae642daa9c6d9ed6db3aa7d9f6efad467e51f8d8066e94c7596",
+        "size": 2381,
+        "source_path": "test/000001/anomaly/mask_visib/00018.png"
+      },
+      {
+        "role": "point_cloud",
+        "sha256": "74645add2d6a96a9a277b534cae7a33c8733f1ebc577f8b341cbbff13d51f37f",
+        "size": 526760,
+        "source_path": "test/000001/anomaly/point_clouds/point_00018.npy"
+      },
+      {
+        "role": "metadata",
+        "sha256": "5cb7f957733b99d220723842bc960094bc5f85cbfed38a6966ba777d1d76dc41",
+        "size": 65901,
+        "source_path": "test/000001/anomaly/scene_camera.json"
+      },
+      {
+        "role": "metadata",
+        "sha256": "2af9c3074de097852fc6535c7363332f3f79905859cefdfebb5b04bce63b11a2",
+        "size": 108219,
+        "source_path": "test/000001/anomaly/scene_info.json"
+      },
+      {
+        "role": "metadata",
+        "sha256": "1bada36e385bda31c8700498f2912253c52577d5d800189980a0067aa988fefb",
+        "size": 1799745,
+        "source_path": "test/000001/annotations.coco.json"
+      },
+      {
+        "role": "metadata",
+        "sha256": "dc3cadab2c7f10af21ed92c48c56dc6e152a656eb0f1bef2ff952d1d40fadbcb",
+        "size": 147738,
+        "source_path": "test/000001/poses.json"
+      }
+    ],
+    "label": "anomaly",
+    "sample_key": "ibadas:000001:anomaly:00018",
+    "scene_id": "000001"
+  },
+  {
+    "assets": [
+      {
+        "role": "rgb",
+        "sha256": "1f4d283288683a1dc73a95ef4f81854e40535b0da1bbddffc518ba912d60ef32",
+        "size": 1780787,
+        "source_path": "test/000002/anomaly/rgb/00006.png"
+      },
+      {
+        "role": "depth",
+        "sha256": "a4f3d4a3b8c2fd842f1f18d30d3d6d6a18a5694745ce05ca76dc078aefcbfbea",
+        "size": 5013632,
+        "source_path": "test/000002/anomaly/depth/00006.npy"
+      },
+      {
+        "role": "mask",
+        "sha256": "1f4d44b022bbf46e1bacdb39ab03d02ade4fc24794c65bcaf84c6a7fabdf51b4",
+        "size": 5005,
+        "source_path": "test/000002/anomaly/mask_all/00006.png"
+      },
+      {
+        "role": "mask_visible",
+        "sha256": "48427518fd03ae3aed7f4ef53e7d4bbce25f41f0f93c80d1bec6f9106b8043ca",
+        "size": 6414,
+        "source_path": "test/000002/anomaly/mask_visib/00006.png"
+      },
+      {
+        "role": "point_cloud",
+        "sha256": "cfa737265dce00ad05628a9c4503e5a0707fa472ed2b9a1d00b6fb839f78a5df",
+        "size": 578612,
+        "source_path": "test/000002/anomaly/point_clouds/point_00006.npy"
+      },
+      {
+        "role": "metadata",
+        "sha256": "e5321eee2421ef30a750f0442551f65f76f96551f7a8be3a20919b294e6c1201",
+        "size": 25600,
+        "source_path": "test/000002/anomaly/scene_camera.json"
+      },
+      {
+        "role": "metadata",
+        "sha256": "69a1e109936ae79f6bc9fb7f8f2a7d72c84bad9798def82215f88c2701b4de27",
+        "size": 38054,
+        "source_path": "test/000002/anomaly/scene_info.json"
+      },
+      {
+        "role": "metadata",
+        "sha256": "a092267832d5d92a48046388319440c226e86fd10e9b7a4a7a7dd3ec80564248",
+        "size": 1022213,
+        "source_path": "test/000002/annotations.coco.json"
+      },
+      {
+        "role": "metadata",
+        "sha256": "bd46023e465fbd8810ccda6351ed1fa5f41b327c777136645fa6d15f0beb8ef1",
+        "size": 73118,
+        "source_path": "test/000002/poses.json"
+      }
+    ],
+    "label": "anomaly",
+    "sample_key": "ibadas:000002:anomaly:00006",
+    "scene_id": "000002"
+  },
+  {
+    "assets": [
+      {
+        "role": "rgb",
+        "sha256": "71a7bcd9e1e0e421c2909461b844e7cea7985e74d184e1c9f6a7533ce21bafe8",
+        "size": 426449,
+        "source_path": "test/000003/anomaly/rgb/00068.png"
+      },
+      {
+        "role": "depth",
+        "sha256": "416db0a10ebf6404b8f81ca5c3ecd3b1873ade0e1ef0d3090a999d284ec657e6",
+        "size": 614528,
+        "source_path": "test/000003/anomaly/depth/00068.npy"
+      },
+      {
+        "role": "mask",
+        "sha256": "0086cc875a8dbcbc880776e94ad014e24d86b14f6614bb0c49ee9e665026aaa8",
+        "size": 3676,
+        "source_path": "test/000003/anomaly/mask_all/00068.png"
+      },
+      {
+        "role": "mask_visible",
+        "sha256": "711dc977bb663c0c7b3ef8316f8310f9cf297011e9b3cb645fa85a19dff7e322",
+        "size": 2622,
+        "source_path": "test/000003/anomaly/mask_visib/00068.png"
+      },
+      {
+        "role": "point_cloud",
+        "sha256": "4132347157872d33fe128ae84eb792646cd9624b6ff663d4c61ef23941721bdc",
+        "size": 526760,
+        "source_path": "test/000003/anomaly/point_clouds/point_00068.npy"
+      },
+      {
+        "role": "metadata",
+        "sha256": "1a8bd1ab489882d31d6adec05af52d87085215f6c9464688fb07b2a99174aa5c",
+        "size": 63534,
+        "source_path": "test/000003/anomaly/scene_camera.json"
+      },
+      {
+        "role": "metadata",
+        "sha256": "a2ac90f92074a3d0b98e917841f7ab3926534141fcdcc7e095cdecdb063a7591",
+        "size": 91022,
+        "source_path": "test/000003/anomaly/scene_info.json"
+      },
+      {
+        "role": "metadata",
+        "sha256": "29d6c8b70553d324027e32e1e8cebefdacc2a9d4aeafa3a8fbf15f9dd85de4b1",
+        "size": 2331030,
+        "source_path": "test/000003/annotations.coco.json"
+      },
+      {
+        "role": "metadata",
+        "sha256": "ffe471d3cd5fb19fd57c599c3f2e74b75975f9221ffc8b4716427ef43b241d9a",
+        "size": 140307,
+        "source_path": "test/000003/poses.json"
+      }
+    ],
+    "label": "anomaly",
+    "sample_key": "ibadas:000003:anomaly:00068",
+    "scene_id": "000003"
+  },
+  {
+    "assets": [
+      {
+        "role": "rgb",
+        "sha256": "81c683cd7ea2d9d88ce4ab49bbaf3086a74e346399d22d5886755370d626e5b1",
+        "size": 1798383,
+        "source_path": "test/000004/anomaly/rgb/00023.png"
+      },
+      {
+        "role": "depth",
+        "sha256": "84cc29151141e77a722a649875a92f4c62bbe3f861201cbd31ee27d184c9348f",
+        "size": 5013632,
+        "source_path": "test/000004/anomaly/depth/00023.npy"
+      },
+      {
+        "role": "mask",
+        "sha256": "455a6f35f8914d83fe737062c70fc5d9290084a7f4d6e1a3ed8c21063aba4a6b",
+        "size": 8036,
+        "source_path": "test/000004/anomaly/mask_all/00023.png"
+      },
+      {
+        "role": "mask_visible",
+        "sha256": "aeaf65f979ced996a347a78f1563a17797e11506f21e9e4b551fca6c7e1f147f",
+        "size": 6059,
+        "source_path": "test/000004/anomaly/mask_visib/00023.png"
+      },
+      {
+        "role": "point_cloud",
+        "sha256": "2ebfed6c8a1a49068d0ae3a41d1efd4b7cb3203e4493ac4349602645e41396fd",
+        "size": 578612,
+        "source_path": "test/000004/anomaly/point_clouds/point_00023.npy"
+      },
+      {
+        "role": "metadata",
+        "sha256": "50ebf198f2b1dd5012e3919ed88ee848d2643bdeee0833e6ef81e0982b7ea1d3",
+        "size": 23507,
+        "source_path": "test/000004/anomaly/scene_camera.json"
+      },
+      {
+        "role": "metadata",
+        "sha256": "c191216655153b87b4fefd00a02a05aa2cef29efe0ad88d1418d0d5267aa65af",
+        "size": 34822,
+        "source_path": "test/000004/anomaly/scene_info.json"
+      },
+      {
+        "role": "metadata",
+        "sha256": "bd9013b27fec64f8aab5cbd3871cb9881caee407a5c51cb9088c4b69c9d8293f",
+        "size": 1540767,
+        "source_path": "test/000004/annotations.coco.json"
+      },
+      {
+        "role": "metadata",
+        "sha256": "640c71b8f1fcd5c3284cb32ac10495fd5cc6e3c13a18031bc6b94a7f3b8ed1eb",
+        "size": 71333,
+        "source_path": "test/000004/poses.json"
+      }
+    ],
+    "label": "anomaly",
+    "sample_key": "ibadas:000004:anomaly:00023",
+    "scene_id": "000004"
+  },
+  {
+    "assets": [
+      {
+        "role": "rgb",
+        "sha256": "483023ab50415d203461bda4b319a4bff7c451e541bb16bafa245cef11d5d063",
+        "size": 444834,
+        "source_path": "test/000005/anomaly/rgb/00047.png"
+      },
+      {
+        "role": "depth",
+        "sha256": "84afc01488192a84640256d415d2445f6cc4a031de2d8160b5ff7248cbbeb44f",
+        "size": 614528,
+        "source_path": "test/000005/anomaly/depth/00047.npy"
+      },
+      {
+        "role": "mask",
+        "sha256": "4acebced79a5f32050dae5b552f666d2efe6c6f2c2db46260e0d791f4bf29396",
+        "size": 3015,
+        "source_path": "test/000005/anomaly/mask_all/00047.png"
+      },
+      {
+        "role": "mask_visible",
+        "sha256": "ca685f6d8302c7169acf80f3246877b09433cb4a4ab97ba4f2e42c4f7ee74035",
+        "size": 2829,
+        "source_path": "test/000005/anomaly/mask_visib/00047.png"
+      },
+      {
+        "role": "point_cloud",
+        "sha256": "844afeee773aafd7f96c951bd0a2c7e0d4d6771887a89060e97d5428cb961b3b",
+        "size": 526760,
+        "source_path": "test/000005/anomaly/point_clouds/point_00047.npy"
+      },
+      {
+        "role": "metadata",
+        "sha256": "6de384fbd2350873f951a83bf730e07a395990378975d6326958e9701a8fe42a",
+        "size": 43544,
+        "source_path": "test/000005/anomaly/scene_camera.json"
+      },
+      {
+        "role": "metadata",
+        "sha256": "87cece97bbd28c2498c033148d9a05fd06aeef0dd6940e96b45f15df5985e53a",
+        "size": 61925,
+        "source_path": "test/000005/anomaly/scene_info.json"
+      },
+      {
+        "role": "metadata",
+        "sha256": "0556f0685a41ed77a87909f294a71c5c1679f115c1d93e539019f78b51e85054",
+        "size": 1552162,
+        "source_path": "test/000005/annotations.coco.json"
+      },
+      {
+        "role": "metadata",
+        "sha256": "f03670409cd6ed9e3c2fac7d1d23f26fe7f0cc317379f5bb9bc757765f259756",
+        "size": 107262,
+        "source_path": "test/000005/poses.json"
+      }
+    ],
+    "label": "anomaly",
+    "sample_key": "ibadas:000005:anomaly:00047",
+    "scene_id": "000005"
+  },
+  {
+    "assets": [
+      {
+        "role": "rgb",
+        "sha256": "a68548e8d84782b821f31af285e98b25c62b2e836582631b3ae7cc801d9ea7f6",
+        "size": 1923135,
+        "source_path": "test/000006/anomaly/rgb/00010.png"
+      },
+      {
+        "role": "depth",
+        "sha256": "e9a8365a25a52f10d1cb17ecba1cb802677245b582801e2bdb9bddfc195c72ab",
+        "size": 5013632,
+        "source_path": "test/000006/anomaly/depth/00010.npy"
+      },
+      {
+        "role": "mask",
+        "sha256": "59e7623bd05c320fa6529ed9cf876f68d5caa0503ca4dbe7d95924fd9403d0bf",
+        "size": 7151,
+        "source_path": "test/000006/anomaly/mask_all/00010.png"
+      },
+      {
+        "role": "mask_visible",
+        "sha256": "ded97f16396ee8394c9ffe6f1098207433427edef769536eb479ddd6f623faa1",
+        "size": 6808,
+        "source_path": "test/000006/anomaly/mask_visib/00010.png"
+      },
+      {
+        "role": "point_cloud",
+        "sha256": "e85741b5c880f1a4198c6168cbbf825bd3baad169a0bb9376cda10b15a31b9e4",
+        "size": 578612,
+        "source_path": "test/000006/anomaly/point_clouds/point_00010.npy"
+      },
+      {
+        "role": "metadata",
+        "sha256": "f108b1b2f6aab4aebee1495d5846168e551c96b4997f153514a3673f4349b562",
+        "size": 17363,
+        "source_path": "test/000006/anomaly/scene_camera.json"
+      },
+      {
+        "role": "metadata",
+        "sha256": "e2529f04a286093e2e986dbb5d9a294b1bc849788bdbccece3edef01b6b07d1e",
+        "size": 25475,
+        "source_path": "test/000006/anomaly/scene_info.json"
+      },
+      {
+        "role": "metadata",
+        "sha256": "d88a0e949cbc83f58d2eee9167135f7546a4a6dca09b16ef947caaa66b01712d",
+        "size": 1142907,
+        "source_path": "test/000006/annotations.coco.json"
+      },
+      {
+        "role": "metadata",
+        "sha256": "7d0bc8953f4f4e615468939d12006b6b19c9e2c6fd8ae9b7ce97d9a700c15827",
+        "size": 64870,
+        "source_path": "test/000006/poses.json"
+      }
+    ],
+    "label": "anomaly",
+    "sample_key": "ibadas:000006:anomaly:00010",
+    "scene_id": "000006"
+  }
+]

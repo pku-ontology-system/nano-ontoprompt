@@ -1,7 +1,7 @@
 """Durable What-if scenarios, immutable revisions and typed edits."""
 from datetime import datetime, timezone
 from uuid import uuid4
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, event
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, event, text
 from sqlalchemy.orm import Mapped, mapped_column
 from app.database import Base
 
@@ -22,10 +22,16 @@ class ScenarioResource(Base):
     head_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     etag: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     ttl_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    expired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     mode: Mapped[str] = mapped_column(String(20), nullable=False, default='pinned', server_default='pinned')
     last_rebased_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     rebase_error: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     protected_demo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Lineage identifiers are retained as provenance even if the source
+    # Scenario/checkpoint is later removed by its retention lifecycle.
+    parent_scenario_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    parent_checkpoint_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     __table_args__ = (CheckConstraint("status IN ('active','archived')", name="ck_scenario_status"),)
@@ -49,6 +55,28 @@ class ScenarioRevision(Base):
                       CheckConstraint("status IN ('building','ready','failed','cancelled')", name="ck_scenario_revision_status"))
 
 
+class ScenarioCheckpoint(Base):
+    """Named immutable pin to a ready Scenario revision and graph snapshot."""
+
+    __tablename__ = "v2_scenario_checkpoints"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    scenario_id: Mapped[str] = mapped_column(String(36), ForeignKey("v2_scenarios.id", ondelete="CASCADE"), nullable=False, index=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    result_view_id: Mapped[str] = mapped_column(String(64), ForeignKey("v2_query_data_views.id"), nullable=False)
+    content_digest: Mapped[str] = mapped_column(String(128), nullable=False)
+    label: Mapped[str] = mapped_column(String(200), nullable=False)
+    client_request_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_digest: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_etag: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_by: Mapped[str] = mapped_column(String, ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    __table_args__ = (
+        UniqueConstraint("scenario_id", "client_request_id", name="uq_v2_scenario_checkpoint_request"),
+        Index("ix_v2_scenario_checkpoints_scenario_created", "scenario_id", "created_at"),
+        CheckConstraint("revision >= 0", name="ck_v2_scenario_checkpoint_revision"),
+    )
+
+
 class ScenarioChangeSet(Base):
     __tablename__ = "v2_scenario_changesets"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
@@ -59,9 +87,13 @@ class ScenarioChangeSet(Base):
     client_request_id: Mapped[str] = mapped_column(String(200), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="validated")
     validation_report: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    actor_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), nullable=False)
+    actor_kind: Mapped[str] = mapped_column(String(16), nullable=False, default="user", server_default="user")
+    actor_id: Mapped[str | None] = mapped_column(String, ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
-    __table_args__ = (UniqueConstraint("scenario_id", "client_request_id", name="uq_scenario_request"),)
+    __table_args__ = (
+        UniqueConstraint("scenario_id", "client_request_id", name="uq_scenario_request"),
+        CheckConstraint("actor_kind IN ('user','system')", name="ck_v2_scenario_changeset_actor_kind"),
+    )
 
 
 class ScenarioRun(Base):
@@ -209,11 +241,64 @@ class ScenarioAudit(Base):
     scenario_id: Mapped[str] = mapped_column(String(36), ForeignKey("v2_scenarios.id", ondelete="CASCADE"), nullable=False, index=True)
     revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
     run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    actor_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), nullable=False)
+    actor_kind: Mapped[str] = mapped_column(String(16), nullable=False, default="user", server_default="user")
+    actor_id: Mapped[str | None] = mapped_column(String, ForeignKey("users.id"), nullable=True)
     operation: Mapped[str] = mapped_column(String(60), nullable=False)
     summary: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     request_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+    __table_args__ = (
+        CheckConstraint("actor_kind IN ('user','system')", name="ck_v2_scenario_audit_actor_kind"),
+        Index(
+            "uq_v2_scenario_merge_request",
+            "scenario_id", "request_id", unique=True,
+            postgresql_where=text("operation = 'merge' AND request_id IS NOT NULL"),
+            sqlite_where=text("operation = 'merge' AND request_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_v2_scenario_merge_reconcile_request",
+            "scenario_id", "request_id", unique=True,
+            postgresql_where=text("operation = 'merge_reconcile' AND request_id IS NOT NULL"),
+            sqlite_where=text("operation = 'merge_reconcile' AND request_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_v2_scenario_restore_request",
+            "scenario_id", "request_id", unique=True,
+            postgresql_where=text("operation = 'restore_checkpoint' AND request_id IS NOT NULL"),
+            sqlite_where=text("operation = 'restore_checkpoint' AND request_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_v2_scenario_branch_request",
+            "scenario_id", "request_id", unique=True,
+            postgresql_where=text("operation = 'branch' AND request_id IS NOT NULL"),
+            sqlite_where=text("operation = 'branch' AND request_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_v2_scenario_rebase_resolution_request",
+            "scenario_id", "request_id", unique=True,
+            postgresql_where=text("operation = 'resolve_rebase_conflicts' AND request_id IS NOT NULL"),
+            sqlite_where=text("operation = 'resolve_rebase_conflicts' AND request_id IS NOT NULL"),
+        ),
+    )
+
+
+class ScenarioRetentionEvent(Base):
+    """System-owned retention lifecycle events, separate from user actions."""
+
+    __tablename__ = "v2_scenario_retention_events"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    scenario_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("v2_scenarios.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    event_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    details: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    __table_args__ = (
+        UniqueConstraint("scenario_id", "event_type", name="uq_v2_scenario_retention_event"),
+        CheckConstraint("event_type IN ('expired')", name="ck_v2_scenario_retention_event_type"),
+    )
 
 
 @event.listens_for(ScenarioRevision, "before_update")

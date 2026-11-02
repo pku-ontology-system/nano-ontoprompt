@@ -4,7 +4,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, JSON, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -15,6 +15,7 @@ class MultimodalInstallTask(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     source_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    created_by: Mapped[str | None] = mapped_column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="queued")
     progress: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     dataset_id: Mapped[str | None] = mapped_column(String, nullable=True)

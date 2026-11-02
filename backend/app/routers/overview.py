@@ -22,7 +22,10 @@ def get_stats(db: Session = Depends(get_db), _=Depends(get_current_user)):
     recent = db.query(OntologyProject).order_by(OntologyProject.updated_at.desc()).limit(6).all()
     recent_list = []
     for o in recent:
-        entity_count = db.query(Entity).filter(Entity.ontology_id == o.id).count()
+        entity_count = db.query(Entity).filter(
+            Entity.ontology_id == o.id,
+            Entity.is_source_deleted.is_(False),
+        ).count()
         logic_count = db.query(LogicRule).filter(LogicRule.ontology_id == o.id).count()
         action_count = db.query(Action).filter(Action.ontology_id == o.id).count()
         recent_list.append({

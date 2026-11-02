@@ -1,6 +1,7 @@
 """增量更新编排器端到端流程测试（全 Mock）"""
 import pytest
 from unittest.mock import MagicMock, patch, call
+from types import SimpleNamespace
 from app.services.v2.incremental.orchestrator import IncrementalOrchestrator
 from app.models.v2.pipeline import Pipeline, PipelineRun
 from app.models.v2.curated import CuratedDataset, CuratedReview
@@ -27,8 +28,10 @@ def make_curated_ds(ds_id="curated-1", status="approved"):
     return CuratedDataset(id=ds_id, name="test_curated", status=status, pipeline_id="pl-1")
 
 
-def make_review(review_id="rev-1", ds_id="curated-1", status="approved"):
-    return CuratedReview(id=review_id, curated_dataset_id=ds_id, status=status)
+def make_review(review_id="rev-1", ds_id="curated-1", status="approved",
+                dataset_version_id="version-1"):
+    return CuratedReview(id=review_id, curated_dataset_id=ds_id, status=status,
+                         dataset_version_id=dataset_version_id)
 
 
 def make_mapping(mapping_id="map-1", ds_id="curated-1", auto_apply=True):
@@ -140,11 +143,47 @@ def test_on_review_approved_triggers_mapping():
     db.query.side_effect = query_side
 
     orch = IncrementalOrchestrator(db)
-    with patch.object(orch, '_trigger_mapping_apply', return_value="task-1") as mock_trigger:
+    run_result = {
+        "run_id": "mapping-run-1",
+        "celery_task_id": "task-1",
+        "status": "queued",
+        "deduplicated": False,
+    }
+    run_service = MagicMock()
+    run_service.dispatch.return_value = run_result
+    run = SimpleNamespace(id="mapping-run-1", status="pending")
+    with patch.object(orch, "_enqueue_mapping_apply", return_value=(run_service, run, True)) as mock_enqueue:
         result = orch.on_review_approved("rev-1")
 
     assert len(result["triggered_mappings"]) == 1
-    mock_trigger.assert_called_once_with("map-1", "ont-1")
+    assert result["triggered_mappings"][0]["run_id"] == "mapping-run-1"
+    mock_enqueue.assert_called_once_with("map-1", "ont-1", "curated-1", "version-1", "rev-1")
+    run_service.dispatch.assert_called_once_with("mapping-run-1")
+    db.commit.assert_called_once()
+
+
+def test_on_review_approved_skips_without_pinned_version():
+    db = MagicMock()
+    review = make_review(dataset_version_id=None)
+    mapping = make_mapping(auto_apply=True)
+
+    def query_side(model):
+        q = MagicMock()
+        if model == CuratedReview:
+            q.filter.return_value.first.return_value = review
+        elif model == OntologyMapping:
+            q.filter.return_value.filter.return_value.all.return_value = [mapping]
+        return q
+
+    db.query.side_effect = query_side
+    orch = IncrementalOrchestrator(db)
+    with patch.object(orch, "_enqueue_mapping_apply") as mock_trigger:
+        result = orch.on_review_approved("rev-1")
+
+    assert result["status"] == "skipped"
+    assert result["triggered_mappings"] == []
+    mock_trigger.assert_not_called()
+    db.commit.assert_called_once()
 
 
 def test_on_review_approved_no_auto_apply():
@@ -227,6 +266,14 @@ def test_full_incremental_chain():
 
     # Step 3: 审核通过 → Mapping 自动触发
     review.status = "approved"  # 重新设为 approved
-    with patch.object(orch, '_trigger_mapping_apply', return_value="task-1"):
+    run_service = MagicMock()
+    run_service.dispatch.return_value = {
+        "run_id": "mapping-run-1",
+        "celery_task_id": "task-1",
+        "status": "queued",
+        "deduplicated": False,
+    }
+    run = SimpleNamespace(id="mapping-run-1", status="pending")
+    with patch.object(orch, "_enqueue_mapping_apply", return_value=(run_service, run, True)):
         approve_result = orch.on_review_approved("rev-1")
     assert len(approve_result["triggered_mappings"]) == 1

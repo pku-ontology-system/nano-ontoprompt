@@ -168,7 +168,11 @@ def _current_revision(db: Session, ontology_id: str) -> OntologyRevision | None:
 
 
 def _find_entity(db: Session, ontology_id: str, entity_id: str | None) -> Entity:
-    row = db.query(Entity).filter(Entity.ontology_id == ontology_id, Entity.id == str(entity_id or "")).first()
+    row = db.query(Entity).filter(
+        Entity.ontology_id == ontology_id,
+        Entity.id == str(entity_id or ""),
+        Entity.is_source_deleted.is_(False),
+    ).first()
     if not row:
         raise OntologyEditError("NOT_FOUND", f"实体类型不存在：{entity_id or '空'}")
     return row
@@ -204,7 +208,10 @@ def _walk_dicts(value: Any):
 
 def _validate_rule(db: Session, ontology_id: str, payload: dict[str, Any]) -> None:
     linked = [str(item) for item in (payload.get("linked_entities") or [])]
-    entity_ids = {row.id for row in db.query(Entity).filter(Entity.ontology_id == ontology_id).all()}
+    entity_ids = {row.id for row in db.query(Entity).filter(
+        Entity.ontology_id == ontology_id,
+        Entity.is_source_deleted.is_(False),
+    ).all()}
     for entity_id in linked:
         if entity_id not in entity_ids:
             raise OntologyEditError("INVALID_RULE_REFERENCE", f"规则引用的实体类型不存在：{entity_id}")
@@ -231,7 +238,10 @@ def _validate_rule(db: Session, ontology_id: str, payload: dict[str, Any]) -> No
 
 
 def validate_schema(db: Session, ontology_id: str) -> dict[str, Any]:
-    entities = db.query(Entity).filter(Entity.ontology_id == ontology_id).all()
+    entities = db.query(Entity).filter(
+        Entity.ontology_id == ontology_id,
+        Entity.is_source_deleted.is_(False),
+    ).all()
     entity_ids = {row.id for row in entities}
     relations = db.query(Relation).filter(Relation.ontology_id == ontology_id).all()
     invalid_relations = []
@@ -272,7 +282,11 @@ def impact_for_change(db: Session, ontology_id: str, body: dict[str, Any]) -> di
         return {"target_kind": kind, "operation": operation, "blockers": [], "warnings": [], "can_apply": True}
     if kind == "entity_type":
         entity = _find_entity(db, ontology_id, target_id)
-        count = db.query(EntityInstance).filter(EntityInstance.ontology_id == ontology_id, EntityInstance.entity_id == entity.id).count()
+        count = db.query(EntityInstance).filter(
+            EntityInstance.ontology_id == ontology_id,
+            EntityInstance.entity_id == entity.id,
+            EntityInstance.is_deleted.is_(False),
+        ).count()
         if count:
             blockers.append({"kind": "instances", "count": count, "message": f"仍有 {count} 个真实实例"})
         relation_count = db.query(Relation).filter(Relation.ontology_id == ontology_id, (Relation.source_entity == entity.id) | (Relation.target_entity == entity.id)).count()
@@ -299,7 +313,11 @@ def impact_for_change(db: Session, ontology_id: str, body: dict[str, Any]) -> di
         if not prop:
             raise OntologyEditError("NOT_FOUND", f"属性不存在：{target_id}")
         count = 0
-        for row in db.query(EntityInstance).filter(EntityInstance.ontology_id == ontology_id, EntityInstance.entity_id == entity.id).all():
+        for row in db.query(EntityInstance).filter(
+            EntityInstance.ontology_id == ontology_id,
+            EntityInstance.entity_id == entity.id,
+            EntityInstance.is_deleted.is_(False),
+        ).all():
             if isinstance(row.row_data, dict) and target_id in row.row_data and row.row_data.get(target_id) not in (None, ""):
                 count += 1
         if count:
@@ -363,7 +381,11 @@ def _apply_one(db: Session, ontology_id: str, kind: str, operation: str, target_
     if kind == "entity_type":
         if operation == "add":
             entity_id = _ensure_safe_id(payload.get("canonical_id") or payload.get("id") or f"entity_{uuid.uuid4().hex[:10]}", "实体类型标识")
-            if db.query(Entity).filter(Entity.ontology_id == ontology_id, (Entity.id == entity_id) | (Entity.canonical_id == entity_id)).first():
+            if db.query(Entity).filter(
+                Entity.ontology_id == ontology_id,
+                Entity.is_source_deleted.is_(False),
+                (Entity.id == entity_id) | (Entity.canonical_id == entity_id),
+            ).first():
                 raise OntologyEditError("DUPLICATE_ID", f"实体类型标识已存在：{entity_id}")
             entity = Entity(id=entity_id, ontology_id=ontology_id, name_cn=str(payload.get("name_cn") or payload.get("name") or entity_id), name_en=payload.get("name_en"), canonical_id=entity_id, type=payload.get("type") or "Entity", description=payload.get("description"), properties={"property_definitions": payload.get("properties") or payload.get("property_definitions") or []}, confidence=float(payload.get("confidence") or 1.0))
             db.add(entity); db.flush()
@@ -741,7 +763,10 @@ def editor_payload(db: Session, ontology_id: str) -> dict[str, Any]:
     project = db.query(OntologyProject).filter(OntologyProject.id == ontology_id).first()
     if not project:
         raise OntologyEditError("NOT_FOUND", "本体不存在")
-    entities = db.query(Entity).filter(Entity.ontology_id == ontology_id).order_by(Entity.name_cn.asc()).all()
+    entities = db.query(Entity).filter(
+        Entity.ontology_id == ontology_id,
+        Entity.is_source_deleted.is_(False),
+    ).order_by(Entity.name_cn.asc()).all()
     relations = db.query(Relation).filter(Relation.ontology_id == ontology_id).order_by(Relation.type.asc()).all()
     rules = db.query(LogicRule).filter(LogicRule.ontology_id == ontology_id).order_by(LogicRule.name_cn.asc()).all()
     revision = _current_revision(db, ontology_id)

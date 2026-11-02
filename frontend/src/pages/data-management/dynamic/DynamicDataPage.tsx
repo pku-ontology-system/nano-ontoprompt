@@ -17,6 +17,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { apiClientV2, formatApiError } from "@/api/client";
+import { DecisionCasePanel } from "@/pages/decision-lab/DecisionCasePanel";
 import {
   compactRelationshipLabel,
   curveClassName,
@@ -87,6 +88,13 @@ type Readiness = {
   ontology_name?: string | null;
   ontology_id?: string | null;
   horizon_known?: boolean;
+};
+
+type DynamicIncident = {
+  object_id: string;
+  object_type: string;
+  etag: string;
+  properties: Record<string, unknown>;
 };
 
 const formatValue = (value: unknown) =>
@@ -286,6 +294,9 @@ export default function DynamicDataPage() {
   const [graph, setGraph] = useState<Graph | null>(null);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
   const [selectedEdge, setSelectedEdge] = useState<GraphEdge | null>(null);
+  const [incidents, setIncidents] = useState<DynamicIncident[]>([]);
+  const [incidentError, setIncidentError] = useState("");
+  const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(params.get("incident_id"));
   const [showHistory, setShowHistory] = useState(false);
   const [historyAt, setHistoryAt] = useState<number | null>(null);
   const [historyMode, setHistoryMode] = useState<"valid" | "all">("valid");
@@ -293,6 +304,22 @@ export default function DynamicDataPage() {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const loadRequestRef = useRef(0);
+  const incidentCursorRef = useRef("");
+
+  useEffect(() => {
+    incidentCursorRef.current = "";
+    setIncidents([]);
+    setIncidentError("");
+    setSelectedIncidentId(params.get("incident_id"));
+  }, [runId]);
+
+  useEffect(() => {
+    const incident = incidents.find(item => item.object_id === selectedIncidentId);
+    if (incident) {
+      setShowHistory(true);
+      setHistoryAt(Number(incident.properties.ordinal));
+    }
+  }, [incidents, selectedIncidentId]);
 
   const loadReadiness = useCallback(async () => {
     try {
@@ -331,6 +358,18 @@ export default function DynamicDataPage() {
     try {
       const current = await apiClientV2.get<Run>(`/temporal-streams/${runId}`);
       const currentGraph = await loadGraph(current);
+      const cursor = `${runId}:${current.committed_events ?? 0}`;
+      let currentIncidents: DynamicIncident[] | null = null;
+      let incidentFailure = "";
+      if (cursor !== incidentCursorRef.current) {
+        try {
+          const result = await apiClientV2.get<{ incidents: DynamicIncident[] }>(
+            `/temporal-streams/${runId}/incidents`, { params: { limit: 50 } });
+          currentIncidents = result.incidents;
+        } catch (reason) {
+          incidentFailure = errorText(reason);
+        }
+      }
       // Polling and SSE can overlap while the graph is being paged.  Ignore a
       // slower response that was started before a newer one, otherwise a
       // paused run can briefly render an older layout and appear to change.
@@ -339,6 +378,9 @@ export default function DynamicDataPage() {
       setSpeed(Number(current.speed || 1));
       if (historyAt === null && current.current_ordinal !== null && current.current_ordinal !== undefined) setHistoryAt(Number(current.current_ordinal));
       setGraph(currentGraph);
+      if (currentIncidents) { setIncidents(currentIncidents); incidentCursorRef.current = cursor; }
+      if (incidentFailure) setIncidents([]);
+      setIncidentError(incidentFailure);
       setError("");
     } catch (reason) {
       setError(errorText(reason));
@@ -466,12 +508,16 @@ export default function DynamicDataPage() {
     setGraph(null);
     setSelectedNode(null);
     setSelectedEdge(null);
+    setIncidents([]);
+    setSelectedIncidentId(null);
+    incidentCursorRef.current = "";
     setShowHistory(false);
     setHistoryAt(null);
     setParams(next);
   };
 
   const latestPayload = run?.latest_event?.payload || {};
+  const selectedIncident = incidents.find(item => item.object_id === selectedIncidentId) ?? null;
   const stateRows = useMemo(
     () => Object.entries((run?.state?.episodes || {})[run?.episode_ids?.[0] || ""] || {}).filter(([key]) => !key.endsWith("previous_fact_id")),
     [run],
@@ -567,6 +613,12 @@ export default function DynamicDataPage() {
           {selectedNode && <section className="wb-surface p-4"><h2 className="text-sm font-medium">选中实例</h2><p className="mt-2 break-all font-mono text-[10px] text-slate-500">{selectedNode.id}</p><p className="mt-1 text-[11px] text-slate-600">类型：{selectedNode.entity_type || "—"}</p><div className="mt-2"><KeyValueTable values={selectedNode.properties || {}} /></div></section>}
           {selectedEdge && <section className="wb-surface p-4"><h2 className="text-sm font-medium">关系检查器</h2><div className="mt-3 space-y-1 text-[11px] text-slate-600"><p>关系：{selectedEdge.type || selectedEdge.label || "—"}</p><p>起点：{selectedEdge.source}</p><p>终点：{selectedEdge.target}</p><p>有效区间：{formatValue(selectedEdge.properties?.valid_from_ordinal)} → {formatValue(selectedEdge.properties?.valid_to_ordinal)}</p><p>来源事件：{formatValue(selectedEdge.properties?.source_event_id)}</p><p>EvidenceRef：{formatValue(selectedEdge.properties?.evidence_ref_id)}</p></div></section>}
         </aside>
+      </section>
+
+      <section className="wb-surface p-5"><div className="flex flex-wrap items-start justify-between gap-2"><div><p className="wb-eyebrow">逐事件处置</p><h2 className="mt-1 text-sm font-semibold">规则触发与人工决定</h2><p className="mt-1 text-xs text-slate-600">速度反馈与设定值的绝对偏差达到 0.5 时生成待确认事项。阈值越界仅表示需核对，不代表真实设备故障。</p></div><span className="rounded bg-slate-100 px-2 py-1 font-mono text-[10px]">factorynet_velocity_residual_v1</span></div>
+        {incidentError && <p role="alert" className="mt-3 rounded border border-red-200 bg-red-50 p-2 text-xs text-red-700">处置事项暂不可读：{incidentError}</p>}
+        <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]"><div className="max-h-[460px] space-y-2 overflow-y-auto">{incidents.map(item => <button type="button" key={item.object_id} onClick={() => { setSelectedIncidentId(item.object_id); setShowHistory(true); setHistoryAt(Number(item.properties.ordinal)); }} className={`w-full rounded-lg border p-3 text-left text-xs ${selectedIncidentId === item.object_id ? 'border-[var(--pku-red)] bg-rose-50/50' : 'border-slate-200 hover:border-slate-400'}`}><div className="flex items-center justify-between gap-2"><strong>Ordinal {formatValue(item.properties.ordinal)} · {formatValue(item.properties.episode_id)}</strong><span className="text-amber-700">{formatValue(item.properties.disposition_status)}</span></div><p className="mt-1 break-all font-mono text-[10px] text-slate-500">{formatValue(item.properties.event_key)}</p><p className="mt-2 text-slate-600">偏差 {formatValue(item.properties.residual)} · 来源行 {formatValue(item.properties.source_row_id)}</p></button>)}{!incidents.length && !incidentError && <p className="rounded-lg border border-dashed p-4 text-xs text-slate-500">已到达事件中暂未出现达到阈值的观测。</p>}</div>
+          <div>{selectedIncident && run.ontology_id && typeof selectedIncident.properties.evidence_ref_id === 'string' ? <><div className="rounded-lg border bg-slate-50 p-3 text-xs"><p className="font-medium">来源事件与规则输入</p><p className="mt-2 break-all font-mono text-[10px]">{formatValue(selectedIncident.properties.event_key)}</p><p className="mt-1">Run {formatValue(selectedIncident.properties.run_id)} · episode {formatValue(selectedIncident.properties.episode_id)}</p><p className="mt-1">反馈速度 {formatValue(selectedIncident.properties.feedback_vel_0)} · 设定速度 {formatValue(selectedIncident.properties.setpoint_vel_0)}</p><p className="mt-1">事件时间 {formatValue(selectedIncident.properties.event_time)} · 入库时间 {formatValue(selectedIncident.properties.ingestion_time)}</p><p className="mt-1">来源游标 {formatValue(selectedIncident.properties.source_cursor)} · 来源行 {formatValue(selectedIncident.properties.source_row_id)}</p></div><DecisionCasePanel key={selectedIncident.object_id} domain="dynamic" ontologyId={run.ontology_id} objectId={selectedIncident.object_id} evidenceRefId={selectedIncident.properties.evidence_ref_id} context={{ source: 'temporal_stream', run_id: run.id, episode_id: selectedIncident.properties.episode_id, event_key: selectedIncident.properties.event_key }} /></> : <p className="rounded-lg border border-dashed p-4 text-xs text-slate-500">选择一条已到达的规则触发事件，查看证据并发起处置。</p>}</div></div>
       </section>
 
       <section className="wb-surface overflow-hidden">

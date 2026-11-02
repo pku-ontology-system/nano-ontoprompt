@@ -57,6 +57,8 @@ nano-ontoprompt-requirements.md
 prompt-harness-rules-for-coding-agent.md
 docs/*
 !docs/README.md
+!docs/PROJECT4_NEXT_STAGE_PRODUCT_REQUIREMENTS.md
+!docs/PROJECT4_PALANTIR_GAP_AND_CLOSED_LOOP_PRD.md
 !docs/showcase/
 !docs/showcase/**
 !docs/adr/

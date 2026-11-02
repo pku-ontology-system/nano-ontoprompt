@@ -22,7 +22,14 @@ class CuratedReview(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     curated_dataset_id: Mapped[str] = mapped_column(String, ForeignKey("v2_curated_datasets.id", ondelete="CASCADE"), nullable=False)
+    requested_by: Mapped[str | None] = mapped_column(String, ForeignKey("users.id"), nullable=True)
     reviewer_id: Mapped[str | None] = mapped_column(String, ForeignKey("users.id"), nullable=True)
+    decided_by: Mapped[str | None] = mapped_column(String, ForeignKey("users.id"), nullable=True)
+    # Pin the exact immutable source snapshot reviewed. Mapping apply must use
+    # this version even if a newer dataset version arrives before approval.
+    dataset_version_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("v2_dataset_versions.id", ondelete="RESTRICT"), nullable=True, index=True,
+    )
     status: Mapped[str] = mapped_column(String(20), default="pending")  # pending|approved|rejected|partial
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -33,6 +40,7 @@ class CuratedRowEdit(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     review_id: Mapped[str] = mapped_column(String, ForeignKey("v2_curated_reviews.id", ondelete="CASCADE"), nullable=False)
+    edited_by: Mapped[str | None] = mapped_column(String, ForeignKey("users.id"), nullable=True, index=True)
     row_pk: Mapped[str] = mapped_column(String(200), nullable=False)
     field_name: Mapped[str] = mapped_column(String(200), nullable=False)
     old_value: Mapped[str | None] = mapped_column(Text, nullable=True)

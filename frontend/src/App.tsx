@@ -31,11 +31,13 @@ const WorkshopListPage = React.lazy(() => import("@/pages/workshop/WorkshopListP
 const QueryLibraryPage = React.lazy(() => import("@/pages/queries/QueryLibraryPage"));
 const WorkshopAppPage = React.lazy(() => import("@/pages/workshop/WorkshopAppPage"));
 const WorkshopEditor = React.lazy(() => import("@/pages/workshop/WorkshopEditor"));
+const DecisionLabPage = React.lazy(() => import("@/pages/decision-lab/DecisionLabPage"));
 const GenericScenarioWorkbenchPage = React.lazy(() => import("@/pages/what-if/GenericScenarioWorkbenchPage"));
 const ScenarioCatalogPage = React.lazy(() => import("@/pages/what-if/GenericScenarioWorkbenchPage").then(module => ({ default: module.ScenarioCatalogPage })));
 const ScenarioStudiesPage = React.lazy(() => import("@/pages/what-if/ScenarioStudiesPage"));
 const ComponentSpikesPage = React.lazy(() => import("@/pages/component-spikes/ComponentSpikesPage"));
 const OntologyDetailPage = React.lazy(() => import("@/pages/ontologies/detail/OntologyDetailPage"));
+const ObjectFullViewPage = React.lazy(() => import("@/pages/ontologies/detail/object-explorer/ObjectFullViewPage"));
 
 class AppErrorBoundary extends React.Component<
   { children: React.ReactNode },
@@ -271,8 +273,16 @@ export default function App() {
               }
             />
             <Route
+              path="/ontologies/:id/object"
+              element={<ProtectedRoute><ObjectFullViewPage /></ProtectedRoute>}
+            />
+            <Route
               path="/what-if"
               element={<Navigate to="/scenario-studies" replace />}
+            />
+            <Route
+              path="/decision-lab"
+              element={<ProtectedRoute><DecisionLabPage /></ProtectedRoute>}
             />
             <Route
               path="/scenarios"

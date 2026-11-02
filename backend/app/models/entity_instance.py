@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import String, DateTime, ForeignKey, JSON, event, text
+from sqlalchemy import String, DateTime, ForeignKey, JSON, Boolean, event, text
 from sqlalchemy.orm import Mapped, mapped_column
 from app.database import Base
 
@@ -19,6 +19,12 @@ class EntityInstance(Base):
     # on a mutable Entity row.
     object_type_resource_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     source_version: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    source_mapping_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("v2_ontology_mappings.id", ondelete="RESTRICT"),
+        nullable=True, index=True,
+    )
+    is_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 

@@ -14,6 +14,7 @@ export type TemporalSourcePayload = {
       entity_type: string;
       entity_key_field?: string;
       properties: Record<string, string>;
+      links?: Array<{ source_field: string; link_type_id: string }>;
     };
   };
 };
@@ -35,6 +36,7 @@ export default function TemporalSourceForm({
   const [timeKind, setTimeKind] = useState<"ordinal" | "event_time">("event_time");
   const [timeColumn, setTimeColumn] = useState("event_time");
   const [properties, setProperties] = useState('{"temperature":"temperature"}');
+  const [links, setLinks] = useState("[]");
   const [error, setError] = useState("");
 
   const submit = async (event: FormEvent) => {
@@ -51,6 +53,17 @@ export default function TemporalSourceForm({
       setError("至少声明一个源字段到本体属性的映射。");
       return;
     }
+    let parsedLinks: unknown;
+    try {
+      parsedLinks = JSON.parse(links);
+    } catch {
+      setError("关系映射必须是 JSON 列表，例如 [{\"source_field\":\"parent_id\",\"link_type_id\":\"固定关系资源 ID\"}]。");
+      return;
+    }
+    if (!Array.isArray(parsedLinks) || parsedLinks.some((item) => !item || typeof item !== "object" || Array.isArray(item) || typeof (item as Record<string, unknown>).source_field !== "string" || !(item as Record<string, string>).source_field.trim() || typeof (item as Record<string, unknown>).link_type_id !== "string" || !(item as Record<string, string>).link_type_id.trim())) {
+      setError("关系映射必须是由 source_field 和 link_type_id 组成的 JSON 列表；没有关系时保留 []。");
+      return;
+    }
     await onCreate({
       source_id: sourceId.trim(),
       source_mode: mode,
@@ -65,6 +78,7 @@ export default function TemporalSourceForm({
           entity_type: entityType.trim(),
           entity_key_field: mode === "file_replay" ? entityKeyField.trim() : undefined,
           properties: parsed as Record<string, string>,
+          links: parsedLinks as Array<{ source_field: string; link_type_id: string }>,
         },
       },
     });
@@ -87,6 +101,8 @@ export default function TemporalSourceForm({
       <label className="grid gap-1 text-xs text-slate-600">时间字段<input required className={input} value={timeColumn} onChange={(event) => setTimeColumn(event.target.value)} /></label>
       <label className="grid gap-1 text-xs text-slate-600">分组字段<input required className={input} value={entityColumn} onChange={(event) => setEntityColumn(event.target.value)} /></label>
       <label className="grid gap-1 text-xs text-slate-600 md:col-span-2">属性映射 JSON<textarea required rows={3} className={`${input} font-mono`} value={properties} onChange={(event) => setProperties(event.target.value)} /></label>
+      <label className="grid gap-1 text-xs text-slate-600 md:col-span-2">可选关系映射 JSON<textarea rows={2} className={`${input} font-mono`} value={links} onChange={(event) => setLinks(event.target.value)} aria-describedby="temporal-link-mapping-help" /></label>
+      <p id="temporal-link-mapping-help" className="text-[11px] text-slate-500 md:col-span-2">关系 ID 必须来自当前固定 schema revision；目前只支持当前对象类型到自身的单对象关系，字段留空时传 []。</p>
       {error && <p role="alert" className="text-xs text-red-700 md:col-span-2">{error}</p>}
       <div className="flex items-center justify-between gap-3 md:col-span-2"><span className="text-[11px] text-slate-500">late_event_policy: reject</span><button disabled={busy} className="rounded bg-slate-900 px-3 py-2 text-xs text-white disabled:opacity-50">{busy ? "创建中" : "创建来源运行"}</button></div>
     </form>

@@ -19,6 +19,7 @@ type Step = 'select_mode' | 'fill_info' | 'select_datasets' | 'approve_data' | '
 interface CuratedDataset {
   id: string; name: string; status: string
   row_count: number | null; quality_score: number | null
+  quality_status?: string | null
   columns?: string[]; sample_rows?: Record<string, unknown>[]
 }
 interface MappingSuggestion {
@@ -28,21 +29,14 @@ interface MappingSuggestion {
 interface DatasetRow {
   pipelineId: string; pipelineName: string; domain: string
   curatedId: string; curatedName: string; curatedStatus: string
-  rowCount: number | null; qualityScore: number | null
+  rowCount: number | null; qualityScore: number | null; qualityStatus?: string | null
 }
-interface BuildResult { total_entities?: number; total_relations?: number; total_logic?: number; total_actions?: number }
+interface BuildResult { mappings_saved: number; mappings_failed: number }
 interface ApiError { detail?: string | { message?: string }; message?: string }
 
 // Human Review 已移除 — 用户可在本体详情页自行修改
 const BUILD_PHASES = [
-  { key: 'entity',    label: '① 实体类型识别',  icon: '01' },
-  { key: 'property',  label: '② 属性映射',   icon: '02' },
-  { key: 'relation',  label: '③ 关系推断',      icon: '03' },
-  { key: 'logic',     label: '④ 逻辑规则发现',    icon: '04' },
-  { key: 'action',    label: '⑤ 操作发现',   icon: '05' },
-  { key: 'neo4j',     label: '⑥ 写入图数据库',         icon: '06' },
-  { key: 'chroma',    label: '⑦ 写入向量检索库',      icon: '07' },
-  { key: 'publish',   label: '⑧ 完成',               icon: '08' },
+  { key: 'mapping-drafts', label: '保存 Mapping 配置草稿', icon: '01' },
 ]
 
 const STATUS_ICON = (status: string) => {
@@ -51,10 +45,11 @@ const STATUS_ICON = (status: string) => {
   return <Clock size={12} className="text-yellow-400" />
 }
 const STATUS_LABEL: Record<string, string> = {
-  pending_review: '待审核', approved: '已审核', rejected: '已拒绝',
+  pending_review: '待发起审核', pending: '待独立审核', approved: '已审核', rejected: '已拒绝',
 }
 const STATUS_STYLE: Record<string, string> = {
   pending_review: 'bg-yellow-50 text-yellow-700 border-yellow-200',
+  pending: 'bg-amber-50 text-amber-700 border-amber-200',
   approved: 'bg-green-50 text-green-700 border-green-200',
   rejected: 'bg-red-50 text-red-600 border-red-200',
 }
@@ -76,8 +71,6 @@ function StepIndicator({ current }: { current: 0 | 1 | 2 }) {
     </div>
   )
 }
-
-function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)) }
 
 export default function OntologyCreateWizard() {
   const navigate = useNavigate()
@@ -140,7 +133,7 @@ export default function OntologyCreateWizard() {
       matched.forEach(c => rows.push({
         pipelineId: pl.id, pipelineName: pl.name, domain: pl.domain || '通用',
         curatedId: c.id, curatedName: c.name, curatedStatus: c.status || 'pending_review',
-        rowCount: c.row_count, qualityScore: c.quality_score,
+        rowCount: c.row_count, qualityScore: c.quality_score, qualityStatus: c.quality_status,
       }))
     })
     // Also include curated datasets not linked to any pipeline
@@ -149,7 +142,7 @@ export default function OntologyCreateWizard() {
       if (!linked.has(c.id)) rows.push({
         pipelineId: '', pipelineName: '（未关联管道）', domain: '—',
         curatedId: c.id, curatedName: c.name, curatedStatus: c.status || 'pending_review',
-        rowCount: c.row_count, qualityScore: c.quality_score,
+        rowCount: c.row_count, qualityScore: c.quality_score, qualityStatus: c.quality_status,
       })
     })
     return rows
@@ -207,8 +200,8 @@ export default function OntologyCreateWizard() {
   const handleApprove = async (id: string) => {
     setApprovingId(id)
     try {
-      await curatedApi.approve(id)
-      setDatasets(prev => prev.map(d => d.id === id ? { ...d, status: 'approved' } : d))
+      const review = await curatedApi.startReview(id)
+      setDatasets(prev => prev.map(d => d.id === id ? { ...d, status: review.status } : d))
     } finally { setApprovingId(null) }
   }
 
@@ -243,39 +236,35 @@ export default function OntologyCreateWizard() {
   const handleStartBuild = async () => {
     if (!createdOntologyId) return
     setStep('building')
-    setPhaseStatus(Array(BUILD_PHASES.length).fill('pending'))
+    setPhaseStatus(['running'])
     setBuildDone(false)
+    setCurrentPhase(0)
+    setBuildError('')
 
+    let saved = 0
+    const failures: string[] = []
     for (const [dsId, sug] of Object.entries(suggestions)) {
       const fmap: Record<string, string> = { __primary_key__: sug.primary_key_column }
       for (const fm of sug.field_mappings) fmap[fm.column_name] = fm.property_name
-      await apiClientV2.post(`/ontologies/${createdOntologyId}/mappings`, {
-        curated_dataset_id: dsId, entity_class: sug.entity_class, field_mapping: fmap, confidence: 1.0,
-      }).catch(() => {})
+      try {
+        await apiClientV2.post(`/ontologies/${createdOntologyId}/mappings`, {
+          curated_dataset_id: dsId,
+          entity_class: sug.entity_class,
+          field_mapping: fmap,
+          confidence: 1.0,
+        })
+        saved += 1
+      } catch (e: unknown) {
+        const error = e as ApiError
+        failures.push(typeof error.detail === 'string' ? error.detail : error.detail?.message || error.message || dsId)
+      }
     }
 
-    const mark = (idx: number, status: string) =>
-      setPhaseStatus(prev => { const a = [...prev]; a[idx] = status; return a })
-
-    mark(0, 'running'); await sleep(400)
-    mark(0, 'done'); mark(1, 'running'); await sleep(400)
-    mark(1, 'done'); mark(2, 'running'); setCurrentPhase(2)
-
-    try {
-      const res = await apiClientV2.post<BuildResult>(`/ontologies/${createdOntologyId}/mappings/build-all`)
-      setBuildResult(res)
-      mark(2, 'done'); mark(3, 'running'); setCurrentPhase(3); await sleep(500)
-      mark(3, 'done'); mark(4, 'running'); setCurrentPhase(4); await sleep(500)
-      mark(4, 'done'); mark(5, 'running'); setCurrentPhase(5); await sleep(400)
-      mark(5, 'done'); mark(6, 'running'); await sleep(300)
-      mark(6, 'done'); mark(7, 'running'); await sleep(300)
-      mark(7, 'done'); setCurrentPhase(8)
-      setBuildDone(true)
-    } catch (e: unknown) {
-      const error = e as ApiError
-      mark(2, 'failed')
-      setBuildError(typeof error.detail === 'string' ? error.detail : error.detail?.message || error.message || '构建失败')
-    }
+    setBuildResult({ mappings_saved: saved, mappings_failed: failures.length })
+    setPhaseStatus(['done'])
+    setCurrentPhase(1)
+    setBuildDone(true)
+    if (failures.length) setBuildError(`有 ${failures.length} 个 Mapping 未保存：${failures.slice(0, 3).join('；')}`)
   }
 
   const createMut = useMutation({
@@ -462,7 +451,8 @@ export default function OntologyCreateWizard() {
                           <td className="px-3 py-2.5 text-gray-700 max-w-[140px] truncate">{row.pipelineName}</td>
                           <td className="px-3 py-2.5 text-gray-500">{row.domain}</td>
                           <td className="px-3 py-2.5 font-medium text-gray-800 max-w-[180px] truncate" title={row.curatedName}>
-                            {row.curatedName}
+                            <span>{row.curatedName}</span>
+                            {row.qualityStatus === 'not_evaluated_degraded' && <span className="block text-[10px] font-normal text-amber-700">LLM 降级 · 质量未判定</span>}
                           </td>
                           <td className="px-3 py-2.5 text-gray-400 tabular-nums">
                             {row.rowCount != null ? row.rowCount.toLocaleString() : '—'}
@@ -536,6 +526,7 @@ export default function OntologyCreateWizard() {
                       {STATUS_ICON(row.curatedStatus)}
                       {STATUS_LABEL[row.curatedStatus] || row.curatedStatus}
                     </span>
+                    {row.qualityStatus === 'not_evaluated_degraded' && <span className="block mt-1 text-[10px] text-amber-700">LLM 降级 · 质量未判定</span>}
                   </td>
                   <td className="px-4 py-3 text-right">
                     {(row.curatedStatus === 'pending_review' || !row.curatedStatus) && (
@@ -545,8 +536,11 @@ export default function OntologyCreateWizard() {
                         className="inline-flex items-center gap-1 px-3 py-1 text-xs bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50"
                       >
                         {approvingId === row.curatedId ? <Loader2 size={11} className="animate-spin" /> : <CheckCircle size={11} />}
-                        批准
+                        发起独立审核
                       </button>
+                    )}
+                    {row.curatedStatus === 'pending' && (
+                      <span className="text-xs text-amber-600 font-medium">等待独立审核者批准</span>
                     )}
                     {row.curatedStatus === 'approved' && (
                       <span className="text-xs text-green-600 font-medium">✓ 已审批</span>
@@ -640,7 +634,7 @@ export default function OntologyCreateWizard() {
     const pct = Math.round(currentPhase / BUILD_PHASES.length * 100)
     return (
       <div className="max-w-xl mx-auto py-8">
-        <h2 className="text-xl font-semibold mb-2 text-center">本体映射进行中</h2>
+        <h2 className="text-xl font-semibold mb-2 text-center">保存本体映射配置</h2>
         <p className="text-sm text-gray-400 text-center mb-6">{createdOntologyId?.slice(0, 8)}</p>
         <div className="mb-6">
           <div className="flex justify-between text-xs text-gray-500 mb-1"><span>进度</span><span>{pct}%</span></div>
@@ -664,7 +658,7 @@ export default function OntologyCreateWizard() {
                 </div>
                 <div className="flex-1">
                   <p className={`text-sm font-medium ${st === 'done' ? 'text-green-700' : st === 'running' ? 'text-blue-700' : ''}`}>{phase.label}</p>
-                  <p className="text-xs text-gray-400">{st === 'done' ? '完成' : st === 'running' ? '进行中...' : st === 'failed' ? '失败' : '等待中'}</p>
+                  <p className="text-xs text-gray-400">{st === 'done' ? '已保存为草稿' : st === 'running' ? '保存中...' : st === 'failed' ? '失败' : '等待中'}</p>
                 </div>
                 {st === 'done' && <span className="text-green-500 text-xs">已完成</span>}
               </div>
@@ -681,16 +675,14 @@ export default function OntologyCreateWizard() {
 
         {buildDone && (
           <div className="mt-5 p-5 bg-white border rounded-xl">
-            <p className="text-sm font-semibold text-gray-800 mb-1">构建完成</p>
+            <p className="text-sm font-semibold text-gray-800 mb-1">Mapping 草稿已处理</p>
             <p className="text-xs text-gray-500 mb-3">
-              实体、关系、Logic 与 Actions 已生成。你可以在本体详情页自由查看和修改每一项。
+              此步骤只保存 Mapping 配置，不写入本体对象。请由独立审核者批准精确数据版本，再到本体详情页提交 Mapping Apply；执行会记录为持久运行。
             </p>
             {buildResult && (
-              <div className="grid grid-cols-4 gap-2 mb-4 text-xs">
-                <div className="bg-gray-50 rounded-lg p-2 text-center"><p className="text-gray-400">实体</p><p className="font-bold text-base">{buildResult.total_entities || 0}</p></div>
-                <div className="bg-gray-50 rounded-lg p-2 text-center"><p className="text-gray-400">关系</p><p className="font-bold text-base">{buildResult.total_relations || 0}</p></div>
-                <div className="bg-gray-50 rounded-lg p-2 text-center"><p className="text-gray-400">逻辑规则</p><p className="font-bold text-base">{buildResult.total_logic || 0}</p></div>
-                <div className="bg-gray-50 rounded-lg p-2 text-center"><p className="text-gray-400">动作</p><p className="font-bold text-base">{buildResult.total_actions || 0}</p></div>
+              <div className="grid grid-cols-2 gap-2 mb-4 text-xs">
+                <div className="bg-gray-50 rounded-lg p-2 text-center"><p className="text-gray-400">已保存草稿</p><p className="font-bold text-base">{buildResult.mappings_saved}</p></div>
+                <div className="bg-gray-50 rounded-lg p-2 text-center"><p className="text-gray-400">保存失败</p><p className="font-bold text-base">{buildResult.mappings_failed}</p></div>
               </div>
             )}
             <button

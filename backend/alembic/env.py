@@ -54,16 +54,21 @@ from app.models.v2 import (  # noqa: E402, F401
     curated,
     logic,
     mapping,
+    mapping_definition_review,
     temporal_profile,
     construction,
     multimodal,
     multimodal_install,
     construction_draft,
+    construction_review,
     workbench_task,
     temporal_replay,
     semantic_core,
     security,
     schema_migration,
+    mapping_apply_run,
+    mapping_row_change,
+    service_principal,
 )
 
 target_metadata = Base.metadata
@@ -79,6 +84,7 @@ from app.models.v2 import query_job  # noqa: E402, F401
 from app.models.v2 import scenario  # noqa: E402, F401
 from app.models.v2 import time_series  # noqa: E402, F401
 from app.models.v2 import object_view  # noqa: E402, F401
+from app.models.v2 import decision_lab, decision_case  # noqa: E402, F401
 
 
 def _ensure_version_column_capacity(connection) -> bool:

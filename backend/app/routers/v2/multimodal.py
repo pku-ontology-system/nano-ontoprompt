@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
 from app.deps import get_current_user, require_editor
+from app.models.user import User
 from app.models.ontology import OntologyProject
 from app.models.model_config import ModelConfig
 from app.models.v2.construction import ConstructionRun
@@ -34,6 +35,11 @@ from app.services import encryption_service
 from app.services.model_config_selector import llm_call_kwargs
 from app.services.storage_service import get_storage_service
 from app.services.v2.construction_service import add_evidence, create_run, serialize_run, update_run
+from app.services.v2.construction_reviews import append_review_event, approved_review_for_run
+from app.services.v2.construction_review_diff import live_schema_snapshot, schema_diff, schema_snapshot_digest
+from app.services.v2.dataset_authorization import require_dataset_access
+from app.services.v2.object_query.authorization import require_ontology_access
+from app.services.v2.object_query.errors import ObjectQueryError
 from app.services.v2.graph.falkordb_service import FalkorDBService
 from app.services.v2.ontology_materializer import attach_revision_to_materialized_rows, materialize_ontology
 from app.services.v2.datasets.ibadas_installer import (
@@ -66,6 +72,21 @@ def _pick_m3_config(db: Session, model_id: str | None = None):
     if not candidates:
         candidates = query.order_by(ModelConfig.updated_at.desc()).all()
     return next((item for item in candidates if MODEL_NAME in [str(name) for name in (item.models or [])] and str(item.provider or "").lower() not in {"ollama", "local"}), None)
+
+
+def _json_digest(value: Any) -> str:
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _read_checked_asset(item: MediaItem, storage=None) -> bytes:
+    storage = storage or get_storage_service()
+    raw = storage.get_object(item.storage_uri)
+    if item.checksum:
+        actual = hashlib.sha256(raw).hexdigest()
+        if actual != item.checksum:
+            raise ValueError(f"MEDIA_CHECKSUM_MISMATCH: asset {item.id}")
+    return raw
 
 
 def get_db():
@@ -196,7 +217,7 @@ def _depth_preview(item: MediaItem) -> tuple[bytes, dict[str, Any]]:
     except Exception as exc:  # pragma: no cover - NumPy is a v2 dependency
         raise HTTPException(501, "当前环境未安装深度预览所需的 NumPy") from exc
     try:
-        raw = get_storage_service().get_object(item.storage_uri)
+        raw = _read_checked_asset(item)
         depth = np.asarray(np.load(io.BytesIO(raw), allow_pickle=False))
         while depth.ndim > 2:
             depth = depth[..., 0]
@@ -260,14 +281,50 @@ def _sample_payload(sample: MultimodalSample) -> dict[str, Any]:
     }
 
 
+def _require_install_task_access(task: MultimodalInstallTask, user: User) -> None:
+    if user.role != "admin" and str(task.created_by or "") != str(user.id):
+        raise HTTPException(404, "安装任务不存在")
+
+
+def _dataset_for_version(db: Session, version_id: str, user: User, *, write: bool = False) -> Dataset:
+    version = db.query(DatasetVersion).filter(DatasetVersion.id == version_id).first()
+    if not version:
+        raise HTTPException(404, "数据版本不存在或不可访问")
+    return require_dataset_access(db, version.dataset_id, user, write=write)
+
+
+def _require_media_access(db: Session, item: MediaItem, user: User) -> Dataset:
+    return _dataset_for_version(db, item.dataset_version_id, user)
+
+
+def _require_ontology_scope(db: Session, ontology_id: str, user: User) -> None:
+    try:
+        require_ontology_access(db, ontology_id, str(user.id), user.role)
+    except ObjectQueryError:
+        raise HTTPException(404, "Ontology not found or inaccessible") from None
+
+
 @router.get("/catalog")
-def multimodal_catalog(db: Session = Depends(get_db)):
+def multimodal_catalog(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """Catalog cards shown before the first click on the multimodal flow."""
     installed = find_ibadas_dataset(db)
-    latest_task = db.query(MultimodalInstallTask).filter(
-        MultimodalInstallTask.source_id == IBADAS_SOURCE_ID,
-    ).order_by(MultimodalInstallTask.created_at.desc()).first()
+    if installed:
+        try:
+            require_dataset_access(db, installed, current_user)
+        except HTTPException:
+            installed = None
+    task_query = db.query(MultimodalInstallTask).filter(MultimodalInstallTask.source_id == IBADAS_SOURCE_ID)
+    if current_user.role != "admin":
+        task_query = task_query.filter(MultimodalInstallTask.created_by == str(current_user.id))
+    latest_task = task_query.order_by(MultimodalInstallTask.created_at.desc()).first()
     datasets = db.query(Dataset).filter(Dataset.data_class == "multimodal").order_by(Dataset.created_at.desc()).all()
+    accessible_datasets = []
+    for dataset in datasets:
+        try:
+            require_dataset_access(db, dataset, current_user)
+            accessible_datasets.append(dataset)
+        except HTTPException:
+            continue
     return {
         "sources": [{
             "id": IBADAS_SOURCE_ID,
@@ -291,7 +348,7 @@ def multimodal_catalog(db: Session = Depends(get_db)):
             "privacy_level": dataset.privacy_level,
             "version_id": dataset.latest_version_id,
             "manifest": dataset.schema_json or {},
-        } for dataset in datasets],
+        } for dataset in accessible_datasets],
     }
 
 
@@ -300,28 +357,42 @@ def install_i_badas_catalog(
     body: IbedasInstallRequest | None = None,
     background_tasks: BackgroundTasks = None,
     db: Session = Depends(get_db),
-    _=Depends(require_editor),
+    current_user: User = Depends(require_editor),
 ):
     """Queue the pinned twelve-group installer; never fetch the full archive."""
     source_id = (body.source_id if body else IBADAS_SOURCE_ID).strip()
     if source_id != IBADAS_SOURCE_ID:
         raise HTTPException(400, "当前仅支持固定的 I-BADAS 12 组桌面样例")
-    active = db.query(MultimodalInstallTask).filter(
+    active_query = db.query(MultimodalInstallTask).filter(
         MultimodalInstallTask.source_id == source_id,
         MultimodalInstallTask.status.in_(["queued", "running", "cancel_requested"]),
-    ).order_by(MultimodalInstallTask.created_at.desc()).first()
+    )
+    active = active_query.order_by(MultimodalInstallTask.created_at.desc()).first()
     if active:
+        if current_user.role != "admin" and str(active.created_by or "") != str(current_user.id):
+            raise HTTPException(409, "I-BADAS 样例正在由其他用户安装；请稍后重试")
         return {"task_id": active.id, "status": active.status}
     installed = find_ibadas_dataset(db)
+    if installed and current_user.role != "admin" and str(installed.created_by or "") != str(current_user.id) and (installed.schema_json or {}).get("access_scope") != "shared_read":
+        raise HTTPException(409, "I-BADAS 样例已由其他用户安装；请联系管理员开放共享范围")
+    if installed and current_user.role == "admin" and (installed.schema_json or {}).get("access_scope") != "shared_read":
+        installed.schema_json = {**(installed.schema_json or {}), "access_scope": "shared_read"}
+        db.commit()
     if _ibadas_ready(installed, db):
-        latest = db.query(MultimodalInstallTask).filter(MultimodalInstallTask.source_id == source_id).order_by(MultimodalInstallTask.updated_at.desc()).first()
+        latest_query = db.query(MultimodalInstallTask).filter(MultimodalInstallTask.source_id == source_id)
+        if current_user.role != "admin":
+            latest_query = latest_query.filter(MultimodalInstallTask.created_by == str(current_user.id))
+        latest = latest_query.order_by(MultimodalInstallTask.updated_at.desc()).first()
         if latest:
             return {"task_id": latest.id, "status": "completed"}
-        task = MultimodalInstallTask(source_id=source_id, status="completed", dataset_id=installed.id, progress={"stage": "安装完成", "completed": 12, "total": 12})
+        task = MultimodalInstallTask(source_id=source_id, created_by=str(current_user.id), status="completed", dataset_id=installed.id, progress={"stage": "安装完成", "completed": 12, "total": 12})
         db.add(task)
         db.commit()
         return {"task_id": task.id, "status": task.status}
-    task = db.query(MultimodalInstallTask).filter(MultimodalInstallTask.source_id == source_id).order_by(MultimodalInstallTask.updated_at.desc()).first()
+    task_query = db.query(MultimodalInstallTask).filter(MultimodalInstallTask.source_id == source_id)
+    if current_user.role != "admin":
+        task_query = task_query.filter(MultimodalInstallTask.created_by == str(current_user.id))
+    task = task_query.order_by(MultimodalInstallTask.updated_at.desc()).first()
     if task and task.status in {"failed", "cancelled"}:
         task.status = "queued"
         task.cancel_requested = False
@@ -330,8 +401,10 @@ def install_i_badas_catalog(
         if installed:
             task.dataset_id = installed.id
     else:
-        task = MultimodalInstallTask(source_id=source_id, status="queued", dataset_id=installed.id if installed else None, progress={"stage": "等待开始", "completed": 0, "total": 12})
+        task = MultimodalInstallTask(source_id=source_id, created_by=str(current_user.id), status="queued", dataset_id=installed.id if installed else None, progress={"stage": "等待开始", "completed": 0, "total": 12})
         db.add(task)
+    if not task.created_by:
+        task.created_by = str(current_user.id)
     db.commit()
     db.refresh(task)
     if _celery_enabled():
@@ -349,18 +422,20 @@ def install_i_badas_catalog(
 
 
 @router.get("/catalog/install/{task_id}")
-def get_multimodal_install_task(task_id: str, db: Session = Depends(get_db)):
+def get_multimodal_install_task(task_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     task = db.query(MultimodalInstallTask).filter(MultimodalInstallTask.id == task_id).first()
     if not task:
         raise HTTPException(404, "安装任务不存在")
+    _require_install_task_access(task, current_user)
     return _serialize_install_task(task)
 
 
 @router.post("/catalog/install/{task_id}/cancel")
-def cancel_multimodal_install_task(task_id: str, db: Session = Depends(get_db), _=Depends(require_editor)):
+def cancel_multimodal_install_task(task_id: str, db: Session = Depends(get_db), current_user: User = Depends(require_editor)):
     task = db.query(MultimodalInstallTask).filter(MultimodalInstallTask.id == task_id).first()
     if not task:
         raise HTTPException(404, "安装任务不存在")
+    _require_install_task_access(task, current_user)
     if task.status in {"queued", "running"}:
         task.cancel_requested = True
         task.status = "cancel_requested"
@@ -403,7 +478,11 @@ def _execute_ibadas_install(task_id: str) -> None:
             finally:
                 progress_db.close()
 
-        result = install_ibadas_dataset(db, progress=progress)
+        result = install_ibadas_dataset(
+            db,
+            progress=progress,
+            created_by=str(task.created_by) if task and task.created_by else None,
+        )
         task = db.query(MultimodalInstallTask).filter(MultimodalInstallTask.id == task_id).first()
         if task:
             _touch_install_task(db, task, status="completed", dataset_id=result.get("dataset_id"), result_json=result, progress={"stage": "安装完成", "completed": 12, "total": 12}, error=None)
@@ -507,7 +586,7 @@ def _execute_archive_import(task_id: str, raw: bytes) -> None:
         dataset_meta, samples = _normalise_manifest(manifest, names)
         if task:
             _touch_install_task(db, task, status="running", progress={"stage": "校验并写入资产", "completed": 0, "total": len(samples)})
-        dataset = Dataset(name=dataset_meta["name"], kind="unstructured", data_class="multimodal", privacy_level=dataset_meta["privacy_level"], readiness="installing", schema_json={"source_id": task.source_id if task else "zip_import", **dataset_meta})
+        dataset = Dataset(name=dataset_meta["name"], kind="unstructured", data_class="multimodal", privacy_level=dataset_meta["privacy_level"], readiness="installing", created_by=str(task.created_by) if task and task.created_by else None, schema_json={"source_id": task.source_id if task else "zip_import", **dataset_meta})
         db.add(dataset)
         db.flush()
         storage = get_storage_service()
@@ -566,11 +645,11 @@ def _execute_archive_import(task_id: str, raw: bytes) -> None:
 
 
 @router.post("/imports", status_code=202, response_model=MultimodalImportResult)
-async def import_multimodal_archive(file: UploadFile = File(...), background_tasks: BackgroundTasks = None, db: Session = Depends(get_db), _=Depends(require_editor)):
+async def import_multimodal_archive(file: UploadFile = File(...), background_tasks: BackgroundTasks = None, db: Session = Depends(get_db), current_user=Depends(require_editor)):
     raw = await file.read()
     if not raw:
         raise HTTPException(400, "导入文件为空")
-    task = MultimodalInstallTask(source_id="zip_import", status="queued", progress={"stage": "等待校验", "completed": 0, "total": 0})
+    task = MultimodalInstallTask(source_id="zip_import", created_by=str(current_user.id), status="queued", progress={"stage": "等待校验", "completed": 0, "total": 0})
     db.add(task)
     db.commit()
     db.refresh(task)
@@ -587,14 +666,22 @@ def list_multimodal_samples(
     sample: str | None = None,
     version_id: str | None = None,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset:
         raise HTTPException(404, "Dataset not found")
+    require_dataset_access(db, dataset, current_user)
     resolved_version = version_id or dataset.latest_version_id
     if not resolved_version:
         return {"dataset_id": dataset_id, "version_id": None, "samples": [], "count": 0}
-    query = db.query(MultimodalSample).filter(MultimodalSample.dataset_version_id == resolved_version)
+    version = db.query(DatasetVersion).filter(
+        DatasetVersion.id == resolved_version,
+        DatasetVersion.dataset_id == dataset.id,
+    ).first()
+    if not version:
+        raise HTTPException(404, "数据版本不存在或不属于该数据集")
+    query = db.query(MultimodalSample).filter(MultimodalSample.dataset_version_id == version.id)
     if scene_id:
         query = query.filter(MultimodalSample.scene_id == scene_id)
     if label:
@@ -610,16 +697,17 @@ def list_multimodal_samples(
 
 
 @router.get("/samples/{sample_id}/preview")
-def preview_multimodal_sample(sample_id: str, db: Session = Depends(get_db)):
+def preview_multimodal_sample(sample_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     sample = db.query(MultimodalSample).filter(MultimodalSample.id == sample_id).first()
     if not sample:
         raise HTTPException(404, "样例不存在")
+    _dataset_for_version(db, sample.dataset_version_id, current_user)
     media = db.query(MediaItem).filter(MediaItem.sample_id == sample.id, MediaItem.dataset_version_id == sample.dataset_version_id).order_by(MediaItem.asset_role.asc()).all()
     return {"sample": _sample_payload(sample), "assets": [_asset_payload(item) for item in media]}
 
 
 @router.get("/samples/{sample_id}/evidence")
-def multimodal_sample_evidence(sample_id: str, db: Session = Depends(get_db)):
+def multimodal_sample_evidence(sample_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """Return one synchronized evidence workspace payload for a sample.
 
     This is deliberately separate from the paged samples list: decoding depth
@@ -628,6 +716,7 @@ def multimodal_sample_evidence(sample_id: str, db: Session = Depends(get_db)):
     sample = db.query(MultimodalSample).filter(MultimodalSample.id == sample_id).first()
     if not sample:
         raise HTTPException(404, "样例不存在")
+    _dataset_for_version(db, sample.dataset_version_id, current_user)
     media = db.query(MediaItem).filter(
         MediaItem.sample_id == sample.id,
         MediaItem.dataset_version_id == sample.dataset_version_id,
@@ -664,10 +753,11 @@ def multimodal_sample_evidence(sample_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/assets/{media_id}/content")
-def get_multimodal_asset(media_id: str, db: Session = Depends(get_db)):
+def get_multimodal_asset(media_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     item = db.query(MediaItem).filter(MediaItem.id == media_id).first()
     if not item:
         raise HTTPException(404, "资产不存在")
+    _require_media_access(db, item, current_user)
     try:
         content = get_storage_service().get_object(item.storage_uri)
     except FileNotFoundError as exc:
@@ -676,11 +766,12 @@ def get_multimodal_asset(media_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/assets/{media_id}/preview")
-def get_multimodal_asset_preview(media_id: str, db: Session = Depends(get_db)):
+def get_multimodal_asset_preview(media_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """Describe the browser-safe render variant and deterministic statistics."""
     item = db.query(MediaItem).filter(MediaItem.id == media_id).first()
     if not item:
         raise HTTPException(404, "资产不存在")
+    _require_media_access(db, item, current_user)
     payload = _asset_payload(item)
     if item.asset_role == "depth":
         _, stats = _depth_preview(item)
@@ -689,11 +780,12 @@ def get_multimodal_asset_preview(media_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/assets/{media_id}/render")
-def render_multimodal_asset(media_id: str, db: Session = Depends(get_db)):
+def render_multimodal_asset(media_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """Serve a displayable form of an evidence asset without mutating storage."""
     item = db.query(MediaItem).filter(MediaItem.id == media_id).first()
     if not item:
         raise HTTPException(404, "资产不存在")
+    _require_media_access(db, item, current_user)
     if item.asset_role == "depth":
         png, stats = _depth_preview(item)
         return Response(
@@ -708,11 +800,15 @@ def render_multimodal_asset(media_id: str, db: Session = Depends(get_db)):
                 "X-Depth-Stats": json.dumps(stats, ensure_ascii=True, separators=(",", ":")),
             },
         )
-    return get_multimodal_asset(media_id, db)
+    try:
+        content = get_storage_service().get_object(item.storage_uri)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "对象存储中找不到该资产") from exc
+    return Response(content=content, media_type=item.mime_type or mimetypes.guess_type(item.original_name or "")[0] or "application/octet-stream", headers={"X-Asset-SHA256": item.checksum or ""})
 
 
 @router.get("/assets/{media_id}/pointcloud")
-def get_pointcloud_preview(media_id: str, limit: int = Query(50000, ge=100, le=50000), db: Session = Depends(get_db)):
+def get_pointcloud_preview(media_id: str, limit: int = Query(50000, ge=100, le=50000), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """Return a bounded numeric preview for the point-cloud canvas.
 
     The stored asset remains the source of truth.  This endpoint only reads
@@ -724,6 +820,7 @@ def get_pointcloud_preview(media_id: str, limit: int = Query(50000, ge=100, le=5
     item = db.query(MediaItem).filter(MediaItem.id == media_id).first()
     if not item:
         raise HTTPException(404, "资产不存在")
+    _require_media_access(db, item, current_user)
     if item.asset_role != "point_cloud":
         raise HTTPException(400, "该资产不是点云")
     try:
@@ -755,8 +852,10 @@ def get_pointcloud_preview(media_id: str, limit: int = Query(50000, ge=100, le=5
 
 
 @router.get("/status")
-def multimodal_status(probe: bool = Query(False), db: Session = Depends(get_db)):
+def multimodal_status(probe: bool = Query(False), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """Return safe M3 availability metadata without exposing credentials."""
+    if probe and current_user.role not in {"admin", "editor"}:
+        raise HTTPException(403, "Editor role required to probe a model provider")
     config = _pick_m3_config(db)
     available = False
     probe_error = None
@@ -785,10 +884,14 @@ def multimodal_status(probe: bool = Query(False), db: Session = Depends(get_db))
 
 
 @router.get("/sources")
-def multimodal_sources(db: Session = Depends(get_db)):
+def multimodal_sources(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     rows: list[dict[str, Any]] = []
     datasets = db.query(Dataset).filter(Dataset.kind == "unstructured").order_by(Dataset.created_at.desc()).all()
     for dataset in datasets:
+        try:
+            require_dataset_access(db, dataset, current_user)
+        except HTTPException:
+            continue
         versions = db.query(DatasetVersion).filter(DatasetVersion.dataset_id == dataset.id).order_by(DatasetVersion.version_no.desc()).all()
         media = db.query(MediaItem).filter(MediaItem.dataset_version_id == versions[0].id).all() if versions else []
         rows.append({
@@ -807,10 +910,11 @@ def multimodal_sources(db: Session = Depends(get_db)):
 
 
 @router.post("/fragments")
-def create_fragment(body: FragmentCreate, db: Session = Depends(get_db)):
+def create_fragment(body: FragmentCreate, db: Session = Depends(get_db), current_user: User = Depends(require_editor)):
     media = db.query(MediaItem).filter(MediaItem.id == body.media_item_id, MediaItem.dataset_version_id == body.dataset_version_id).first()
     if not media:
         raise HTTPException(404, "Media item or dataset version not found")
+    _dataset_for_version(db, body.dataset_version_id, current_user, write=True)
     fragment = ExtractedFragment(**body.model_dump())
     db.add(fragment)
     db.commit()
@@ -819,43 +923,21 @@ def create_fragment(body: FragmentCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/fragments/{media_item_id}")
-def list_fragments(media_item_id: str, db: Session = Depends(get_db)):
+def list_fragments(media_item_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    media = db.query(MediaItem).filter(MediaItem.id == media_item_id).first()
+    if not media:
+        raise HTTPException(404, "Media item not found")
+    _require_media_access(db, media, current_user)
     items = db.query(ExtractedFragment).filter(ExtractedFragment.media_item_id == media_item_id).order_by(ExtractedFragment.created_at.asc()).all()
     return {"media_item_id": media_item_id, "fragments": [_serialize(item) for item in items], "count": len(items)}
 
 
 @router.post("/runs", status_code=202)
-def create_multimodal_run(body: MultimodalRunCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_db), _=Depends(require_editor)):
-    dataset = db.query(Dataset).filter(Dataset.id == body.dataset_id).first()
-    if not dataset:
-        raise HTTPException(404, "Dataset not found")
-    if dataset.data_class != "multimodal":
-        raise HTTPException(409, "多模态构建只能使用 data_class=multimodal 的数据集")
-    ontology = db.query(OntologyProject).filter(OntologyProject.id == body.ontology_id).first()
-    if not ontology:
-        raise HTTPException(404, "Ontology not found")
-    if getattr(ontology, "data_class", "regular") != "multimodal":
-        raise HTTPException(409, "多模态数据只能追加到同类多模态本体")
-    # A private dataset is a hard boundary: even if a caller posts
-    # ``privacy_level=standard``, the server never selects or invokes a cloud
-    # model for it.
-    privacy_level = "private" if dataset.privacy_level == "private" else body.privacy_level
-    dataset.privacy_level = privacy_level
-    config = None if privacy_level == "private" else _pick_m3_config(db, body.model_id)
-    model_name = str((config.models or [MODEL_NAME])[0]) if config else ("规则 + 人工" if privacy_level == "private" else None)
-    run = create_run(db, ontology_id=body.ontology_id, dataset_id=body.dataset_id, mode="multimodal", model_name=model_name,
-                     config={"sample_limit": body.sample_limit, "prompt": body.prompt or "", "sample_ids": body.sample_ids, "selected_assets": body.selected_assets, "privacy_level": privacy_level, "send_fields": body.send_fields})
-    if _celery_enabled():
-        try:
-            from app.tasks.v2.workbench import run_multimodal_construction_task
-            run_multimodal_construction_task.delay(run.id, body.model_id, body.sample_limit, body.prompt, body.sample_ids, body.selected_assets, privacy_level, body.send_fields)
-        except Exception as exc:
-            update_run(db, run, status="failed", error=f"Celery 任务派发失败：{str(exc)[:500]}")
-            raise HTTPException(503, detail={"error": "CELERY_UNAVAILABLE", "message": "构建任务未启动，请启动 Celery worker 后重试"}) from exc
-    else:
-        background_tasks.add_task(_execute_multimodal_run, run.id, body.model_id, body.sample_limit, body.prompt, body.sample_ids, body.selected_assets, privacy_level, body.send_fields)
-    return serialize_run(run)
-
+def create_multimodal_run(
+    body: MultimodalRunCreate,
+    current_user: User = Depends(require_editor),
+):
+    raise HTTPException(409, "多模态构建必须通过构筑草案和独立审阅后启动")
 
 def _execute_multimodal_run(run_id: str, model_id: str | None, sample_limit: int, prompt: str | None, sample_ids: list[str], selected_assets: list[str], privacy_level: str, send_fields: list[str]) -> None:
     db = SessionLocal()
@@ -863,15 +945,48 @@ def _execute_multimodal_run(run_id: str, model_id: str | None, sample_limit: int
         run = db.query(ConstructionRun).filter(ConstructionRun.id == run_id).first()
         if not run:
             return
+        review = approved_review_for_run(db, run)
+        if not review:
+            update_run(db, run, status="failed", progress={"completed": 0, "total": 0}, error="构建候选缺少有效的独立审批记录；拒绝写入本体")
+            return
+        run_config = run.config or {}
+        selection = run_config.get("selection") or {}
+        model_id = run_config.get("model_id")
+        sample_limit = int(selection.get("sample_limit", 32))
+        prompt = selection.get("prompt")
+        sample_ids = list(selection.get("sample_ids") or [])
+        selected_assets = list(selection.get("selected_assets") or [])
+        send_fields = list(selection.get("send_fields") or [])
+        privacy_level = str(run_config.get("privacy_level") or "standard")
         config = None if privacy_level == "private" else _pick_m3_config(db, model_id)
         if privacy_level != "private" and not config:
             update_run(db, run, status="waiting_for_model", error="MiniMax M3 未配置或不可用；任务停在等待模型，不会自动切换本地模型")
             return
-        versions = db.query(DatasetVersion).filter(DatasetVersion.dataset_id == run.dataset_id).order_by(DatasetVersion.version_no.desc()).all()
-        if not versions:
+        expected_schema_digest = run_config.get("dataset_schema_digest")
+        if expected_schema_digest:
+            dataset = db.query(Dataset).filter(Dataset.id == run.dataset_id).first()
+            schema_snapshot = dataset.schema_json if dataset and isinstance(dataset.schema_json, dict) else {}
+            if not dataset or _json_digest(schema_snapshot) != expected_schema_digest:
+                update_run(db, run, status="failed", progress={"completed": 0, "total": 0}, error="固定的数据结构摘要已变化，拒绝继续构筑")
+                return
+        pinned_version_id = run_config.get("dataset_version_id")
+        expected_checksum = run_config.get("dataset_checksum")
+        if pinned_version_id:
+            version = db.query(DatasetVersion).filter(
+                DatasetVersion.id == pinned_version_id,
+                DatasetVersion.dataset_id == run.dataset_id,
+            ).first()
+        else:
+            versions = db.query(DatasetVersion).filter(
+                DatasetVersion.dataset_id == run.dataset_id,
+            ).order_by(DatasetVersion.version_no.desc()).all()
+            version = versions[0] if versions else None
+        if not version:
             update_run(db, run, status="failed", progress={"completed": 0, "total": 0}, error="Dataset 没有版本")
             return
-        version = versions[0]
+        if expected_checksum and version.checksum != expected_checksum:
+            update_run(db, run, status="failed", progress={"completed": 0, "total": 0}, error="固定的 DatasetVersion 校验和已变化，拒绝继续构筑")
+            return
         media_query = db.query(MediaItem).filter(MediaItem.dataset_version_id == version.id)
         if sample_ids:
             media_query = media_query.filter(MediaItem.sample_id.in_(sample_ids))
@@ -907,7 +1022,7 @@ def _execute_multimodal_run(run_id: str, model_id: str | None, sample_limit: int
                     model_for_evidence = None
                     confidence_method = "official_label_and_source_id"
                 else:
-                    raw = storage.get_object(item.storage_uri)
+                    raw = _read_checked_asset(item, storage)
                     # Binary depth, masks and point clouds are never sent to
                     # M3.  The deterministic processor sends only the selected
                     # textual/structural fields for non-RGB assets.
@@ -1014,13 +1129,21 @@ def _execute_multimodal_run(run_id: str, model_id: str | None, sample_limit: int
                                          locator={"filename": filename, "storage_uri": item.storage_uri, "sample_id": item.sample_id}, extractor="rule" if privacy_level == "private" else "llm", status="failed", error=str(exc)[:1000]))
                 db.commit()
             update_run(db, run, progress={"completed": completed + failures, "total": len(media), "failed": failures})
-        written_nodes = graph.upsert_instances(run.ontology_id, nodes) if nodes else 0
-        written_edges = graph.upsert_relations(run.ontology_id, relations) if relations else 0
+        update_run(db, run, progress={"stage": "正式构建", "completed": completed, "total": len(media), "failed": failures})
+        review = approved_review_for_run(db, run)
+        if not review:
+            update_run(db, run, status="failed", error="独立审批或基准修订已失效；拒绝写入本体")
+            return
+        review_manifest = (review.candidate_json or {}).get("manifest") or {}
+        base_schema_snapshot = live_schema_snapshot(db, run.ontology_id)
+        if schema_snapshot_digest(base_schema_snapshot) != review_manifest.get("base_schema_digest"):
+            update_run(db, run, status="failed", error="审批后本体基线结构已变化；拒绝物化候选")
+            return
         # Publish the same selected samples into the canonical ontology plane.
         # Earlier code only wrote FalkorDB extraction fragments, which made the
         # ontology, entity catalogue and audit appear empty despite a completed
         # multimodal run.
-        update_run(db, run, progress={"stage": "正式构建", "completed": completed, "total": len(media), "failed": failures})
+        run.progress = {"stage": "正式构建", "completed": completed, "total": len(media), "failed": failures}
         mapping = ((run.config or {}).get("mapping") or {}).get("ontology_mapping") or ((run.config or {}).get("mapping") or {})
         selected_sample_ids = sorted({str(item.sample_id) for item in media if item.sample_id})
         samples_by_id = {
@@ -1085,22 +1208,57 @@ def _execute_multimodal_run(run_id: str, model_id: str | None, sample_limit: int
             )
             materialized.instance_count += asset_materialized.instance_count
             materialized.evidence_count += asset_materialized.evidence_count
+        actual_schema_snapshot = live_schema_snapshot(db, run.ontology_id)
+        actual_schema_digest = schema_snapshot_digest(actual_schema_snapshot)
+        expected_schema_digest = review_manifest.get("projected_schema_digest")
+        if not expected_schema_digest or actual_schema_digest != expected_schema_digest:
+            raise ValueError("实际物化结构与审核差异预览不一致；已停止发布修订")
+        actual_schema_diff = schema_diff(base_schema_snapshot, actual_schema_snapshot)
+        expected_diff = review_manifest.get("schema_diff") or {}
+        if actual_schema_diff.get("digest") != expected_diff.get("digest"):
+            raise ValueError("实际物化差异与审核预览不一致；已停止发布修订")
+        actual_schema_diff["basis"] = "materialized_revision"
+        written_nodes = graph.upsert_instances(run.ontology_id, nodes) if nodes else 0
+        written_edges = graph.upsert_relations(run.ontology_id, relations) if relations else 0
         revision_id = None
         try:
             from app.services.v2.revision_service import create_revision
-            revision = create_revision(db, run.ontology_id, source_run_id=run.id, summary={"media_processed": len(media), "successful": completed, "failed": failures, "nodes_written": written_nodes, "edges_written": written_edges, "entity_types": materialized.entity_type_count, "instances": materialized.instance_count, "relations": materialized.relation_count, "logic_rules": materialized.rule_count, "privacy_level": privacy_level})
+            revision = create_revision(
+                db, run.ontology_id, source_run_id=run.id,
+                parent_revision_id=review.base_revision_id,
+                summary={"media_processed": len(media), "successful": completed, "failed": failures, "nodes_written": written_nodes, "edges_written": written_edges, "entity_types": materialized.entity_type_count, "instances": materialized.instance_count, "relations": materialized.relation_count, "logic_rules": materialized.rule_count, "privacy_level": privacy_level},
+                commit=False,
+            )
             revision_id = revision.id
             run.revision_id = revision.id
             attach_revision_to_materialized_rows(db, run=run, revision_id=revision.id)
             project = db.query(OntologyProject).filter(OntologyProject.id == run.ontology_id).first()
             if project:
                 project.status = "created"
+            append_review_event(
+                db, review, actor_id=None, event_type="materialized",
+                detail={
+                    "base_revision_id": review.base_revision_id,
+                    "revision_id": revision.id,
+                    "revision_no": revision.revision_no,
+                    "snapshot_hash": revision.snapshot_hash,
+                    "schema_diff": actual_schema_diff,
+                    "verification": {
+                        "status": "matched",
+                        "expected_schema_digest": expected_schema_digest,
+                        "actual_schema_digest": actual_schema_digest,
+                        "expected_diff_digest": expected_diff.get("digest"),
+                        "actual_diff_digest": actual_schema_diff.get("digest"),
+                    },
+                },
+            )
             db.commit()
-        except Exception:
-            # A graph build should remain inspectable even if an older
-            # development database has not applied the revision migration.
-            # The run records the omission rather than claiming a revision.
+        except Exception as exc:
             db.rollback()
+            failed_run = db.query(ConstructionRun).filter(ConstructionRun.id == run_id).first()
+            if failed_run:
+                update_run(db, failed_run, status="failed", error=f"修订提交失败，构建停止：{str(exc)[:1500]}")
+            return
         try:
             from app.services.v2.audit_runner import queue_local_audit
             queue_local_audit(db, ontology_id=run.ontology_id, revision_id=revision_id, construction_run_id=run.id)

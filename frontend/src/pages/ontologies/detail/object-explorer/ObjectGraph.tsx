@@ -36,8 +36,12 @@ export default function ObjectGraph({ ontologyId, expression, context }: { ontol
   const [name, setName] = useState('');
   const [notice, setNotice] = useState('');
 
-  const result = useQuery({ queryKey: ['explorer-graph', ontologyId, sets, context], enabled: !!context.data_view_id,
-    queryFn: ({ signal }) => apiClientV2.post<Graph>(`/ontologies/${ontologyId}/object-query/graph:multi`, { sets, context }, { signal }),
+  // What-if baselines use the single-set graph endpoint; pinned data views use the multi-set graph.
+  const hasPinnedSource = !!context.data_view_id || !!context.what_if_scenario_id;
+  const result = useQuery({ queryKey: ['explorer-graph', ontologyId, sets, context], enabled: hasPinnedSource,
+    queryFn: ({ signal }) => context.what_if_scenario_id
+      ? apiClientV2.post<Graph>(`/ontologies/${ontologyId}/object-query/graph`, { expression, context }, { signal })
+      : apiClientV2.post<Graph>(`/ontologies/${ontologyId}/object-query/graph:multi`, { sets, context }, { signal }),
   });
   const catalog = useQuery({ queryKey: ['explorer-catalog', ontologyId],
     queryFn: ({ signal }) => apiClientV2.get<Catalog>(`/ontologies/${ontologyId}/object-query/catalog`, { signal }) });
@@ -114,10 +118,10 @@ export default function ObjectGraph({ ontologyId, expression, context }: { ontol
     }
   };
 
-  if (!context.data_view_id) return <p className="p-4">固定当前数据后即可打开对象关系图。</p>;
+  if (!hasPinnedSource) return <p className="p-4">固定当前数据或选择 What-if 情景后即可打开对象关系图。</p>;
   return <section aria-label="对象关系图">
     <div className="flex flex-wrap items-center gap-3 p-3 text-xs">
-      <span>固定视图 {context.data_view_id} · {sets.length} 个对象集合</span>
+      <span>{context.what_if_scenario_id ? `What-if 基线 ${context.what_if_scenario_id}` : `固定视图 ${context.data_view_id}`} · {sets.length} 个对象集合</span>
       <fieldset className="flex flex-wrap gap-2" aria-label="图层"><legend className="sr-only">图层</legend>
         {types.map(type => <label key={type} className="flex items-center gap-1">
           <input type="checkbox" checked={layers[type].visible} onChange={event => setLayerOverrides(current => ({ ...current, [type]: { ...current[type], visible: event.target.checked } }))} />
@@ -133,7 +137,7 @@ export default function ObjectGraph({ ontologyId, expression, context }: { ontol
               title={showRelationshipLabels ? '隐藏关系文字，保留关系线' : '显示关系文字'} aria-pressed={showRelationshipLabels}
               data-testid="toggle-object-relationship-labels">{showRelationshipLabels ? '隐藏关系文字' : '显示关系文字'}</button>
       {!saved && <input aria-label="图名称" placeholder="图名称" value={name} onChange={event => setName(event.target.value)} />}
-      <button type="button" disabled={!saved && !name.trim()} onClick={() => void save()}>{saved ? `保存新版本（当前 v${saved.head_version}）` : '保存图'}</button>
+      <button type="button" disabled={!context.data_view_id || (!saved && !name.trim())} onClick={() => void save()}>{saved ? `保存新版本（当前 v${saved.head_version}）` : '保存图'}</button>
       {notice && <span role="status">{notice}</span>}
     </div>
     {result.isPending && <p role="status">正在加载关系图…</p>}{result.error && <p role="alert">{explorerError(result.error)}</p>}

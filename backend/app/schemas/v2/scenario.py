@@ -47,11 +47,13 @@ class CreateScenarioRequest(ScenarioBase):
 class ChangeSetRequest(ScenarioBase):
     base_revision: int = Field(ge=0)
     client_request_id: str = Field(min_length=1, max_length=200)
+    permission_digest: str | None = Field(default=None, min_length=64, max_length=64)
     edits: list[Edit] = Field(min_length=1, max_length=500)
 
 
 class RevisionRequest(ChangeSetRequest):
     expected_etag: int = Field(ge=1)
+    preview_digest: str | None = Field(default=None, min_length=64, max_length=64)
 
 
 class RunRequest(ScenarioBase):
@@ -65,3 +67,20 @@ class RunRequest(ScenarioBase):
 class GrantRequest(ScenarioBase):
     principal_id: str
     role: Literal["viewer", "editor"]
+
+
+class CreateScenarioCheckpointRequest(ScenarioBase):
+    label: str = Field(min_length=1, max_length=200)
+    client_request_id: str = Field(min_length=1, max_length=200)
+    revision: int | None = Field(default=None, ge=0)
+
+
+class BranchScenarioRequest(ScenarioBase):
+    name: str = Field(min_length=1, max_length=200)
+    description: str = ""
+    client_request_id: str = Field(min_length=1, max_length=200)
+
+
+class RestoreScenarioCheckpointRequest(ScenarioBase):
+    expected_etag: int = Field(ge=1)
+    client_request_id: str = Field(min_length=1, max_length=200)

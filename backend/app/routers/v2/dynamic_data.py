@@ -24,6 +24,9 @@ from app.services.v2.datasets.factorynet_installer import (
     find_factorynet_dataset,
     install_factorynet_dataset,
 )
+from app.services.v2.dataset_authorization import require_dataset_access
+from app.services.v2.object_query.authorization import require_ontology_access
+from app.services.v2.object_query.errors import ObjectQueryError
 from app.services.v2.temporal_stream_service import (
     StreamError,
     create_stream_run,
@@ -60,15 +63,22 @@ _FACTORYNET_ENTITIES = {
 }
 
 
-def _candidate_ontology(db: Session, dataset_id: str | None = None) -> OntologyProject | None:
+def _candidate_ontology(db: Session, user: User, dataset_id: str | None = None) -> OntologyProject | None:
     """Find a real FactoryNet ontology without relying on a UUID or name only."""
     projects = db.query(OntologyProject).filter(
         OntologyProject.data_class == "temporal",
     ).order_by(OntologyProject.updated_at.desc(), OntologyProject.created_at.desc()).all()
     for project in projects:
+        try:
+            require_ontology_access(db, project.id, str(user.id), user.role)
+        except ObjectQueryError:
+            continue
         names = {
             str(row.name_en or row.canonical_id or row.name_cn or "").strip()
-            for row in db.query(Entity).filter(Entity.ontology_id == project.id).all()
+            for row in db.query(Entity).filter(
+                Entity.ontology_id == project.id,
+                Entity.is_source_deleted.is_(False),
+            ).all()
         }
         if not _FACTORYNET_ENTITIES.issubset(names):
             continue
@@ -82,13 +92,18 @@ def _candidate_ontology(db: Session, dataset_id: str | None = None) -> OntologyP
     return None
 
 
-def _readiness_payload(db: Session) -> dict[str, Any]:
+def _readiness_payload(db: Session, user: User) -> dict[str, Any]:
     dataset = find_factorynet_dataset(db)
+    if dataset:
+        try:
+            require_dataset_access(db, dataset, user)
+        except HTTPException:
+            dataset = None
     version = None
     if dataset and dataset.latest_version_id:
         from app.models.v2.dataset import DatasetVersion
         version = db.query(DatasetVersion).filter(DatasetVersion.id == dataset.latest_version_id).first()
-    project = _candidate_ontology(db, dataset.id if dataset else None)
+    project = _candidate_ontology(db, user, dataset.id if dataset else None)
     return {
         "source_id": FACTORYNET_SOURCE_ID,
         "source_ready": bool(dataset and version and version.storage_uri),
@@ -104,8 +119,8 @@ def _readiness_payload(db: Session) -> dict[str, Any]:
 
 
 @router.get("/dynamic-data/demo-readiness")
-def demo_readiness(db: Session = Depends(get_db)):
-    return _readiness_payload(db)
+def demo_readiness(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return _readiness_payload(db, user)
 
 
 @router.post("/dynamic-data/demo-sessions", status_code=status.HTTP_201_CREATED)
@@ -126,8 +141,9 @@ def create_demo_session(
             ) from exc
     if dataset is None or not dataset.latest_version_id:
         raise HTTPException(status_code=424, detail={"code": "SOURCE_NOT_READY", "message": "FactoryNet 数据版本尚未准备好"})
+    require_dataset_access(db, dataset, user)
 
-    project = _candidate_ontology(db, dataset.id)
+    project = _candidate_ontology(db, user, dataset.id)
     if project is None:
         project = OntologyProject(
             name="FactoryNet CNC 动态演示",

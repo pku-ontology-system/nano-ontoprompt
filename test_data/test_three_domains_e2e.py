@@ -1,23 +1,21 @@
 #!/usr/bin/env python3
-"""三业务域全链路测试：供应链 / 财务 / 医疗
-  - 简易 LLM 路径（mock LLM）
-  - Pipeline Mapping 路径（规则提取，默认）
-前置：后端 8000 + mock LLM 8123 运行中。
+"""三业务域全链路脚本：私有 Dataset Construction 与 Pipeline Mapping。
+
+Dataset Construction 使用每个领域的一个结构化 CSV/XLSX fixture 和确定性映射，
+不调用 LLM，也不代表领域语义推理能力。
 """
 import re, sys, time
 from pathlib import Path
 import requests
+from construction_api_flow import build_private_structured_dataset, first_structured_file, login_reviewer_session, login_session
 
 API = "http://localhost:8000"
 TD  = Path(__file__).parent
 DOMAINS = ["供应链", "财务", "医疗"]
-TEXT_EXT = {".md", ".docx", ".doc", ".pdf", ".pptx", ".ppt", ".txt", ".csv", ".xlsx", ".json"}
 
-s = requests.Session()
-r = s.post(f"{API}/api/v1/auth/login", json={"username": "admin", "password": "admin123"})
-assert r.ok, f"登录失败: {r.text}"
-s.headers.update({"Authorization": f"Bearer {r.json()['data']['access_token']}"})
-print("✅ 登录成功\n")
+s = login_session(API)
+reviewer = login_reviewer_session(API)
+print("✅ 作者与独立审核人登录成功\n")
 
 
 # ── 公共工具 ──────────────────────────────────────────────────────────────────
@@ -26,61 +24,6 @@ def pascal(fname: str) -> str:
     base = fname.rsplit(".", 1)[0]
     parts = re.split(r"[_\-\s]+", base)
     return "".join(p[:1].upper() + p[1:] for p in parts if p)[:40] or "Entity"
-
-
-def ensure_model_prompt():
-    models = s.get(f"{API}/api/v1/models").json().get("data", [])
-
-    # 优先用真实 LLM（排除 mock 和 VLM），fallback 到 mock
-    VLM_TOKENS = ("omni", "vlm", "vision", "mimo")
-    real_models = [
-        m for m in models
-        if m.get("name") != "Mock Extractor (测试)"
-        and not any(t in (m.get("name") or "").lower() for t in VLM_TOKENS)
-        and not any(t in " ".join(m.get("models") or []).lower() for t in VLM_TOKENS)
-    ]
-
-    if real_models:
-        chosen = real_models[0]
-        model_name = (chosen.get("models") or [""])[0]
-        print(f"  使用真实 LLM：{chosen['name']} / {model_name}")
-    else:
-        chosen = next((m for m in models if m.get("name") == "Mock Extractor (测试)"), None)
-        if not chosen:
-            chosen = s.post(f"{API}/api/v1/models", json={
-                "name": "Mock Extractor (测试)", "provider": "compatible",
-                "api_key": "mock-key", "api_base": "http://127.0.0.1:8123/v1",
-                "models": ["mock-extractor"],
-            }).json()["data"]
-        model_name = "mock-extractor"
-        print(f"  未找到真实 LLM，使用 Mock Extractor")
-
-    PROMPT_CONTENT = """你是本体工程专家，请从文档中提取以下四类本体信息，严格按 JSON 格式返回，不要有任何其他文字：
-{
-  "entities": [
-    {"name_cn": "实体中文名", "name_en": "EntityName", "type": "实体类型", "description": "描述", "properties": {}, "confidence": 0.9}
-  ],
-  "relations": [
-    {"source": "源实体name_cn", "target": "目标实体name_cn", "type": "关系类型"}
-  ],
-  "logic_rules": [
-    {"name_cn": "规则名", "name_en": "rule_name", "description": "描述", "formula": "公式", "linked_entities": ["实体name_cn"], "confidence": 0.85}
-  ],
-  "actions": [
-    {"name_cn": "动作名", "description": "描述", "trigger_condition": "触发条件", "linked_entities": ["实体name_cn"], "confidence": 0.8}
-  ]
-}"""
-
-    prompts = s.get(f"{API}/api/v1/prompts").json().get("data", [])
-    pr = next((p for p in prompts if p.get("name") == "通用本体提取(测试)"), None)
-    if pr:
-        # 强制更新内容，避免沿用旧的简陋 prompt
-        s.put(f"{API}/api/v1/prompts/{pr['id']}", json={"content": PROMPT_CONTENT})
-    else:
-        pr = s.post(f"{API}/api/v1/prompts", json={
-            "name": "通用本体提取(测试)", "domain": "通用", "content": PROMPT_CONTENT,
-        }).json()["data"]
-    return chosen["id"], pr["id"], model_name
 
 
 def snapshot(oid: str) -> dict:
@@ -104,38 +47,18 @@ def snapshot(oid: str) -> dict:
     }
 
 
-# ── 简易 LLM 路径 ─────────────────────────────────────────────────────────────
+# ── Dataset Construction 路径 ─────────────────────────────────────────────────
 
-def run_simple(domain: str, model_id: str, prompt_id: str, model_name: str = "mock-extractor") -> dict:
-    folder = TD / domain
-    files  = [f for f in sorted(folder.glob("*")) if f.suffix.lower() in TEXT_EXT]
-    r = s.post(f"{API}/api/v1/ontologies", json={
-        "name": f"{domain}-简易LLM-{int(time.time())}",
-        "domain": domain, "build_mode": "simple_llm",
-    })
-    oid = r.json()["data"]["id"]
-    for f in files:
-        with open(f, "rb") as fh:
-            s.post(f"{API}/api/v1/ontologies/{oid}/files", files={"file": (f.name, fh)})
-
-    r = s.post(f"{API}/api/v1/ontologies/{oid}/execute", json={
-        "prompt_id": prompt_id, "model_id": model_id, "model_name": model_name,
-    })
-    if not r.ok:
-        return {"domain": domain, "oid": oid, "status": "execute_failed", "error": r.text[:100]}
-    tid = r.json()["data"]["task_id"]
-
-    for _ in range(60):
-        time.sleep(2)
-        task = s.get(f"{API}/api/v1/ontologies/{oid}/execute/status",
-                     params={"task_id": tid}).json().get("data", {})
-        if task.get("status") in ("success", "failed", "completed"):
-            break
-
-    status = task.get("status", "timeout")
-    snap = snapshot(oid) if status != "failed" else {}
-    return {"domain": domain, "oid": oid, "status": status,
-            "files": len(files), **snap}
+def run_construction(domain: str) -> dict:
+    source = first_structured_file(TD / domain)
+    return build_private_structured_dataset(
+        s,
+        API,
+        source,
+        reviewer_session=reviewer,
+        domain=domain,
+        ontology_name=f"{domain}-DatasetConstruction-{int(time.time())}",
+    )
 
 
 # ── Pipeline Mapping 路径 ─────────────────────────────────────────────────────
@@ -201,29 +124,24 @@ def run_mapping(domain: str) -> dict:
 # ── 主流程 ────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    model_id, prompt_id, model_name = ensure_model_prompt()
-    print(f"模型 {model_id[:8]}  model_name={model_name}  提示词 {prompt_id[:8]}\n")
-
     WIDTH = 60
-    simple_results  = []
+    construction_results = []
     mapping_results = []
 
-    # ── 简易 LLM ──
+    # ── 私有 Dataset Construction ──
     print("=" * WIDTH)
-    print("  简易 LLM 路径")
+    print("  Dataset Construction（确定性结构映射）")
     print("=" * WIDTH)
     for domain in DOMAINS:
-        print(f"  [{domain}] 提取中...", end=" ", flush=True)
-        r = run_simple(domain, model_id, prompt_id, model_name)
-        simple_results.append(r)
-        ok = r.get("status") in ("success", "completed") and r.get("entities", 0) > 0
+        print(f"  [{domain}] 构筑中...", end=" ", flush=True)
+        r = run_construction(domain)
+        construction_results.append(r)
+        ok = r.get("status") == "completed" and r.get("entities", 0) > 0
         flag = "✅" if ok else "❌"
-        print(f"{flag} 状态={r['status']}  "
+        print(f"{flag} 文件={r['file']} 状态={r['status']}  "
               f"实体={r.get('entities',0)}  边={r.get('edges',0)}  "
               f"逻辑={r.get('logic',0)}  动作={r.get('actions',0)}")
-        if r.get("by_type"):
-            for t, cnt in sorted(r["by_type"].items(), key=lambda x: -x[1])[:5]:
-                print(f"      {t}: {cnt}")
+        print(f"      已写实例={r.get('instances', 0)} · 构筑方式={r.get('construction_method')}")
 
     # ── Pipeline Mapping ──
     print()
@@ -252,13 +170,13 @@ if __name__ == "__main__":
     print("=" * WIDTH)
     print("  汇总")
     print("=" * WIDTH)
-    print(f"  {'域':<8} {'简易LLM':^28} {'Pipeline Mapping':^28}")
+    print(f"  {'域':<8} {'Dataset Construction':^28} {'Pipeline Mapping':^28}")
     print(f"  {'':8} {'实体':>6} {'边':>5} {'逻辑':>5} {'动作':>5}  "
           f"{'实体':>6} {'边':>5} {'逻辑':>5} {'动作':>5}")
     all_ok = True
-    for s_r, m_r in zip(simple_results, mapping_results):
+    for s_r, m_r in zip(construction_results, mapping_results):
         domain = s_r["domain"]
-        s_ok = s_r.get("status") in ("success","completed") and s_r.get("entities",0) > 0
+        s_ok = s_r.get("status") == "completed" and s_r.get("entities",0) > 0
         m_ok = m_r.get("status") == "success" and m_r.get("entities",0) > 0
         flag = "✅" if (s_ok and m_ok) else "❌"
         all_ok = all_ok and s_ok and m_ok

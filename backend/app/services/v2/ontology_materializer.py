@@ -386,13 +386,13 @@ def mapping_suggestions(mapping: dict[str, Any], *, extractor: str = "m3") -> li
     items: list[dict[str, Any]] = []
     rule_source = "模型读取计划" if extractor == "m3" else "已选来源字段"
     for entity in mapping.get("entity_types") or []:
-        items.append({"kind": "class", "source": ", ".join(entity.get("source_fields") or []) or "source profile", "target": entity.get("name_cn") or entity.get("name"), "confidence": entity.get("confidence", 1.0), "extractor": extractor})
+        items.append({"kind": "class", "mapping_ref": f"entity_type:{entity.get('id')}", "source": ", ".join(entity.get("source_fields") or []) or "source profile", "target": entity.get("name_cn") or entity.get("name"), "confidence": entity.get("confidence", 1.0), "extractor": extractor})
     for prop in mapping.get("properties") or []:
-        items.append({"kind": "property", "source": prop.get("source_field") or "source profile", "target": prop.get("label") or prop.get("name"), "confidence": prop.get("confidence", 1.0), "extractor": extractor})
+        items.append({"kind": "property", "mapping_ref": f"property:{prop.get('id')}", "source": prop.get("source_field") or "source profile", "target": prop.get("label") or prop.get("name"), "confidence": prop.get("confidence", 1.0), "extractor": extractor})
     for relation in mapping.get("relationships") or []:
-        items.append({"kind": "relation", "source": relation.get("from"), "target": relation.get("to"), "target_relation": relation.get("name"), "confidence": relation.get("confidence", 1.0), "extractor": extractor})
+        items.append({"kind": "relation", "mapping_ref": f"relationship:{relation.get('id')}", "source": relation.get("from"), "target": relation.get("to"), "target_relation": relation.get("name"), "confidence": relation.get("confidence", 1.0), "extractor": extractor})
     for rule in mapping.get("logic_rules") or []:
-        items.append({"kind": "logic_rule", "source": rule_source, "target": rule.get("name_cn") or rule.get("name"), "confidence": rule.get("confidence", 1.0), "extractor": extractor})
+        items.append({"kind": "logic_rule", "mapping_ref": f"logic_rule:{rule.get('id')}", "source": rule_source, "target": rule.get("name_cn") or rule.get("name"), "confidence": rule.get("confidence", 1.0), "extractor": extractor})
     return items
 
 
@@ -560,7 +560,11 @@ def attach_revision_to_materialized_rows(db: Session, *, run: ConstructionRun, r
     ]
     db.query(EvidenceRef).filter(EvidenceRef.construction_run_id == run.id, EvidenceRef.revision_id.is_(None)).update({EvidenceRef.revision_id: revision_id}, synchronize_session=False)
     if hasattr(EntityInstance, "revision_id"):
-        query = db.query(EntityInstance).filter(EntityInstance.ontology_id == run.ontology_id, EntityInstance.revision_id.is_(None))
+        query = db.query(EntityInstance).filter(
+            EntityInstance.ontology_id == run.ontology_id,
+            EntityInstance.revision_id.is_(None),
+            EntityInstance.is_deleted.is_(False),
+        )
         if assertion_ids:
             query = query.filter(EntityInstance.id.in_(assertion_ids))
         else:

@@ -3,9 +3,75 @@ from __future__ import annotations
 import json
 import re
 import logging
+import hashlib
 from app.services.v2.pipeline.base import PipelineStep, PipelineContext
 
 logger = logging.getLogger(__name__)
+
+
+_LLM_FAILURE_MESSAGES = {
+    "model_unavailable": "没有可用的结构化提取模型配置。",
+    "provider_call_failed": "结构化提取模型调用失败。",
+    "empty_response": "结构化提取模型返回空响应。",
+    "invalid_response": "结构化提取模型返回了无效 JSON。",
+    "invalid_config": "语义增强字段配置无效。",
+    "model_config_missing": "流水线固定的模型配置已不存在。",
+    "model_config_changed": "流水线固定的模型配置已发生变化。",
+    "model_pin_missing": "流水线缺少固定的模型配置版本。",
+    "prompt_pin_missing": "流水线缺少固定的提示词版本。",
+    "prompt_changed": "流水线固定的提示词版本已发生变化。",
+    "attempt_ledger_unavailable": "无法保存模型调用尝试记录。",
+}
+
+_AUTO_SYSTEM_PROMPT = "You are a structured data extraction expert. Return valid JSON only."
+_SCHEMA_SYSTEM_PROMPT = "You are a structured data extraction assistant. Return valid JSON only."
+_ENRICH_SYSTEM_PROMPT = "你是结构化语义分析专家，输出JSON。"
+
+
+def _prompt_digest(prompt_id: str, system_prompt: str, template: str) -> str:
+    payload = json.dumps(
+        {"prompt_id": prompt_id, "system_prompt": system_prompt, "template": template},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def prompt_provenance() -> dict[str, dict[str, str]]:
+    """Static prompt versions used by PipelineRun manifests and call records."""
+    return {
+        "llm_auto": {
+            "prompt_id": "pipeline.md_to_structured.auto.v1",
+            "prompt_digest": _prompt_digest(
+                "pipeline.md_to_structured.auto.v1", _AUTO_SYSTEM_PROMPT,
+                MarkdownToStructuredStep.AUTO_SCHEMA_PROMPT,
+            ),
+        },
+        "llm_schema": {
+            "prompt_id": "pipeline.md_to_structured.schema.v1",
+            "prompt_digest": _prompt_digest(
+                "pipeline.md_to_structured.schema.v1", _SCHEMA_SYSTEM_PROMPT,
+                MarkdownToStructuredStep.EXTRACT_PROMPT,
+            ),
+        },
+        "llm_enrich": {
+            "prompt_id": "pipeline.md_to_structured.enrich.v1",
+            "prompt_digest": _prompt_digest(
+                "pipeline.md_to_structured.enrich.v1", _ENRICH_SYSTEM_PROMPT,
+                MarkdownToStructuredStep.ENRICH_PROMPT,
+            ),
+        },
+    }
+
+
+class LLMExtractionError(RuntimeError):
+    """A requested LLM extraction could not produce a valid result."""
+
+    def __init__(self, requested_method: str, reason_code: str):
+        self.requested_method = requested_method
+        self.reason_code = reason_code if reason_code in _LLM_FAILURE_MESSAGES else "provider_call_failed"
+        super().__init__(f"LLM 结构化提取失败：{_LLM_FAILURE_MESSAGES[self.reason_code]}")
 
 
 def _get_first_model(model_id: str | None = None):
@@ -21,23 +87,67 @@ def _get_first_model(model_id: str | None = None):
         return None
 
 
-def _call_with_model(model_config, messages: list[dict]) -> str | None:
-    """使用用户配置的模型调用 LLM"""
+def _call_with_model_result(
+    model_config,
+    messages: list[dict],
+    *,
+    attempt_recorder=None,
+    phase: str | None = None,
+    prompt_id: str | None = None,
+    prompt_digest: str | None = None,
+) -> tuple[str | None, str | None]:
+    """Call an LLM and return a stable, non-sensitive failure reason."""
+    import time
+
+    started = time.monotonic()
+    attempt_id = None
+    if attempt_recorder is not None:
+        attempt_id = attempt_recorder.begin(
+            model_config=model_config,
+            messages=messages,
+            phase=phase,
+            prompt_id=prompt_id,
+            prompt_digest=prompt_digest,
+        )
+        if attempt_id is None:
+            return None, "attempt_ledger_unavailable"
+
+    def finish(status: str, response: str | None = None, reason: str | None = None) -> tuple[str | None, str | None]:
+        if attempt_recorder is not None and not attempt_recorder.finish(
+            attempt_id,
+            status=status,
+            response=response,
+            reason=reason,
+            duration_ms=int((time.monotonic() - started) * 1000),
+        ):
+            return None, "attempt_ledger_unavailable"
+        return response, reason
+
     if not model_config:
-        return None
+        reason = getattr(attempt_recorder, "unavailable_reason", None) or "model_unavailable"
+        return finish("failed", reason=reason)
     try:
         from app.services.llm_service import _call_llm
         from app.services.model_config_selector import llm_call_kwargs
-        call_kwargs = llm_call_kwargs(model_config)
+        call_kwargs = getattr(model_config, "_pinned_call_kwargs", None) or llm_call_kwargs(model_config)
         if not call_kwargs:
-            return None
-        return _call_llm(
+            return finish("failed", reason="model_unavailable")
+        response = _call_llm(
             **call_kwargs,
             messages=messages,
         )
     except Exception as e:
-        logger.info(f"LLM call failed: {e}")
-        return None
+        # Provider exception text may contain endpoint details or other runtime data.
+        logger.info("LLM call failed (%s)", type(e).__name__)
+        return finish("failed", reason="provider_call_failed")
+    if not isinstance(response, str) or not response.strip():
+        return finish("empty_response", response=response, reason="empty_response")
+    return finish("completed", response=response)
+
+
+def _call_with_model(model_config, messages: list[dict]) -> str | None:
+    """Compatibility helper for best-effort enrichment and split suggestions."""
+    return _call_with_model_result(model_config, messages)[0]
 
 
 class MarkdownToStructuredStep(PipelineStep):
@@ -78,68 +188,177 @@ class MarkdownToStructuredStep(PipelineStep):
         spec = ctx.spec.get("md_to_structured", {})
         target_schema = spec.get("target_schema", {})
         model_id = spec.get("model_id", "")
+        attempt_recorder = (ctx.runtime or {}).get("llm_attempt_recorder")
+        auto_extract = bool(spec.get("auto_extract"))
+        rule_based = bool(spec.get("rule_based"))
+        llm_enrich = bool(spec.get("llm_enrich"))
+        fallback_policy = "rule_based" if spec.get("fallback_policy") == "rule_based" else "fail_closed"
 
-        model_config = _get_first_model(model_id)
+        def fallback_to_rules(requested_method: str, failure_reason: str) -> list[dict]:
+            outcome = {
+                "method": requested_method,
+                "requested_method": requested_method,
+                "effective_method": None,
+                "fallback_policy": fallback_policy,
+                "fallback_reason": failure_reason,
+                "status": "degraded" if fallback_policy == "rule_based" else "failed",
+                "processed": len(data),
+                "success": 0,
+                "schema_fields": list(target_schema.keys()) if target_schema else [],
+            }
+            ctx.meta["md_to_structured"] = outcome
+            if fallback_policy != "rule_based":
+                raise LLMExtractionError(requested_method, failure_reason)
 
-        # 无 target_schema 时自动推断或规则提取
-        if not target_schema:
-            if not spec.get("auto_extract") and not spec.get("rule_based"):
-                ctx.meta["md_to_structured"] = {
-                    "method": "passthrough", "processed": len(data), "success": len(data)
-                }
-                return data
-            sample_md = next((r.get("markdown_text", "") for r in data if r.get("markdown_text")), "")
-            if sample_md and model_config and spec.get("auto_extract"):
-                # 尝试 LLM 自动提取
-                result = self._auto_extract_with_llm(data, model_config)
-                if result:
-                    ctx.meta["md_to_structured"] = {
-                        "method": "llm_auto", "processed": len(data), "success": len(result)
-                    }
-                    if spec.get("llm_enrich") and model_config:
-                        result = self._llm_enrich_rows(result, model_config, spec)
-                        ctx.meta["md_to_structured"]["method"] = "llm_auto+enrich"
-                    return result
-            # 规则提取（确定性）
+            # A permitted fallback restarts the whole source with deterministic
+            # extraction; no partial LLM output is mixed into the candidate.
             result = self._rule_based_extract(data, ctx)
-            # 方案三：规则提取后可选 LLM 语义增强
-            if spec.get("llm_enrich") and model_config:
-                result = self._llm_enrich_rows(result, model_config, spec)
-                ctx.meta["md_to_structured"]["method"] = "rule_based+enrich"
+            rule_metadata = dict(ctx.meta["md_to_structured"])
+            ctx.meta["md_to_structured"] = {
+                **rule_metadata,
+                **outcome,
+                "method": "rule_based",
+                "effective_method": "rule_based",
+                # Rule-produced rows are useful fallback output, but never
+                # count as successful LLM extraction/enrichment.
+                "success": 0,
+                "emitted_records": int(rule_metadata.get("emitted_records") or 0),
+            }
             return result
 
-        # 有 target_schema 时 LLM 按字段提取
-        result, success = [], 0
-        for row in data:
-            md_text = row.get("markdown_text", "")
-            if not md_text:
-                result.append(row)
-                continue
-            try:
-                extracted = self._extract(md_text, target_schema, model_config)
-                row = dict(row)
-                row.update(extracted)
-                row["extraction_method"] = "llm_schema"
-                row["structured_extraction_ok"] = True
-                success += 1
-            except Exception as e:
-                logger.warning(f"MarkdownToStructured failed: {e}")
-                row = dict(row)
-                row["structured_extraction_ok"] = False
-                row["structured_extraction_error"] = str(e)
-            result.append(row)
+        has_markdown = any(
+            isinstance(row.get("markdown_text"), str) and row["markdown_text"].strip()
+            for row in data
+        )
+        if not target_schema and not auto_extract and not rule_based and not llm_enrich:
+            ctx.meta["md_to_structured"] = {
+                "method": "passthrough",
+                "requested_method": "none",
+                "effective_method": "passthrough",
+                "fallback_policy": fallback_policy,
+                "fallback_reason": None,
+                "status": "skipped",
+                "processed": len(data),
+                "success": len(data),
+            }
+            return data
 
+        if target_schema or auto_extract:
+            base_method = "llm_schema" if target_schema else "llm_auto"
+            requested_method = f"{base_method}+llm_enrich" if llm_enrich else base_method
+            if not has_markdown:
+                ctx.meta["md_to_structured"] = {
+                    "method": requested_method,
+                    "requested_method": requested_method,
+                    "effective_method": "none",
+                    "fallback_policy": fallback_policy,
+                    "fallback_reason": "no_markdown_text",
+                    "status": "skipped",
+                    "processed": 0,
+                    "success": 0,
+                    "schema_fields": list(target_schema.keys()) if target_schema else [],
+                }
+                return data
+            if "llm_model_config" in (ctx.runtime or {}):
+                model_config = ctx.runtime.get("llm_model_config")
+            else:
+                model_config = _get_first_model(model_id)
+
+            if target_schema:
+                result, failure_reason = self._schema_extract_with_llm(
+                    data, target_schema, model_config, attempt_recorder,
+                )
+            else:
+                result, failure_reason = self._auto_extract_with_llm(data, model_config, attempt_recorder)
+
+            if failure_reason:
+                return fallback_to_rules(requested_method, failure_reason)
+
+            llm_success_count = sum(
+                1 for row in (result or [])
+                if row.get("extraction_method") in {"llm_schema", "llm_auto"}
+            )
+            effective_method = base_method
+            if llm_enrich:
+                if not result:
+                    ctx.meta["md_to_structured"] = {
+                        "method": base_method,
+                        "requested_method": requested_method,
+                        "effective_method": base_method,
+                        "fallback_policy": fallback_policy,
+                        "fallback_reason": "no_records_to_enrich",
+                        "status": "skipped",
+                        "processed": len(data),
+                        "success": llm_success_count,
+                        "schema_fields": list(target_schema.keys()) if target_schema else [],
+                    }
+                    return result or []
+                result, failure_reason = self._llm_enrich_rows(result, model_config, spec, attempt_recorder)
+                if failure_reason:
+                    return fallback_to_rules(requested_method, failure_reason)
+                effective_method = f"{base_method}+llm_enrich"
+                llm_success_count = len(result)
+
+            ctx.meta["md_to_structured"] = {
+                "method": effective_method,
+                "requested_method": requested_method,
+                "effective_method": effective_method,
+                "fallback_policy": fallback_policy,
+                "fallback_reason": None,
+                "status": "success",
+                "processed": len(data),
+                "success": llm_success_count,
+                "schema_fields": list(target_schema.keys()) if target_schema else [],
+            }
+            return result or []
+
+        # Rule extraction remains deterministic; an explicit enrichment call
+        # is recorded separately and obeys the same fallback policy.
+        result = self._rule_based_extract(data, ctx)
+        rule_metadata = dict(ctx.meta["md_to_structured"])
+        if llm_enrich:
+            requested_method = "llm_enrich"
+            if not result:
+                ctx.meta["md_to_structured"] = {
+                    **rule_metadata,
+                    "method": "rule_based",
+                    "requested_method": requested_method,
+                    "effective_method": "rule_based",
+                    "fallback_policy": fallback_policy,
+                    "fallback_reason": "no_records_to_enrich",
+                    "status": "skipped",
+                }
+                return result
+            if "llm_model_config" in (ctx.runtime or {}):
+                model_config = ctx.runtime.get("llm_model_config")
+            else:
+                model_config = _get_first_model(model_id)
+            enriched, failure_reason = self._llm_enrich_rows(result, model_config, spec, attempt_recorder)
+            if failure_reason:
+                return fallback_to_rules(requested_method, failure_reason)
+            result = enriched
+            effective_method = "rule_based+llm_enrich"
+        else:
+            requested_method = "rule_based"
+            effective_method = "rule_based"
         ctx.meta["md_to_structured"] = {
-            "method": "llm_schema",
-            "processed": len(data),
-            "success": success,
-            "schema_fields": list(target_schema.keys()),
+            **rule_metadata,
+            "method": effective_method,
+            "requested_method": requested_method,
+            "effective_method": effective_method,
+            "fallback_policy": fallback_policy,
+            "fallback_reason": None,
+            "status": "success",
+            "success": len(result) if llm_enrich else rule_metadata.get("success", 0),
+            "emitted_records": len(result),
         }
         return result
 
     # ── LLM 自动提取（无 target_schema 时）─────────────────────────────────
 
-    def _auto_extract_with_llm(self, data: list[dict], model_config) -> list[dict] | None:
+    def _auto_extract_with_llm(
+        self, data: list[dict], model_config, attempt_recorder=None,
+    ) -> tuple[list[dict] | None, str | None]:
         """一次性请求 LLM 完成 schema 推断 + 提取"""
         result = []
         for row in data:
@@ -147,12 +366,14 @@ class MarkdownToStructuredStep(PipelineStep):
             if not md:
                 result.append(row)
                 continue
-            resp = _call_with_model(model_config, [
-                {"role": "system", "content": "You are a structured data extraction expert. Return valid JSON only."},
-                {"role": "user", "content": self.AUTO_SCHEMA_PROMPT.format(text=md[:4000])},
-            ])
-            if resp is None:
-                return None  # LLM 失败 → 回退规则提取
+            prompt = self.AUTO_SCHEMA_PROMPT.format(text=md[:4000])
+            resp, reason = _call_with_model_result(model_config, [
+                {"role": "system", "content": _AUTO_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ], attempt_recorder=attempt_recorder, phase="llm_auto",
+                **prompt_provenance()["llm_auto"])
+            if reason:
+                return None, reason
             try:
                 text = resp.strip()
                 if "```" in text:
@@ -163,9 +384,11 @@ class MarkdownToStructuredStep(PipelineStep):
                     records = extracted["records"]
                 else:
                     records = extracted if isinstance(extracted, list) else [extracted]
+                if not isinstance(records, list) or any(not isinstance(item, dict) for item in records):
+                    if attempt_recorder is not None:
+                        attempt_recorder.mark_last_invalid_response()
+                    return None, "invalid_response"
                 for idx, item in enumerate(records):
-                    if not isinstance(item, dict):
-                        continue
                     out = dict(row)
                     out.update({str(k): str(v) for k, v in item.items()})
                     out.setdefault("record_id", f"{row.get('filename') or row.get('source_file') or 'doc'}:llm:{idx + 1}")
@@ -173,33 +396,57 @@ class MarkdownToStructuredStep(PipelineStep):
                     result.append(out)
                 continue
             except Exception:
-                row = dict(row)
-                row["extraction_method"] = "llm_auto_parse_error"
-            result.append(row)
-        return result
+                if attempt_recorder is not None:
+                    attempt_recorder.mark_last_invalid_response()
+                return None, "invalid_response"
+        return result, None
 
     # ── LLM 字段提取（有 target_schema 时）─────────────────────────────────
 
-    def _extract(self, md_text: str, schema: dict, model_config) -> dict:
-        return self._extract_fields(md_text, schema, model_config)
+    def _schema_extract_with_llm(
+        self, data: list[dict], schema: dict, model_config, attempt_recorder=None,
+    ) -> tuple[list[dict] | None, str | None]:
+        result = []
+        for row in data:
+            md_text = row.get("markdown_text", "")
+            if not md_text:
+                result.append(row)
+                continue
+            try:
+                extracted = self._extract_fields(md_text, schema, model_config, attempt_recorder)
+            except LLMExtractionError as exc:
+                return None, exc.reason_code
+            row = dict(row)
+            row.update(extracted)
+            row["extraction_method"] = "llm_schema"
+            row["structured_extraction_ok"] = True
+            result.append(row)
+        return result, None
 
-    def _extract_fields(self, md_text: str, schema: dict, model_config) -> dict:
+    def _extract_fields(self, md_text: str, schema: dict, model_config, attempt_recorder=None) -> dict:
         """LLM 按 target_schema 提取字段"""
         schema_str = "\n".join(f"- {k}: {v}" for k, v in schema.items())
-        resp = _call_with_model(model_config, [
-            {"role": "system", "content": "You are a structured data extraction assistant. Return valid JSON only."},
-            {"role": "user", "content": self.EXTRACT_PROMPT.format(schema=schema_str, text=md_text[:4000])},
-        ])
-        if resp is None:
-            return {k: "" for k in schema}
+        prompt = self.EXTRACT_PROMPT.format(schema=schema_str, text=md_text[:4000])
+        resp, reason = _call_with_model_result(model_config, [
+            {"role": "system", "content": _SCHEMA_SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ], attempt_recorder=attempt_recorder, phase="llm_schema",
+            **prompt_provenance()["llm_schema"])
+        if reason:
+            raise LLMExtractionError("llm_schema", reason)
         try:
             text = resp.strip()
             if "```" in text:
                 m = re.search(r'```(?:json)?\s*([\s\S]+?)```', text)
                 text = m.group(1).strip() if m else text
-            return json.loads(text)
+            parsed = json.loads(text)
+            if not isinstance(parsed, dict):
+                raise ValueError("response must be a JSON object")
+            return parsed
         except Exception:
-            return {k: "" for k in schema}
+            if attempt_recorder is not None:
+                attempt_recorder.mark_last_invalid_response()
+            raise LLMExtractionError("llm_schema", "invalid_response")
 
     # ── 规则回退 ────────────────────────────────────────────────────────────
 
@@ -441,56 +688,71 @@ class MarkdownToStructuredStep(PipelineStep):
         "importance": "重要程度（high/medium/low，单选）",
     }
 
-    def _llm_enrich_rows(self, rows: list[dict], model_config, spec: dict) -> list[dict]:
-        """规则提取后的 LLM 语义增强：只加新字段，不改原有字段，不改行数。"""
+    def _llm_enrich_rows(
+        self, rows: list[dict], model_config, spec: dict, attempt_recorder=None,
+    ) -> tuple[list[dict], str | None]:
+        """Enhance rows atomically; return the untouched input on any failure."""
         if not rows:
-            return rows
-
+            return rows, None
         enrich_fields: dict = spec.get("enrich_fields") or self._DEFAULT_ENRICH_FIELDS
         if isinstance(enrich_fields, list):
-            enrich_fields = {f: self._DEFAULT_ENRICH_FIELDS.get(f, f) for f in enrich_fields}
+            if any(not isinstance(field, str) for field in enrich_fields):
+                return rows, "invalid_config"
+            enrich_fields = {field: self._DEFAULT_ENRICH_FIELDS.get(field, field) for field in enrich_fields}
+        if not isinstance(enrich_fields, dict) or any(not isinstance(key, str) for key in enrich_fields):
+            return rows, "invalid_config"
 
         fields_desc = "\n".join(f"- {k}: {v}" for k, v in enrich_fields.items())
         SKIP = {"markdown_text", "content", "storage_uri"}
         BATCH = 20
 
-        result = list(rows)
+        result: list[dict] = []
         for batch_start in range(0, len(rows), BATCH):
             batch = rows[batch_start: batch_start + BATCH]
             slim_batch = [
                 {k: v for k, v in row.items() if k not in SKIP and v not in (None, "")}
                 for row in batch
             ]
+            prompt = self.ENRICH_PROMPT.format(
+                    fields_desc=fields_desc,
+                    records_json=json.dumps(slim_batch, ensure_ascii=False),
+                )
+            raw, failure_reason = _call_with_model_result(model_config, [
+                {"role": "system", "content": _ENRICH_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ], attempt_recorder=attempt_recorder, phase="llm_enrich",
+                **prompt_provenance()["llm_enrich"])
+            if failure_reason:
+                return rows, failure_reason
             try:
-                raw = _call_with_model(model_config, [
-                    {"role": "system", "content": "你是结构化语义分析专家，输出JSON。"},
-                    {"role": "user", "content": self.ENRICH_PROMPT.format(
-                        fields_desc=fields_desc,
-                        records_json=json.dumps(slim_batch, ensure_ascii=False),
-                    )},
-                ])
-                if not raw:
-                    continue
                 text = raw.strip()
                 if "```" in text:
                     m = re.search(r'```(?:json)?\s*([\s\S]+?)```', text)
                     text = m.group(1).strip() if m else text
                 parsed = json.loads(text)
                 enriched = parsed.get("records", []) if isinstance(parsed, dict) else parsed
-                if not isinstance(enriched, list) or len(enriched) != len(batch):
-                    logger.warning(f"LLM enrich returned {len(enriched) if isinstance(enriched,list) else '?'} rows, expected {len(batch)}, skipping batch")
-                    continue
-                for i, (orig, extra) in enumerate(zip(batch, enriched)):
+                if (
+                    not isinstance(enriched, list)
+                    or len(enriched) != len(batch)
+                    or any(not isinstance(item, dict) for item in enriched)
+                ):
+                    if attempt_recorder is not None:
+                        attempt_recorder.mark_last_invalid_response()
+                    return rows, "invalid_response"
+                for orig, extra in zip(batch, enriched):
                     merged = dict(orig)
                     for k, v in (extra or {}).items():
                         if k not in orig:          # 只加新字段，不覆盖原有字段
                             merged[k] = v
-                    merged["extraction_method"] = merged.get("extraction_method", "") + "+llm_enrich"
-                    result[batch_start + i] = merged
-            except Exception as e:
-                logger.warning(f"LLM enrich batch failed (non-fatal): {e}")
+                    previous_method = merged.get("extraction_method")
+                    merged["extraction_method"] = f"{previous_method}+llm_enrich" if isinstance(previous_method, str) and previous_method else "llm_enrich"
+                    result.append(merged)
+            except Exception:
+                if attempt_recorder is not None:
+                    attempt_recorder.mark_last_invalid_response()
+                return rows, "invalid_response"
 
-        return result
+        return result, None
 
 
 def PathLikeTitle(value: str) -> str:

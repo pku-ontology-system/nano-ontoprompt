@@ -10,7 +10,7 @@ from app.models.v2.query_view import QueryDataView
 from app.models.v2.scenario import ScenarioResource, ScenarioStudy, ScenarioStudyCase
 from app.services.v2.graph.falkordb_service import FalkorDBService
 from app.services.v2.object_query.core import FalkorReadAdapter
-from app.services.v2.object_query.data_views import as_response, build_live_view
+from app.services.v2.object_query.data_views import as_response, build_live_view, require_ready
 from app.services.v2.object_query.metadata import load_sql_metadata
 from app.services.v2.object_query.authorization import require_ontology_access
 from app.services.v2.object_query.errors import ObjectQueryError
@@ -48,6 +48,13 @@ def _ensure_base_view(db, ontology, user, graph):
     report = run.config.get("report", {}) if run else {}
     digest = report.get("sha256", "frepple-demo-missing-digest")
     existing = db.query(QueryDataView).filter_by(ontology_id=ontology.id, source_manifest_digest=digest, status="ready").order_by(QueryDataView.created_at.asc()).first()
+    if existing:
+        try:
+            existing = require_ready(db, existing.id, ontology.id)
+        except ObjectQueryError as exc:
+            if exc.code != "view_expired":
+                raise
+            existing = None
     if existing:
         try:
             snapshot = FalkorReadAdapter(graph._graph(existing.graph_key), graph_ontology_id=existing.graph_key).read(ontology.id)

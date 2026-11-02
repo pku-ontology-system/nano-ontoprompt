@@ -1,8 +1,6 @@
 """API for the FactoryNet temporal data-arrival simulation."""
 from __future__ import annotations
 
-import hashlib
-import json
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -23,10 +21,20 @@ from app.services.v2.temporal_replay_service import (
     FACTORYNET_SOURCE_ID as REPLAY_FACTORYNET_SOURCE_ID,
     build_factorynet_replay_batches,
     dispatch_replay,
+    serialize_replay_batch,
     serialize_replay,
     update_replay_control,
 )
-from app.services.v2.temporal_stream_service import StreamError
+from app.services.v2.temporal_stream_service import (
+    TEMPORAL_EVENT_HASH_VERSION,
+    StreamError,
+    temporal_event_envelope_hash,
+    temporal_event_envelope_matches,
+)
+from app.services.v2.temporal_error_safety import temporal_error_details, temporal_error_payload
+from app.services.v2.dataset_authorization import require_dataset_access
+from app.services.v2.object_query.authorization import require_ontology_access
+from app.services.v2.object_query.errors import ObjectQueryError
 
 
 router = APIRouter(prefix="/temporal/replays", dependencies=[Depends(get_current_user)])
@@ -81,7 +89,10 @@ def _factorynet_version(db: Session, dataset_id: str | None, version_id: str | N
     # compatibility check while rejecting C-MAPSS or arbitrary temporal data.
     if manifest.get("source_id") != FACTORYNET_SOURCE_ID and dataset.name != "FactoryNet CNC 铣削时序数据":
         raise HTTPException(status_code=409, detail={"error": "WRONG_SOURCE", "message": "该数据版本不是 FactoryNet CNC 官方样例"})
-    version = db.query(DatasetVersion).filter(DatasetVersion.id == version_id).first() if version_id else None
+    version = db.query(DatasetVersion).filter(
+        DatasetVersion.id == version_id,
+        DatasetVersion.dataset_id == dataset.id,
+    ).first() if version_id else None
     if version is None and dataset.latest_version_id:
         version = db.query(DatasetVersion).filter(DatasetVersion.id == dataset.latest_version_id).first()
     if version is None:
@@ -97,17 +108,34 @@ def _read_factorynet(db: Session, version: DatasetVersion) -> list[dict[str, Any
     try:
         return parse_temporal_bytes(get_storage_service().get_object(version.storage_uri))
     except Exception as exc:
-        raise HTTPException(status_code=424, detail={"error": "STORAGE_OBJECT_MISSING", "message": f"FactoryNet 源文件无法读取: {exc}"}) from exc
+        code, message = temporal_error_details("STORAGE_OBJECT_MISSING")
+        raise HTTPException(status_code=424, detail={"error": code, "message": message}) from exc
 
 
 def _latest_batch(db: Session, replay_id: str) -> TemporalReplayBatch | None:
     return db.query(TemporalReplayBatch).filter(TemporalReplayBatch.replay_id == replay_id).order_by(TemporalReplayBatch.batch_no.desc()).first()
 
 
+def _require_replay_access(db: Session, replay: TemporalReplay, user: User) -> None:
+    try:
+        require_ontology_access(db, replay.ontology_id, str(user.id), user.role)
+    except ObjectQueryError:
+        raise HTTPException(404, "时序模拟不存在") from None
+
+
 @router.get("")
-def list_replays(limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_db)):
-    rows = db.query(TemporalReplay).order_by(TemporalReplay.created_at.desc()).limit(limit).all()
-    return [serialize_replay(item, latest_batch=_latest_batch(db, item.id)) for item in rows]
+def list_replays(limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    rows = db.query(TemporalReplay).order_by(TemporalReplay.created_at.desc()).limit(limit * 4).all()
+    result = []
+    for item in rows:
+        try:
+            _require_replay_access(db, item, user)
+            result.append(serialize_replay(item, latest_batch=_latest_batch(db, item.id)))
+        except HTTPException:
+            continue
+        if len(result) >= limit:
+            break
+    return result
 
 
 @router.post("", status_code=201)
@@ -117,6 +145,7 @@ def create_replay(body: TemporalReplayCreate, db: Session = Depends(get_db), use
     if not body.ontology_name.strip() and not body.ontology_id:
         raise HTTPException(422, "新建本体名称不能为空")
     dataset, version = _factorynet_version(db, body.dataset_id, body.dataset_version_id)
+    require_dataset_access(db, dataset, user)
     rows = _read_factorynet(db, version)
     if not rows:
         raise HTTPException(422, "FactoryNet 数据为空，无法创建时序模拟")
@@ -129,7 +158,8 @@ def create_replay(body: TemporalReplayCreate, db: Session = Depends(get_db), use
         series_ids = episodes[:1]
     unknown = sorted(set(series_ids) - set(episodes))
     if unknown:
-        raise HTTPException(422, detail={"error": "UNKNOWN_SERIES", "message": f"不存在的 episode_id: {unknown[0]}"})
+        code, message = temporal_error_details("UNKNOWN_SERIES")
+        raise HTTPException(422, detail={"error": code, "message": message})
     selected_times: list[float] = []
     selected_episode_ids = set(series_ids)
     for index, row in enumerate(rows):
@@ -138,7 +168,8 @@ def create_replay(body: TemporalReplayCreate, db: Session = Depends(get_db), use
         try:
             selected_times.append(_source_time(row, index, body.time_column))
         except ValueError as exc:
-            raise HTTPException(422, detail={"error": "INVALID_TIME_VALUE", "message": str(exc), "row_index": index}) from exc
+            error = temporal_error_payload("INVALID_TIME_VALUE", fallback_code="INVALID_TIME_VALUE", extra={"row_index": index})
+            raise HTTPException(422, detail={"error": error["code"], "message": error["message"], **{key: value for key, value in error.items() if key not in {"code", "message"}}}) from exc
     if not selected_times:
         raise HTTPException(422, "所选生产过程没有可用时间值")
     start = body.start_time if body.start_time is not None else min(selected_times)
@@ -156,6 +187,10 @@ def create_replay(body: TemporalReplayCreate, db: Session = Depends(get_db), use
         ontology = db.query(OntologyProject).filter(OntologyProject.id == body.ontology_id).first()
         if not ontology:
             raise HTTPException(404, "目标本体不存在")
+        try:
+            require_ontology_access(db, ontology.id, str(user.id), user.role)
+        except ObjectQueryError:
+            raise HTTPException(404, "目标本体不存在或不可访问") from None
         if ontology.data_class != "temporal":
             raise HTTPException(409, "时序模拟只能写入时序本体")
     else:
@@ -231,14 +266,36 @@ def create_replay(body: TemporalReplayCreate, db: Session = Depends(get_db), use
                 # the worker will validate the original payload and surface a
                 # precise source error instead of crashing the scheduler.
                 event_ordinal = float(item["time_from"])
+            entity_key = str(row.get("machine_type") or episode)
+            source_ref = {
+                "dataset_id": dataset.id,
+                "dataset_version_id": version.id,
+                "source_row_id": source_row_id,
+                "source_file": replay_config.get("source_file"),
+                "source_mode": "file_replay",
+                "batch_no": item["batch_no"],
+            }
+            event_fields = {
+                "event_key": event_key,
+                "operation": "upsert",
+                "episode_id": episode,
+                "entity_key": entity_key,
+                "ordinal": event_ordinal,
+                "source_sequence": event_sequence_counter,
+                "source_row_id": source_row_id,
+                "payload": payload,
+                "source_ref": source_ref,
+            }
+            payload_hash = temporal_event_envelope_hash(replay, **event_fields)
             db.add(TemporalStreamEvent(
                 id=str(uuid.uuid4()), replay_id=replay.id, event_key=event_key,
-                episode_id=episode, entity_key=str(row.get("machine_type") or episode),
+                episode_id=episode, entity_key=entity_key,
                 ordinal=event_ordinal,
                 source_sequence=event_sequence_counter,
                 source_row_id=source_row_id, payload=payload,
-                source_ref={"dataset_id": dataset.id, "dataset_version_id": version.id, "source_row_id": source_row_id, "batch_no": item["batch_no"]},
-                payload_hash=__import__("hashlib").sha256(__import__("json").dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest(),
+                source_ref=source_ref,
+                payload_hash=payload_hash,
+                payload_hash_version=TEMPORAL_EVENT_HASH_VERSION,
                 status="queued",
             ))
             event_sequence_counter += 1
@@ -247,30 +304,30 @@ def create_replay(body: TemporalReplayCreate, db: Session = Depends(get_db), use
 
 
 @router.get("/{replay_id}")
-def get_replay(replay_id: str, db: Session = Depends(get_db)):
+def get_replay(replay_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     replay = db.query(TemporalReplay).filter(TemporalReplay.id == replay_id).first()
     if not replay:
         raise HTTPException(404, "时序模拟不存在")
+    _require_replay_access(db, replay, user)
     return serialize_replay(replay, latest_batch=_latest_batch(db, replay.id))
 
 
 @router.get("/{replay_id}/batches")
-def get_replay_batches(replay_id: str, db: Session = Depends(get_db)):
-    replay = db.query(TemporalReplay.id).filter(TemporalReplay.id == replay_id).first()
-    if not replay:
-        raise HTTPException(404, "时序模拟不存在")
-    rows = db.query(TemporalReplayBatch).filter(TemporalReplayBatch.replay_id == replay_id).order_by(TemporalReplayBatch.batch_no).all()
-    return {"replay_id": replay_id, "batches": [
-        {"id": item.id, "batch_no": item.batch_no, "time_from": item.time_from, "time_to": item.time_to, "status": item.status, "source_rows": item.source_rows, "normalized_rows": item.normalized_rows, "nodes_written": item.nodes_written, "edges_written": item.edges_written, "issue_count": item.issue_count, "latest_rows": item.latest_rows or [], "error": item.error}
-        for item in rows
-    ]}
-
-
-@router.post("/{replay_id}/control")
-def control_replay(replay_id: str, body: TemporalReplayControl, db: Session = Depends(get_db), _user: User = Depends(require_editor)):
+def get_replay_batches(replay_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     replay = db.query(TemporalReplay).filter(TemporalReplay.id == replay_id).first()
     if not replay:
         raise HTTPException(404, "时序模拟不存在")
+    _require_replay_access(db, replay, user)
+    rows = db.query(TemporalReplayBatch).filter(TemporalReplayBatch.replay_id == replay_id).order_by(TemporalReplayBatch.batch_no).all()
+    return {"replay_id": replay_id, "batches": [serialize_replay_batch(item) for item in rows]}
+
+
+@router.post("/{replay_id}/control")
+def control_replay(replay_id: str, body: TemporalReplayControl, db: Session = Depends(get_db), user: User = Depends(require_editor)):
+    replay = db.query(TemporalReplay).filter(TemporalReplay.id == replay_id).first()
+    if not replay:
+        raise HTTPException(404, "时序模拟不存在")
+    _require_replay_access(db, replay, user)
     try:
         if getattr(replay, "graph_namespace", None) and getattr(replay, "total_events", 0):
             from app.services.v2.temporal_stream_service import dispatch_stream, update_stream_control
@@ -278,7 +335,7 @@ def control_replay(replay_id: str, body: TemporalReplayControl, db: Session = De
         else:
             replay, dispatch = update_replay_control(db, replay, body.action, body.speed)
     except (ValueError, StreamError) as exc:
-        raise HTTPException(409, getattr(exc, "extra", None) and {"code": getattr(exc, "code", "STREAM_INVALID"), "message": str(exc), **getattr(exc, "extra", {})} or str(exc)) from exc
+        raise HTTPException(409, detail=temporal_error_payload(exc, fallback_code="INVALID_CONTROL")) from exc
     if dispatch:
         if getattr(replay, "graph_namespace", None) and getattr(replay, "total_events", 0):
             dispatch_stream(replay.id)
@@ -288,10 +345,11 @@ def control_replay(replay_id: str, body: TemporalReplayControl, db: Session = De
 
 
 @router.post("/{replay_id}/segments", status_code=201)
-def append_replay_segment(replay_id: str, body: TemporalReplaySegment, db: Session = Depends(get_db), _user: User = Depends(require_editor)):
+def append_replay_segment(replay_id: str, body: TemporalReplaySegment, db: Session = Depends(get_db), user: User = Depends(require_editor)):
     replay = db.query(TemporalReplay).filter(TemporalReplay.id == replay_id).first()
     if not replay:
         raise HTTPException(404, "时序模拟不存在")
+    _require_replay_access(db, replay, user)
     if replay.status in {"failed", "cancelled"}:
         raise HTTPException(409, "失败或取消的模拟不能追加区间")
     if body.end_time < body.start_time:
@@ -350,9 +408,19 @@ def append_replay_segment(replay_id: str, body: TemporalReplaySegment, db: Sessi
             source_row_id = str(row.get("_source_row_index", row_offset))
             event_key = f"factorynet:{episode}:{source_row_id}"
             payload = {key: value for key, value in row.items() if not str(key).startswith("_")}
-            payload_hash = hashlib.sha256(
-                json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
-            ).hexdigest()
+            entity_key = str(row.get("machine_type") or episode)
+            try:
+                event_ordinal = float(row.get(replay.time_column or "time_s"))
+            except (TypeError, ValueError):
+                event_ordinal = float(item["time_from"])
+            source_ref = {
+                "dataset_id": replay.dataset_id,
+                "dataset_version_id": replay.dataset_version_id,
+                "source_row_id": source_row_id,
+                "source_file": (replay.config or {}).get("source_file"),
+                "source_mode": "file_replay",
+                "batch_no": item["batch_no"],
+            }
             if event_key in existing_event_keys:
                 # The source interval is required to be after the current
                 # end, so a duplicate normally indicates a stale retry.  Keep
@@ -362,25 +430,81 @@ def append_replay_segment(replay_id: str, body: TemporalReplaySegment, db: Sessi
                     TemporalStreamEvent.replay_id == replay.id,
                     TemporalStreamEvent.event_key == event_key,
                 ).first()
-                if existing and existing.payload_hash != payload_hash:
-                    raise HTTPException(409, detail={"code": "EVENT_PAYLOAD_CONFLICT", "message": f"事件 {event_key} 的载荷不同"})
+                if existing:
+                    event_fields = {
+                        "event_key": event_key,
+                        "operation": "upsert",
+                        "episode_id": episode,
+                        "entity_key": entity_key,
+                        "ordinal": event_ordinal,
+                        # The route assigns sequence only to newly admitted
+                        # rows; a duplicate source row retains its original
+                        # persisted stream position.
+                        "source_sequence": existing.source_sequence,
+                        "source_row_id": source_row_id,
+                        "payload": payload,
+                        "source_ref": source_ref,
+                    }
+                    existing_version = int(getattr(existing, "payload_hash_version", 1) or 1)
+                    existing_fields = {
+                        "event_key": existing.event_key,
+                        "operation": existing.operation or "upsert",
+                        "episode_id": existing.episode_id,
+                        "entity_key": existing.entity_key,
+                        "ordinal": existing.ordinal,
+                        "source_sequence": existing.source_sequence,
+                        "source_row_id": existing.source_row_id or existing.event_key,
+                        "payload": existing.payload or {},
+                        "source_ref": existing.source_ref or {},
+                    }
+                    if existing_version == 1:
+                        legacy_source_ref = dict(source_ref)
+                        legacy_source_ref.pop("source_file", None)
+                        legacy_source_ref.pop("source_mode", None)
+                        exact_envelope_match = temporal_event_envelope_matches(
+                            replay, existing,
+                            **{**event_fields, "source_ref": legacy_source_ref},
+                        )
+                        stored_hash_valid = True
+                    elif existing_version == TEMPORAL_EVENT_HASH_VERSION:
+                        exact_envelope_match = temporal_event_envelope_matches(
+                            replay, existing, **event_fields,
+                        )
+                        stored_hash_valid = (
+                            temporal_event_envelope_hash(replay, **existing_fields)
+                            == existing.payload_hash
+                        )
+                    else:
+                        exact_envelope_match = False
+                        stored_hash_valid = False
+                    if not exact_envelope_match or not stored_hash_valid:
+                        raise HTTPException(409, detail={"code": "EVENT_PAYLOAD_CONFLICT", "message": f"事件 {event_key} 的完整 envelope 不同"})
                 continue
-            try:
-                event_ordinal = float(row.get(replay.time_column or "time_s"))
-            except (TypeError, ValueError):
-                event_ordinal = float(item["time_from"])
+            event_fields = {
+                "event_key": event_key,
+                "operation": "upsert",
+                "episode_id": episode,
+                "entity_key": entity_key,
+                "ordinal": event_ordinal,
+                "source_sequence": next_source_sequence,
+                "source_row_id": source_row_id,
+                "payload": payload,
+                "source_ref": source_ref,
+            }
+            payload_hash = temporal_event_envelope_hash(replay, **event_fields)
             db.add(TemporalStreamEvent(
                 id=str(uuid.uuid4()),
                 replay_id=replay.id,
                 event_key=event_key,
                 episode_id=episode,
-                entity_key=str(row.get("machine_type") or episode),
+                entity_key=entity_key,
                 ordinal=event_ordinal,
                 source_sequence=next_source_sequence,
                 source_row_id=source_row_id,
                 payload=payload,
-                source_ref={"dataset_id": replay.dataset_id, "dataset_version_id": replay.dataset_version_id, "source_row_id": source_row_id, "batch_no": item["batch_no"]},
+                source_ref=source_ref,
                 payload_hash=payload_hash,
+                payload_hash_version=TEMPORAL_EVENT_HASH_VERSION,
                 status="queued",
             ))
             existing_event_keys.add(event_key)
@@ -430,10 +554,12 @@ def replay_graph(
     at: float | None = Query(None),
     relation_state: str = Query("all", pattern="^(all|current)$"),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     replay = db.query(TemporalReplay).filter(TemporalReplay.id == replay_id).first()
     if not replay:
         raise HTTPException(404, "时序模拟不存在")
+    _require_replay_access(db, replay, user)
     from app.services.v2.graph.falkordb_service import FalkorDBService
     service = FalkorDBService()
     try:

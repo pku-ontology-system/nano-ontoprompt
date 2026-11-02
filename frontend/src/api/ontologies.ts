@@ -43,8 +43,6 @@ export const ontologyApi = {
   deleteAction: (oid: string, aid: string) => apiClient.delete(`/ontologies/${oid}/actions/${aid}`),
 
   // Extraction
-  startExtraction: (oid: string, body: { prompt_id: string; model_id: string; model_name: string; constraints?: string[] }) =>
-    apiClient.post<{ task_id: string }>(`/ontologies/${oid}/execute`, body),
   getExtractionStatus: (oid: string, task_id: string) =>
     apiClient.get(`/ontologies/${oid}/execute/status?task_id=${task_id}`),
 

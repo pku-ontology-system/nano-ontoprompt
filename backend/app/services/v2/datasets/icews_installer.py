@@ -68,6 +68,10 @@ def install_icews_dataset(db: Session, archive: bytes | None = None) -> dict[str
         manifest = existing.schema_json or {}
         if manifest.get("archive_sha256") == ICEWS_SHA256:
             version = db.query(DatasetVersion).filter(DatasetVersion.id == existing.latest_version_id).first()
+            if manifest.get("access_scope") != "shared_read":
+                manifest = {**manifest, "access_scope": "shared_read"}
+                existing.schema_json = manifest
+                db.commit()
             return {"dataset_id": existing.id, "version_id": version.id if version else None, "source_id": ICEWS_SOURCE_ID, "installed": True, "reused": True, "manifest": manifest}
 
     archive = archive if archive is not None else download_icews_archive()
@@ -88,6 +92,7 @@ def install_icews_dataset(db: Session, archive: bytes | None = None) -> dict[str
         "data_sha256": sha256_bytes(tsv), "downloaded_on": date.today().isoformat(),
         "member": member_name, "terms": "Harvard Dataverse terms of use; verify before redistribution",
         "expected_rows": ICEWS_EXPECTED_ROWS, "summary": summary,
+        "access_scope": "shared_read",
     }
     dataset = Dataset(name=ICEWS_DATASET_NAME, kind="structured", schema_json=manifest)
     db.add(dataset)

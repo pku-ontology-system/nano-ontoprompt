@@ -1,9 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { QueryBuilder, formatQuery, type Field, type RuleGroupType } from "react-querybuilder";
 import { createColumnHelper, tableFeatures, useTable } from "@tanstack/react-table";
-import * as echarts from "echarts";
+import * as echarts from "echarts/core";
+import { LineChart } from "echarts/charts";
+import { GridComponent, LegendComponent, TooltipComponent } from "echarts/components";
+import { CanvasRenderer } from "echarts/renderers";
 
 import "./component-spikes.css";
+
+echarts.use([LineChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
 
 type ObjectRow = {
   id: string;

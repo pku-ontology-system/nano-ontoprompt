@@ -229,8 +229,12 @@ def apply_package(db, package, user, *, expected_etag: int, request_id: str, con
     edits = [Edit.model_validate(edit) for row in actions for edit in row["expected_edits"]]
     try:
         if not staged:
+            # The staged revision carries the package's approved preview digest,
+            # which is what the merge accepts as this revision's review.
             service.revision(scenario, RevisionRequest(base_revision=scenario.head_revision, expected_etag=scenario.etag,
-                                                       client_request_id=staged_id, edits=edits), replace_all=True)
+                                                       client_request_id=staged_id, edits=edits), replace_all=True,
+                             operation_context={"decision_package_id": package.id,
+                                                "reviewed_preview_digest": package.preview_digest})
         def record(before, applied):
             decision = DecisionRecord(ontology_id=package.ontology_id, payload={
                 "kind": "decision_package_applied", "package_id": package.id, "run_id": package.run_id,
@@ -311,7 +315,9 @@ def revert_package(db, package, user, *, expected_etag: int, request_id: str) ->
     from app.models.v2.scenario import ScenarioAudit
     from app.schemas.v2.scenario import Edit
     from app.services.v2.graph.falkordb_service import FalkorDBService
+    from app.services.v2.action_authorization import authorize_compiled_edits
     from app.services.v2.live_edits import apply_live_edits
+    from app.services.v2.object_query.core import FalkorReadAdapter
     from app.services.v2.scenarios import ScenarioError
 
     if db.query(DecisionPackageEvent).filter_by(package_id=package.id, request_id=request_id).first():
@@ -334,8 +340,16 @@ def revert_package(db, package, user, *, expected_etag: int, request_id: str) ->
         else:
             raise DecisionPackageError("not_revertible", f"{edit['op']} edits cannot be reverted automatically", 422)
     typed = [Edit.model_validate({**row, "sequence": index}) for index, row in enumerate(inverse)]
+    graph_service = FalkorDBService()
     try:
-        _, _, _, restore = apply_live_edits(db, package.ontology_id, typed, FalkorDBService())
+        if not graph_service.available:
+            raise ScenarioError("graph_unavailable", "FalkorDB is unavailable", 503, "execution")
+        # A revert is a new write: authorize the inverse edits for the current
+        # user over live data, then let the executor recheck that digest.
+        live = FalkorReadAdapter(graph_service._graph(package.ontology_id)).read(package.ontology_id)
+        permission_digest = authorize_compiled_edits(db, package.ontology_id, user, live, typed)
+        _, _, _, restore = apply_live_edits(db, package.ontology_id, typed, graph_service,
+                                            actor=user, expected_permission_digest=permission_digest)
     except ScenarioError as exc:
         db.rollback()
         raise DecisionPackageError("revert_conflict", exc.message, 409) from exc

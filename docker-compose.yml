@@ -11,6 +11,21 @@ services:
       # would silently boot an empty database after a container recreation.
       - pg_data:/var/lib/postgresql/data
       - ./docker/postgres/init-litellm-db.sql:/docker-entrypoint-initdb.d/02-litellm-db.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  migrate:
+    build: ./backend
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes: [./backend:/app]
+    command: ["sh", "-c", "alembic upgrade head && alembic check"]
+    restart: "no"
 
   redis:
     image: redis:7-alpine
@@ -41,12 +56,20 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       EXPLANATION_MODEL: ${EXPLANATION_MODEL:-gpt-4.1}
       FUNCTION_RUNNER_TOKEN: ${FUNCTION_RUNNER_TOKEN:?run scripts/bootstrap_deployment.sh first}
-    depends_on: [db, redis, falkordb]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+      falkordb:
+        condition: service_started
     volumes: [./backend:/app, ./uploads:/uploads, ./data/frepple_demo:/state:ro, ./test_data:/test_data:ro]
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     networks: [default, functions]
-    # Migrations run in the backend lifespan. Workers must wait until the
-    # schema is ready before startup reconciliation queries scenario tables.
+    # The one-shot migrate service applies migrations before the backend
+    # starts, and the backend re-verifies the schema at startup. Workers must
+    # wait until the schema is ready before startup reconciliation queries
+    # scenario tables.
     healthcheck:
       test: ["CMD", "python", "-c", "import json,urllib.request; x=json.load(urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=3)); raise SystemExit(0 if x.get('db') == 'ok' and x.get('falkordb') == 'ok' else 1)"]
       interval: 10s
@@ -115,7 +138,9 @@ services:
     ports: ["5173:5173"]
     environment:
       VITE_API_PROXY_TARGET: http://backend:8000
-    depends_on: [backend]
+    depends_on:
+      backend:
+        condition: service_healthy
     volumes: [./frontend:/app, /app/node_modules]
     command: npm run dev -- --host
 

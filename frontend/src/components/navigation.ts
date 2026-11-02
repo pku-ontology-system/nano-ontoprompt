@@ -1,4 +1,4 @@
-import { BellRing, Bot, Boxes, Brain, Database, FileSearch, GitCompareArrows, LayoutDashboard, LayoutGrid, Library, ListChecks, Network, Route, Settings, ShieldCheck, Shapes, Sparkles, SquareFunction, Table2, Timer, Workflow, SearchCode } from 'lucide-react'
+import { BellRing, Bot, Boxes, Brain, ChartNoAxesCombined, Database, FileSearch, GitCompareArrows, LayoutDashboard, LayoutGrid, Library, ListChecks, Network, Route, Settings, ShieldCheck, Shapes, Sparkles, SquareFunction, Table2, Timer, Workflow, SearchCode } from 'lucide-react'
 
 /**
  * Primary navigation, grouped by what the user is doing (see
@@ -52,6 +52,7 @@ export const NAV_GROUPS: NavGroup[] = [
     { key: 'scenario-studies', label: '情景研究', icon: Sparkles, path: id => `/ontologies/${id}/scenario-studies`, activeOn: /^\/(ontologies\/[^/]+\/)?scenario-studies/, hint: '版本化的假设推演与已保存案例' },
     { key: 'scenarios', label: '情景沙箱', icon: GitCompareArrows, path: id => `/ontologies/${id}/scenarios`, activeOn: /^\/(ontologies\/[^/]+\/)?scenarios$/, hint: '在隔离副本上试改数据，再决定是否合并' },
     { key: 'decisions', label: '决策与影响链', icon: Route, tab: 'decisions' },
+    { key: 'decision-lab', label: '决策分析', icon: ChartNoAxesCombined, global: '/decision-lab', hint: '基准数据集上的有界决策分析' },
     { key: 'reasoning', label: '推理验证', icon: Brain, tab: 'reasoning' },
   ] },
   { label: '应用', entries: [

@@ -228,7 +228,10 @@ def sync_legacy_to_semantic(db: Session, ontology_id: str, revision_id: str, *, 
     revision = db.query(OntologyRevision).filter(OntologyRevision.id == revision_id, OntologyRevision.ontology_id == ontology_id).first()
     if not project or not revision:
         raise SemanticCoreError("NOT_FOUND", "本体或修订不存在")
-    entities = db.query(Entity).filter(Entity.ontology_id == ontology_id).order_by(Entity.id.asc()).all()
+    entities = db.query(Entity).filter(
+        Entity.ontology_id == ontology_id,
+        Entity.is_source_deleted.is_(False),
+    ).order_by(Entity.id.asc()).all()
     entity_resources: dict[str, str] = {}
     for entity in entities:
         legacy_id = str(entity.id)
@@ -723,7 +726,11 @@ def _legacy_entity_for_resource(db: Session, ontology_id: str, resource_id: str)
     ).order_by(OntologySemanticResourceVersion.created_at.desc()).first()
     legacy_id = (version.metadata_json or {}).get("legacy_entity_id") if version else None
     if legacy_id:
-        return db.query(Entity).filter(Entity.ontology_id == ontology_id, Entity.id == str(legacy_id)).first()
+        return db.query(Entity).filter(
+            Entity.ontology_id == ontology_id,
+            Entity.id == str(legacy_id),
+            Entity.is_source_deleted.is_(False),
+        ).first()
     return None
 
 

@@ -23,6 +23,7 @@ from .semantic_core import (
     SemanticResourcePayload,
     SemanticSchemaContract,
 )
+from .scenario_context import ScenarioContext, WhatIfContextResponse
 
 __all__ = [
     "ConsistencyRequestContract",
@@ -46,4 +47,6 @@ __all__ = [
     "SemanticResourceContract",
     "SemanticSchemaContract",
     "SchemaMigrationPlanContract",
+    "ScenarioContext",
+    "WhatIfContextResponse",
 ]

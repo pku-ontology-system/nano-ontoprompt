@@ -10,6 +10,7 @@ class Dataset(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     source_connection_id: Mapped[str | None] = mapped_column(String, ForeignKey("v2_connections.id"), nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     kind: Mapped[str] = mapped_column(String(30), nullable=False)  # structured|semi|unstructured
     data_class: Mapped[str] = mapped_column(String(30), nullable=False, default="regular")  # regular|temporal|multimodal
     privacy_level: Mapped[str] = mapped_column(String(20), nullable=False, default="standard")  # standard|private

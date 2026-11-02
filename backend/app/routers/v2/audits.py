@@ -12,6 +12,9 @@ from app.database import SessionLocal
 from app.deps import get_current_user, require_editor
 from app.models.audit_task import AuditTask
 from app.models.ontology import OntologyProject
+from app.models.user import User
+from app.services.v2.object_query.errors import ObjectQueryError
+from app.services.v2.object_query.authorization import require_ontology_access
 from app.services.v2.audit_runner import queue_local_audit, serialize_audit_task
 from app.services.v2.revision_service import create_revision, serialize_revision, snapshot_ontology
 
@@ -24,6 +27,13 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def _require_audit_ontology(db: Session, ontology_id: str, user: User) -> None:
+    try:
+        require_ontology_access(db, ontology_id, str(user.id), user.role)
+    except ObjectQueryError as exc:
+        raise HTTPException(404, "审查任务不存在或无访问权限") from exc
 
 
 class RepairDraftRequest(BaseModel):
@@ -41,7 +51,7 @@ class AuditStartRequest(BaseModel):
 
 
 @router.post("")
-def start_audit(body: AuditStartRequest, db: Session = Depends(get_db), _=Depends(require_editor)):
+def start_audit(body: AuditStartRequest, db: Session = Depends(get_db), _=Depends(require_editor), user: User = Depends(get_current_user)):
     """Queue the configured local audit for an already published ontology.
 
     Builds enqueue this automatically.  This explicit endpoint is for a
@@ -51,6 +61,7 @@ def start_audit(body: AuditStartRequest, db: Session = Depends(get_db), _=Depend
     project = db.query(OntologyProject).filter(OntologyProject.id == body.ontology_id).first()
     if not project:
         raise HTTPException(404, "本体不存在")
+    _require_audit_ontology(db, project.id, user)
     task = queue_local_audit(
         db,
         ontology_id=project.id,
@@ -61,27 +72,39 @@ def start_audit(body: AuditStartRequest, db: Session = Depends(get_db), _=Depend
 
 
 @router.get("")
-def list_audits(ontology_id: str | None = None, db: Session = Depends(get_db)):
+def list_audits(ontology_id: str | None = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     query = db.query(AuditTask).order_by(AuditTask.created_at.desc())
     if ontology_id:
+        _require_audit_ontology(db, ontology_id, user)
         query = query.filter(AuditTask.ontology_id == ontology_id)
+    else:
+        accessible_ids = []
+        for (candidate_id,) in db.query(OntologyProject.id).all():
+            try:
+                _require_audit_ontology(db, candidate_id, user)
+                accessible_ids.append(candidate_id)
+            except HTTPException:
+                continue
+        query = query.filter(AuditTask.ontology_id.in_(accessible_ids)) if accessible_ids else query.filter(AuditTask.id == "")
     rows = query.limit(100).all()
     return {"tasks": [serialize_audit_task(row) for row in rows], "count": len(rows)}
 
 
 @router.get("/{task_id}")
-def get_audit(task_id: str, db: Session = Depends(get_db)):
+def get_audit(task_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     task = db.query(AuditTask).filter(AuditTask.id == task_id).first()
     if not task:
         raise HTTPException(404, "审查任务不存在")
+    _require_audit_ontology(db, task.ontology_id, user)
     return serialize_audit_task(task)
 
 
 @router.post("/{task_id}/cancel")
-def cancel_audit(task_id: str, db: Session = Depends(get_db), _=Depends(require_editor)):
+def cancel_audit(task_id: str, db: Session = Depends(get_db), _=Depends(require_editor), user: User = Depends(get_current_user)):
     task = db.query(AuditTask).filter(AuditTask.id == task_id).first()
     if not task:
         raise HTTPException(404, "审查任务不存在")
+    _require_audit_ontology(db, task.ontology_id, user)
     if task.status in {"queued", "running"}:
         task.cancel_requested = True
         task.status = "cancel_requested"
@@ -90,19 +113,21 @@ def cancel_audit(task_id: str, db: Session = Depends(get_db), _=Depends(require_
 
 
 @router.post("/{task_id}/retry")
-def retry_audit(task_id: str, db: Session = Depends(get_db), _=Depends(require_editor)):
+def retry_audit(task_id: str, db: Session = Depends(get_db), _=Depends(require_editor), user: User = Depends(get_current_user)):
     task = db.query(AuditTask).filter(AuditTask.id == task_id).first()
     if not task:
         raise HTTPException(404, "审查任务不存在")
+    _require_audit_ontology(db, task.ontology_id, user)
     retried = queue_local_audit(db, ontology_id=task.ontology_id, revision_id=task.revision_id, construction_run_id=task.construction_run_id)
     return serialize_audit_task(retried)
 
 
 @router.post("/{task_id}/findings/{finding_index}/ignore")
-def ignore_finding(task_id: str, finding_index: int, note: str = "", db: Session = Depends(get_db), _=Depends(require_editor)):
+def ignore_finding(task_id: str, finding_index: int, note: str = "", db: Session = Depends(get_db), _=Depends(require_editor), user: User = Depends(get_current_user)):
     task = db.query(AuditTask).filter(AuditTask.id == task_id).first()
     if not task:
         raise HTTPException(404, "审查任务不存在")
+    _require_audit_ontology(db, task.ontology_id, user)
     findings = list(task.findings or [])
     if finding_index < 0 or finding_index >= len(findings):
         raise HTTPException(400, "审查发现编号不存在")
@@ -113,10 +138,11 @@ def ignore_finding(task_id: str, finding_index: int, note: str = "", db: Session
 
 
 @router.post("/{task_id}/repair-draft")
-def create_repair_draft(task_id: str, body: RepairDraftRequest, db: Session = Depends(get_db), _=Depends(require_editor)):
+def create_repair_draft(task_id: str, body: RepairDraftRequest, db: Session = Depends(get_db), _=Depends(require_editor), user: User = Depends(get_current_user)):
     task = db.query(AuditTask).filter(AuditTask.id == task_id).first()
     if not task:
         raise HTTPException(404, "审查任务不存在")
+    _require_audit_ontology(db, task.ontology_id, user)
     findings = list(task.findings or [])
     selected: list[dict[str, Any]] = []
     for index in body.finding_indices:
@@ -136,10 +162,11 @@ def create_repair_draft(task_id: str, body: RepairDraftRequest, db: Session = De
 
 
 @router.post("/{task_id}/repair-draft/confirm")
-def confirm_repair_draft(task_id: str, body: RepairConfirmRequest | None = None, db: Session = Depends(get_db), _=Depends(require_editor)):
+def confirm_repair_draft(task_id: str, body: RepairConfirmRequest | None = None, db: Session = Depends(get_db), _=Depends(require_editor), user: User = Depends(get_current_user)):
     task = db.query(AuditTask).filter(AuditTask.id == task_id).first()
     if not task or not task.repair_draft:
         raise HTTPException(404, "修订草案不存在")
+    _require_audit_ontology(db, task.ontology_id, user)
     project = db.query(OntologyProject).filter(OntologyProject.id == task.ontology_id).first()
     if not project:
         raise HTTPException(404, "本体不存在")

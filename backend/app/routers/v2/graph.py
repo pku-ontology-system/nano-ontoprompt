@@ -224,6 +224,7 @@ def _canonical_ontology_data(db: Session, ontology_id: str, *, limit: int = 200,
     entities = (
         db.query(Entity)
         .filter(Entity.ontology_id == ontology_id)
+        .filter(Entity.is_source_deleted.is_(False))
         .order_by(Entity.name_cn.asc(), Entity.name_en.asc())
         .limit(limit)
         .all()
@@ -258,6 +259,7 @@ def _canonical_ontology_data(db: Session, ontology_id: str, *, limit: int = 200,
         instance_rows = db.query(EntityInstance).filter(
             EntityInstance.ontology_id == ontology_id,
             EntityInstance.entity_id.in_(entity_ids),
+            EntityInstance.is_deleted.is_(False),
         ).all()
     instances_by_entity: dict[str, list[Any]] = defaultdict(list)
     instance_ids: list[str] = []
@@ -861,12 +863,17 @@ def get_data_model(
     # published.  Legacy projects have a null pointer and retain old behavior.
     snapshot_namespace: str | None = None
     snapshot_replay_id: str | None = None
+    snapshot_source_id: str | None = None
+    snapshot_time_kind: str | None = None
     try:
-        from app.models.v2.temporal_replay import DataModelSnapshot
+        from app.models.v2.temporal_replay import DataModelSnapshot, TemporalReplay
         snapshot = db.query(DataModelSnapshot).filter(DataModelSnapshot.id == getattr(ontology, "current_data_snapshot_id", None)).first() if getattr(ontology, "current_data_snapshot_id", None) else None
         if snapshot:
             snapshot_namespace = snapshot.graph_namespace
             snapshot_replay_id = snapshot.replay_id
+            replay = db.query(TemporalReplay).filter(TemporalReplay.id == snapshot_replay_id).first() if snapshot_replay_id else None
+            snapshot_source_id = replay.source_id if replay else None
+            snapshot_time_kind = replay.time_kind if replay else None
     except Exception:
         snapshot = None
     canonical = _canonical_ontology_data(db, ontology_id, limit=1000, user=user)
@@ -1026,6 +1033,36 @@ def get_data_model(
                     "graph_backend": "falkordb",
                     "error": str(exc),
                 }
+    if snapshot_replay_id and graph_data is not None and not graph_data.get("nodes"):
+        # An available FalkorDB client can still point at an empty/lost replay
+        # projection. Prefer the authoritative temporal facts over an empty
+        # canvas when this snapshot has committed events.
+        try:
+            from app.models.v2.temporal_replay import TemporalReplay
+            from app.services.v2.temporal_stream_service import stream_graph
+
+            snapshot_replay = db.query(TemporalReplay).filter(
+                TemporalReplay.id == snapshot_replay_id,
+                TemporalReplay.ontology_id == ontology_id,
+            ).first()
+            if snapshot_replay and int(snapshot_replay.committed_events or 0) > 0:
+                recovered = stream_graph(
+                    db,
+                    snapshot_replay,
+                    limit=limit,
+                    offset=offset,
+                    entity_type=entity_type,
+                    episode_id=episode_id,
+                    at=(float(resolved_at) if resolved_at not in (None, "") else None),
+                    mode=mode,
+                    relation_state="all",
+                )
+                if recovered.get("nodes"):
+                    graph_data = recovered
+        except Exception:
+            # Keep the original graph response if SQL recovery itself fails;
+            # the API's availability/error fields remain truthful below.
+            pass
     graph_data = _authorize_graph_data(db, ontology_id, graph_data, user)
     # Attach evidence counts without leaking internal storage keys into the
     # visible property list.  Source fields remain available on selection.
@@ -1116,29 +1153,39 @@ def get_data_model(
     total_edge_count = max(int(graph_data.get("total_edges", 0) or 0), visible_edge_count)
     type_counts: dict[str, int] | None
     unrestricted_subject = not isinstance(user, User) or str(getattr(ontology, "created_by", "")) == str(user.id) or str(user.role or "") == "admin"
-    if service.available and unrestricted_subject:
-        try:
-            try:
-                type_counts = service.get_instance_type_counts(
-                    ontology_id,
-                    entity_type=entity_type,
-                    episode_id=episode_id,
-                    seq_from=seq_from,
-                    seq_to=seq_to,
-                    graph_namespace=snapshot_namespace,
-                )
-            except TypeError:
-                type_counts = service.get_instance_type_counts(
-                    ontology_id,
-                    entity_type=entity_type,
-                    episode_id=episode_id,
-                    seq_from=seq_from,
-                    seq_to=seq_to,
-                )
-        except Exception:
-            type_counts = None
-    else:
+    if graph_data.get("graph_backend") == "postgres-temporal-facts" and unrestricted_subject:
+        # The SQL temporal projection is authoritative when FalkorDB has lost
+        # this replay. Use its counts over the full filtered slice instead of
+        # querying the empty graph and rendering zeroes beside real instances.
+        type_counts = graph_data.get("type_counts")
+    elif graph_data.get("graph_backend") == "postgres-temporal-facts":
+        # Preserve object-level visibility: non-owner viewers derive counts
+        # only from the authorized nodes returned above.
         type_counts = None
+    else:
+        if service.available and unrestricted_subject:
+            try:
+                try:
+                    type_counts = service.get_instance_type_counts(
+                        ontology_id,
+                        entity_type=entity_type,
+                        episode_id=episode_id,
+                        seq_from=seq_from,
+                        seq_to=seq_to,
+                        graph_namespace=snapshot_namespace,
+                    )
+                except TypeError:
+                    type_counts = service.get_instance_type_counts(
+                        ontology_id,
+                        entity_type=entity_type,
+                        episode_id=episode_id,
+                        seq_from=seq_from,
+                        seq_to=seq_to,
+                    )
+            except Exception:
+                type_counts = None
+        else:
+            type_counts = None
     groups = _data_model_type_groups(canonical, graph_data.get("nodes", []), type_counts)
     response: dict[str, Any] = {
         "ontology_id": ontology_id,
@@ -1159,6 +1206,8 @@ def get_data_model(
         "graph_backend": graph_data.get("graph_backend", "falkordb"),
         "graph_namespace": snapshot_namespace or graph_data.get("graph_namespace"),
         "data_snapshot_id": getattr(snapshot, "id", None) if snapshot else None,
+        "replay_id": snapshot_replay_id or graph_data.get("replay_id"),
+        "source_id": snapshot_source_id,
     }
     if graph_data.get("error"):
         response["error"] = graph_data["error"]
@@ -1166,7 +1215,7 @@ def get_data_model(
         timeline = timeline or {}
         dates = [str(value) for value in (timeline.get("dates") or [])]
         response["time"] = {
-            "kind": "ordinal",
+            "kind": snapshot_time_kind or "ordinal",
             "mode": mode,
             "current": resolved_at,
             "min": dates[0] if dates else None,
@@ -1197,7 +1246,10 @@ def _sqlite_graph_data(ontology_id: str, limit: int = 200, label_filter: str | N
 
     db = SessionLocal()
     try:
-        query = db.query(Entity).filter(Entity.ontology_id == ontology_id)
+        query = db.query(Entity).filter(
+            Entity.ontology_id == ontology_id,
+            Entity.is_source_deleted.is_(False),
+        )
         if label_filter:
             query = query.filter(Entity.type == label_filter)
         entities = query.limit(limit).all()
@@ -1342,7 +1394,11 @@ def list_entity_instances(
     if not entity:
         raise HTTPException(404, "本体实体不存在")
     project = db.query(OntologyProject).filter(OntologyProject.id == ontology_id).first()
-    query = db.query(EntityInstance).filter(EntityInstance.ontology_id == ontology_id, EntityInstance.entity_id == entity_id).order_by(EntityInstance.created_at.desc())
+    query = db.query(EntityInstance).filter(
+        EntityInstance.ontology_id == ontology_id,
+        EntityInstance.entity_id == entity_id,
+        EntityInstance.is_deleted.is_(False),
+    ).order_by(EntityInstance.created_at.desc())
     redacted_by_id: dict[str, dict[str, Any]] = {}
     if isinstance(user, User):
         all_rows = query.all()
@@ -1415,7 +1471,10 @@ def graph_quality(ontology_id: str, source: str = Query("schema", pattern="^(sch
 
     db = SessionLocal()
     try:
-        entities = db.query(Entity).filter(Entity.ontology_id == ontology_id).all()
+        entities = db.query(Entity).filter(
+            Entity.ontology_id == ontology_id,
+            Entity.is_source_deleted.is_(False),
+        ).all()
         relations = db.query(Relation).filter(Relation.ontology_id == ontology_id).all()
         entity_ids = {e.id for e in entities}
         connected_ids = {r.source_entity for r in relations} | {r.target_entity for r in relations}
@@ -1672,7 +1731,10 @@ def sync_graph(ontology_id: str, _=Depends(require_editor)):
 
     db = SessionLocal()
     try:
-        entities = db.query(Entity).filter(Entity.ontology_id == ontology_id).all()
+        entities = db.query(Entity).filter(
+            Entity.ontology_id == ontology_id,
+            Entity.is_source_deleted.is_(False),
+        ).all()
         relations = db.query(Relation).filter(Relation.ontology_id == ontology_id).all()
 
         # Build entity id -> neo4j label map (use type as label, fallback Entity)

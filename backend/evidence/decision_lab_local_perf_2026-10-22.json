@@ -1,0 +1,53 @@
+{
+  "measured_at_utc": "2026-10-22T19:10:26.726793+00:00",
+  "environment": {
+    "host_arch": "arm64",
+    "server": "local Docker Compose, single user",
+    "method": "25 sequential warm HTTP GETs per endpoint, client wall time, no concurrency",
+    "branch": "palantir"
+  },
+  "samples": {
+    "catalog": {
+      "count": 25,
+      "p50_ms": 13.14,
+      "p95_ms": 26.41,
+      "max_ms": 32.92,
+      "response_bytes": 3750
+    },
+    "ai4i_runs": {
+      "count": 25,
+      "p50_ms": 4.91,
+      "p95_ms": 6.5,
+      "max_ms": 6.56,
+      "response_bytes": 2071
+    },
+    "ai4i_detail": {
+      "count": 25,
+      "p50_ms": 4.82,
+      "p95_ms": 6.35,
+      "max_ms": 6.63,
+      "response_bytes": 9540
+    },
+    "factorynet_detail": {
+      "count": 25,
+      "p50_ms": 5.15,
+      "p95_ms": 6.13,
+      "max_ms": 6.14,
+      "response_bytes": 17360
+    },
+    "ibadas_detail": {
+      "count": 25,
+      "p50_ms": 4.92,
+      "p95_ms": 9.13,
+      "max_ms": 10.99,
+      "response_bytes": 6588
+    },
+    "ibadas_evidence": {
+      "count": 25,
+      "p50_ms": 5.73,
+      "p95_ms": 7.5,
+      "max_ms": 7.7,
+      "response_bytes": 1065
+    }
+  }
+}
