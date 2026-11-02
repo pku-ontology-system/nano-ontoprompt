@@ -1,4 +1,9 @@
-"""Solver Function -> function-backed Action -> live commit -> revert, on real FalkorDB."""
+"""Solver Function -> Function-backed Action -> Scenario plan -> previewed merge, on real FalkorDB.
+
+Live Actions on a registered ontology are reviewed Decision Cases about one object.
+A set-based solver Action has no such object, so it plans in a Scenario and reaches
+live data only through a merge of the reviewed revision.
+"""
 import sys
 from pathlib import Path
 from uuid import uuid4
@@ -57,21 +62,59 @@ def handle(snapshot, kind, exclude=()):
             "objects": [{"object_type": t, "object_id": i} for t, i in snapshot.objects if t == kind and i not in exclude]}
 
 
-def test_solver_action_previews_commits_and_reverts(client, auth_headers, db, plant):
+def plan_in_scenario(client, auth_headers, ontology, snapshot):
+    """Plan operator assignments in a Scenario; returns the API prefix, Scenario and preview."""
+    api = f"/api/v2/ontologies/{ontology.id}"
+    view = client.post(f"{api}/object-query/data-views", headers=auth_headers,
+                       json={"source_ontology_id": ontology.id, "source_manifest_digest": "frepple-demo"})
+    assert view.status_code == 201, view.text
+    base_view = view.json()["view_id"]
+    kind = client.post(f"{api}/scenario-action-types", headers=auth_headers,
+                       json={"name": "Assign operators (scenario)", "backed_by_function": f"{CONTRACT['asset_key']}@{CONTRACT['version']}"}).json()
+    assert client.post(f"{api}/scenario-action-types/{kind['id']}:publish", headers=auth_headers).json()["status"] == "published"
+    scenario = client.post(f"{api}/scenarios", headers=auth_headers, json={"name": "operator plan", "base_view_id": base_view}).json()
+    parameters = {"demands": {**handle(snapshot, "Demand"), "data_view_id": base_view},
+                  "operators": {**handle(snapshot, "Operator"), "data_view_id": base_view}}
+    command = {"expected_etag": scenario["etag"], "client_request_id": "plan-1",
+               "actions": [{"action_type_id": kind["id"], "parameters": parameters}]}
+    preview = client.post(f"{api}/scenarios/{scenario['id']}/actions:preview", headers=auth_headers, json=command)
+    assert preview.status_code == 200, preview.text
+    submitted = client.put(f"{api}/scenarios/{scenario['id']}/actions", headers=auth_headers,
+                           json={**command, "preview_digest": preview.json()["preview_digest"]})
+    assert submitted.status_code == 200, submitted.text
+    return api, scenario, preview.json()
+
+
+def test_live_solver_run_requires_a_scenario(client, auth_headers, db, plant):
     ontology, action, snapshot = plant
     url = f"/api/v2/ontologies/{ontology.id}/actions/{action.id}"
     body = {"parameters": {"demands": handle(snapshot, "Demand"), "operators": handle(snapshot, "Operator"), "time_limit_seconds": 5},
             "context": {"ontology_id": ontology.id, "consistency": "live"}}
-    preview = client.post(f"{url}/preview", headers=auth_headers, json=body)
-    assert preview.status_code == 200, preview.text
-    edits = preview.json()["edits"]
-    solver = edits[0]["parameters"]["function"]["solver"]
-    assert solver["status"] == "optimal" and solver["objective"] == 80.0 and preview.json()["edit_count"] == 16
-    planned = {e["target"]["object_id"]: e["value"] for e in edits[1:]}
-    assert db.get(EntityInstance, "Demand 14").row_data.get("assigned_operator") is None  # preview never writes
+    for step in ("preview", "run"):
+        r = client.post(f"{url}/{step}", headers=auth_headers, json=body)
+        assert r.status_code == 422 and r.json()["detail"]["code"] == "scenario_required", r.text
+    db.expire_all()
+    assert all(row.row_data.get("assigned_operator") is None for row in db.query(EntityInstance).filter_by(ontology_id=ontology.id).all())
+    assert db.query(OntologyActionRun).filter_by(ontology_id=ontology.id).count() == 0
 
-    run = client.post(f"{url}/run", headers=auth_headers, json=body)
-    assert run.status_code == 200, run.text
+
+def test_solver_plan_reaches_live_data_through_a_previewed_merge(client, auth_headers, db, plant):
+    ontology, _, snapshot = plant
+    api, scenario, preview = plan_in_scenario(client, auth_headers, ontology, snapshot)
+    solver = preview["edits"][0]["parameters"]["function"]["solver"]
+    assert solver["status"] == "optimal" and solver["objective"] == 80.0
+    planned = {e["target"]["object_id"]: e["value"] for e in preview["edits"] if e["op"] == "set_property"}
+    assert len(planned) == 16
+    db.expire_all()
+    assert all(db.get(EntityInstance, i).row_data.get("assigned_operator") is None for i in planned)  # planning never writes
+
+    merge_preview = client.post(f"{api}/scenarios/{scenario['id']}:merge-preview", headers=auth_headers).json()
+    assert merge_preview["can_merge"] is True and merge_preview["applied_edits"] == 16
+    merge = {"expected_revision": 1, "preview_digest": merge_preview["preview_digest"], "client_request_id": "merge-1"}
+    merged = client.post(f"{api}/scenarios/{scenario['id']}:merge", headers=auth_headers, json=merge)
+    assert merged.status_code == 200, merged.text
+    assert merged.json()["status"] == "merged" and merged.json()["applied_edits"] == 16 and merged.json()["action_run_id"]
+
     db.expire_all()
     assert {i: db.get(EntityInstance, i).row_data["assigned_operator"] for i in planned} == planned
     graph = FalkorDBService()._graph(ontology.id)
@@ -80,22 +123,8 @@ def test_solver_action_previews_commits_and_reverts(client, auth_headers, db, pl
     assert dict(stored) == planned
     assert all(planned[i] == "Antonio" for (t, i), p in snapshot.objects.items() if t == "Demand" and p["required_skill"])
 
-    revert = client.post(f"/api/v2/ontologies/{ontology.id}/action-runs/{run.json()['run_id']}:revert", headers=auth_headers)
-    assert revert.status_code == 200, revert.text
-    db.expire_all()
-    assert all(db.get(EntityInstance, i).row_data.get("assigned_operator") is None for i in planned)
-
-
-def test_infeasible_plan_fails_with_stable_code_and_no_write(client, auth_headers, db, plant):
-    ontology, action, snapshot = plant
-    body = {"parameters": {"demands": handle(snapshot, "Demand"), "operators": handle(snapshot, "Operator", exclude=("Antonio",))},
-            "context": {"ontology_id": ontology.id, "consistency": "live"}}
-    r = client.post(f"/api/v2/ontologies/{ontology.id}/actions/{action.id}/run", headers=auth_headers, json=body)
-    assert r.status_code == 422 and r.json()["detail"]["code"] == "solver_infeasible"
-    db.expire_all()
-    assert all(row.row_data.get("assigned_operator") is None for row in db.query(EntityInstance).filter_by(ontology_id=ontology.id).all())
-    failed = db.query(OntologyActionRun).filter_by(ontology_id=ontology.id).one()
-    assert failed.status == "failed" and "infeasible" in failed.error
+    replay = client.post(f"{api}/scenarios/{scenario['id']}:merge", headers=auth_headers, json=merge)
+    assert replay.status_code == 200 and replay.json()["replayed"] is True
 
 
 def test_solver_action_runs_inside_scenario_duplicates_and_previews_merge(client, auth_headers, db, plant):

@@ -811,6 +811,12 @@ def _reviewed_live_proposal(ontology_id: str, action_id: str, body: ActionRunReq
 
     service = DecisionCaseService(db, ontology_id, current_user)
     if not body.target_object_id:
+        action_row = db.query(OntologyActionType).filter_by(id=action_id, ontology_id=ontology_id).first()
+        if action_row is not None and action_row.backed_by_function:
+            # A set-based Function Action has no single object to review as a
+            # Decision Case; its governed path is a Scenario plus a previewed merge.
+            raise CaseError("scenario_required",
+                            "按对象集合运行的函数 Action 不能直接修改正式数据；请在情景中运行，预览后合并", 422)
         raise CaseError("target_required", "正式对象操作须指定目标对象", 422)
     target = service.target_state(body.target_object_id)
     action = service._action(action_id)
