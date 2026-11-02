@@ -112,12 +112,18 @@ class AgentToolbox:
 
     def reasoning_context(self, run_id: str | None = None, conclusion: str | None = None) -> dict[str, Any]:
         self._authorize_tool_read()
+        ontology = self.db.get(OntologyProject, self.ontology_id)
+        if ontology is None or not ontology.current_revision_id:
+            raise ValueError("当前本体没有可验证的版本，请先发布本体修订")
         query = self.db.query(ReasoningRun).filter_by(ontology_id=self.ontology_id)
         run = query.filter_by(id=run_id).first() if run_id else query.order_by(ReasoningRun.created_at.desc()).first()
         if not run:
             result = {"run": None, "conclusions": [], "reason": "没有推理运行记录"}
             self.trace.append({"tool": "reasoning_context", "result": result})
             return result
+        run_revision_id = str((run.payload or {}).get("ontology_revision_id") or "")
+        if run_revision_id != str(ontology.current_revision_id):
+            raise ValueError("推理运行的本体版本缺失或已过期；请在当前修订下重新运行")
         conclusions = (run.payload or {}).get("conclusions", [])
         if conclusion:
             conclusions = [item for item in conclusions if item.get("conclusion") == conclusion]
