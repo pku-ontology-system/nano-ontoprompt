@@ -55,9 +55,9 @@ test('changing approved agent evidence invalidates the proposal', async ({ page 
   await mount(page, 'AgentDecisionTab')
   await page.getByRole('button', { name: '分析问题并选择上下文' }).click()
   await page.getByRole('button', { name: '批准上下文并生成建议' }).click()
-  await expect(page.getByRole('button', { name: '确认并保存决策' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '转入持久会话复核' })).toBeVisible()
   await page.getByRole('checkbox').first().uncheck()
-  await expect(page.getByRole('button', { name: '确认并保存决策' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '转入持久会话复核' })).toHaveCount(0)
 })
 
 test('shared client preserves null, envelopes, and forbidden status without logout', async ({ page }) => {
