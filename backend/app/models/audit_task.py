@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import String, DateTime, ForeignKey, Text, JSON, Boolean
+from sqlalchemy import String, DateTime, ForeignKey, Text, JSON, Boolean, Integer
 from sqlalchemy.orm import Mapped, mapped_column
 from app.database import Base
 
@@ -15,6 +15,10 @@ class AuditTask(Base):
     revision_id: Mapped[str | None] = mapped_column(String, nullable=True)
     construction_run_id: Mapped[str | None] = mapped_column(String, nullable=True)
     cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    worker_task_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    lease_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     progress: Mapped[dict] = mapped_column(JSON, default=dict)
     error: Mapped[str] = mapped_column(Text, nullable=True)
     findings: Mapped[dict] = mapped_column(JSON, nullable=True)

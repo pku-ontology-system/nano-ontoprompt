@@ -1,7 +1,7 @@
 """Immutable QueryDataView manifests used for repeatable Object Query reads."""
 from datetime import datetime, timezone
 from uuid import uuid4
-from sqlalchemy import Column, String, Integer, DateTime, ForeignKey, CheckConstraint
+from sqlalchemy import Column, String, Integer, DateTime, ForeignKey, CheckConstraint, Index, JSON, UniqueConstraint, event
 from app.database import Base
 
 
@@ -35,3 +35,41 @@ class QueryDataView(Base):
         CheckConstraint("status IN ('building','validating','ready','failed','expired')", name="ck_query_view_status"),
         CheckConstraint("object_count >= 0 AND edge_count >= 0 AND refcount >= 0", name="ck_query_view_counts"),
     )
+
+
+class QueryViewRetentionEvent(Base):
+    """Durable audit record for physical graph cleanup after a view expires."""
+
+    __tablename__ = "v2_query_view_retention_events"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    # These identifiers intentionally have no foreign keys: cleanup history must
+    # survive deletion of the view row or its ontology.
+    ontology_id = Column(String, nullable=False)
+    view_id = Column(String(64), nullable=False)
+    event_type = Column(String(40), nullable=False, default="graph_deleted")
+    reason = Column(String(80), nullable=False, default="retention_expired")
+    content_digest = Column(String(128), nullable=True)
+    object_count = Column(Integer, nullable=False, default=0)
+    edge_count = Column(Integer, nullable=False, default=0)
+    retention_until = Column(DateTime(timezone=True), nullable=False)
+    details = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("view_id", "event_type", name="uq_v2_query_view_retention_event"),
+        CheckConstraint("event_type = 'graph_deleted'", name="ck_v2_query_view_retention_event_type"),
+        CheckConstraint("reason = 'retention_expired'", name="ck_v2_query_view_retention_event_reason"),
+        CheckConstraint("object_count >= 0 AND edge_count >= 0", name="ck_v2_query_view_retention_event_counts"),
+        Index("ix_v2_query_view_retention_events_ontology_created", "ontology_id", "created_at"),
+    )
+
+
+@event.listens_for(QueryViewRetentionEvent, "before_update")
+def immutable_query_view_retention_update(mapper, connection, target):
+    raise ValueError("Query view retention events are append-only")
+
+
+@event.listens_for(QueryViewRetentionEvent, "before_delete")
+def immutable_query_view_retention_delete(mapper, connection, target):
+    raise ValueError("Query view retention events are append-only")

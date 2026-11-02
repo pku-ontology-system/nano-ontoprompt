@@ -15,10 +15,16 @@ class ConstructionDraft(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     dataset_id: Mapped[str] = mapped_column(String, ForeignKey("v2_datasets.id", ondelete="CASCADE"), nullable=False)
+    # Pin source selection when the draft is created so later Dataset uploads
+    # cannot silently change a queued mapping/build input.
+    dataset_version_id: Mapped[str | None] = mapped_column(String, nullable=True)
     # A create-mode draft is intentionally allowed to exist without an
     # ontology.  The project is created atomically only when the user confirms
     # the final build, so abandoned first steps do not pollute the library.
     ontology_id: Mapped[str | None] = mapped_column(String, ForeignKey("ontology_projects.id", ondelete="CASCADE"), nullable=True)
+    # Drafts without a target ontology still need a stable resource owner.
+    # Legacy rows remain NULL and are handled fail-closed by the router.
+    created_by: Mapped[str | None] = mapped_column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     data_class: Mapped[str] = mapped_column(String(30), nullable=False, default="regular")
     target_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="append")
     new_ontology_name: Mapped[str | None] = mapped_column(String(200), nullable=True)

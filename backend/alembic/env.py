@@ -54,16 +54,21 @@ from app.models.v2 import (  # noqa: E402, F401
     curated,
     logic,
     mapping,
+    mapping_definition_review,
     temporal_profile,
     construction,
     multimodal,
     multimodal_install,
     construction_draft,
+    construction_review,
     workbench_task,
     temporal_replay,
     semantic_core,
     security,
     schema_migration,
+    mapping_apply_run,
+    mapping_row_change,
+    service_principal,
 )
 
 target_metadata = Base.metadata

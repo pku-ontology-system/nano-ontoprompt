@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import String, DateTime, ForeignKey, Text, Float, JSON
+from sqlalchemy import String, DateTime, ForeignKey, Text, Float, JSON, Boolean, text
 from sqlalchemy.orm import Mapped, mapped_column
 from app.database import Base
 
@@ -21,6 +21,7 @@ class Entity(Base):
     description: Mapped[str] = mapped_column(Text, nullable=True)
     properties: Mapped[dict] = mapped_column(JSON, default=dict)
     confidence: Mapped[float] = mapped_column(Float, default=1.0)
+    is_source_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
     version: Mapped[str] = mapped_column(String(20), default="v0.1")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
