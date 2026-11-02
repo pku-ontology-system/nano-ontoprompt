@@ -42,6 +42,7 @@
 | [Ontology 建模与设计原则](official/PALANTIR_ONTOLOGY_MODELING_AND_DESIGN.md) | 官方文档摘录 | 对象类型、属性、链接等建模原则 | 本体建模 |
 | [Ontology 运行时与架构](official/PALANTIR_ONTOLOGY_RUNTIME_AND_ARCHITECTURE.md) | 官方文档摘录 | 运行时、界面与后端架构 | 对象查询、Action、情景 |
 | [Vertex 情景研究资料](official/VERTEX_SCENARIO_REFERENCE_GALLERY_2026_10_12.md) | 官方资料 | Vertex 情景推演的参考图集 | 对象浏览器、情景 |
+| [NVIDIA Auto Ontology 能否接入](unofficial/NVIDIA_AUTO_ONTOLOGY_2026_11_02.md) | 官方文档 + 本项目推断 + 本机试验 | 关系型来源的语义层/本体候选生成器；可转成编辑器草稿建议接入，不替代运行时本体；默认云端模型会出站，本地小模型质量不足 | 数据接入、本体建模、MCP |
 | [开源项目与公开数据集](unofficial/OPEN_SOURCE_AND_BENCHMARKS_FROM_ARCHIVED_PLANS.md) | 第三方 | 历史计划里评估过的开源项目和数据集（frePPLe、LUBM 等） | 测试数据、基准 |
 | [Palantir 平台深度解析：数据 OS 到 AI-OS](unofficial/Palantir平台深度解析-数据OS到AI-OS.md) | 第三方分析 | Foundry 到 AIP 的能力演进 | 总体定位 |
 | [Palantir 本体论建模平台深度解析](unofficial/Palantir本体论建模平台深度解析.md) | 第三方分析 | 五层架构、供应链数据流、指标告警驱动决策 | 本体建模、告警 |
