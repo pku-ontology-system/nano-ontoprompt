@@ -58,16 +58,28 @@ def setup_db():
     Base.metadata.drop_all(bind=engine)
 
 @pytest.fixture(autouse=True)
-def schema_ready():
-    """Mark the schema verified: test databases are built from the ORM metadata.
+def schema_ready(monkeypatch):
+    """Start the app on a schema built from the models, as tests always have.
 
-    The API refuses writes until startup has verified the schema (see
-    app.main.schema_write_readiness_gate); test databases match the models by
-    construction, so tests start from the verified state.
+    Startup migration targets the app database (DATABASE_URL), and the API
+    refuses writes until it has verified the schema (see
+    app.main.schema_write_readiness_gate); Celery tasks run the same check.
+    Tests build their schemas from the ORM metadata, so create the app tables
+    from the models (main's former development fallback) and treat the schema
+    as verified.
     """
     from app import main as app_main
+    from app.database import engine as app_engine
+    from app.tasks import celery_app as celery_module
+
+    def schema_from_models() -> bool:
+        Base.metadata.create_all(bind=app_engine)
+        app_main._SCHEMA_READINESS.update(status="ready", failure=None)
+        return True
 
     previous = dict(app_main._SCHEMA_READINESS)
+    monkeypatch.setattr(app_main, "_run_schema_migration", schema_from_models)
+    monkeypatch.setattr(celery_module, "ensure_worker_schema_ready", lambda: None)
     app_main._SCHEMA_READINESS.update(status="ready", failure=None)
     yield
     app_main._SCHEMA_READINESS.clear()

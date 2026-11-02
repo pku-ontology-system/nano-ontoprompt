@@ -119,7 +119,9 @@ def test_solver_action_runs_inside_scenario_duplicates_and_previews_merge(client
     preview = client.post(f"{api}/scenarios/{scenario['id']}/actions:preview", headers=auth_headers, json=command)
     assert preview.status_code == 200, preview.text
     assert preview.json()["edit_count"] == 16 and preview.json()["edits"][0]["parameters"]["function"]["solver"]["objective"] == 80.0
-    submitted = client.put(f"{api}/scenarios/{scenario['id']}/actions", headers=auth_headers, json=command)
+    # Scenario writes carry the digest of the preview the user reviewed.
+    submitted = client.put(f"{api}/scenarios/{scenario['id']}/actions", headers=auth_headers,
+                           json={**command, "preview_digest": preview.json()["preview_digest"]})
     assert submitted.status_code == 200, submitted.text
 
     def assignments(view_id):
