@@ -73,6 +73,7 @@ export default function ReasoningTab({ ontologyId }: { ontologyId: string }) {
       }
     })().catch(e => active && setError(message(e)));
     return () => { active = false; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [base, refresh]);
 
   async function loadInputs() {

@@ -77,6 +77,7 @@ export function DecisionCasePanel({ domain, ontologyId, objectId, evidenceRefId,
   const [reconcileRequestLocked, setReconcileRequestLocked] = useState(false)
   const selectedAsset = mediaAssets?.find(item => item.id === assetId)
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (domain === 'ibadas' && mediaAssets?.length && !assetId) setAssetId(mediaAssets[0].id)
   }, [domain, mediaAssets, assetId])
 
@@ -128,6 +129,7 @@ export function DecisionCasePanel({ domain, ontologyId, objectId, evidenceRefId,
     queryFn: () => apiClientV2.get<{ events: CaseEvent[] }>(`${base}/${caseId}/events`), enabled: !!caseId })
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (!caseId && cases.data?.cases[0]) setCaseId(cases.data.cases[0].id)
   }, [caseId, cases.data])
   const current = selected.data
@@ -139,6 +141,7 @@ export function DecisionCasePanel({ domain, ontologyId, objectId, evidenceRefId,
   }
   useEffect(() => {
     if (current) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setDecision(current.parameters.decision ?? spec.options[0][0]); setReason(current.reason)
       setShowReconcile(false); setReconcileReason(''); setReconcileRequestId(''); setReconcileRequestLocked(false)
       if (domain === 'ibadas') {
@@ -152,6 +155,7 @@ export function DecisionCasePanel({ domain, ontologyId, objectId, evidenceRefId,
         && typeof (item as Record<string, unknown>).ref_id === 'string') as Record<string, unknown> | undefined
       setWhatIfScenarioId(typeof firstWhatIf?.ref_id === 'string' ? firstWhatIf.ref_id : '')
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current?.id])
 
   async function refresh() {

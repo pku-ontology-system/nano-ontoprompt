@@ -602,7 +602,6 @@ function LinkMappingReviewRow({ link, ontologyId, onUpdated }: { link: LinkMappi
   const [tgtKey, setTgtKey] = useState(link.tgt_key)
   const review = link.latest_review
   const isAdmin = useAuthStore(state => state.user?.role === 'admin')
-  const queryClient = useQueryClient()
   const { data: applyRuns = [], refetch: refreshApplyRuns } = useQuery<MappingLinkApplyRun[]>({
     queryKey: ['link-mapping-apply-runs', ontologyId, link.id],
     queryFn: () => apiClientV2.get<MappingLinkApplyRun[]>(`/ontologies/${ontologyId}/link-mappings/${link.id}/apply-runs?limit=10`),

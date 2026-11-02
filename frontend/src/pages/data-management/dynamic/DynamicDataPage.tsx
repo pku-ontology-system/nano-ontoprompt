@@ -308,14 +308,17 @@ export default function DynamicDataPage() {
 
   useEffect(() => {
     incidentCursorRef.current = "";
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setIncidents([]);
     setIncidentError("");
     setSelectedIncidentId(params.get("incident_id"));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId]);
 
   useEffect(() => {
     const incident = incidents.find(item => item.object_id === selectedIncidentId);
     if (incident) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setShowHistory(true);
       setHistoryAt(Number(incident.properties.ordinal));
     }

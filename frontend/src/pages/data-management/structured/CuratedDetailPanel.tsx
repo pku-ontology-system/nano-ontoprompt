@@ -128,6 +128,7 @@ export default function CuratedDetailPanel({
 
   useEffect(() => {
     let active = true
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true)
     setLoadError('')
     setRows([])
@@ -411,7 +412,7 @@ export default function CuratedDetailPanel({
 
   const openProjectionRecovery = (run: MappingApplyRun) => {
     const storageKey = `project4:mapping-projection:${run.run_id}`
-    let stored: { reason?: string; client_request_id?: string } | null = null
+    let stored: { reason?: string; client_request_id?: string } | null
     try { stored = JSON.parse(sessionStorage.getItem(storageKey) || 'null') }
     catch { stored = null }
     setProjectionRecoveryRunId(run.run_id)

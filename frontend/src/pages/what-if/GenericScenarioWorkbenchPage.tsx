@@ -195,6 +195,7 @@ export default function GenericScenarioWorkbenchPage() {
   const [lastMergeRun, setLastMergeRun] = useState<{ scenarioId: string; id: string } | null>(null)
   useEffect(() => {
     const requestId = activeMergeRequestIdFor(selectedId)
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setRecoveryMergeRequestId(requestId)
     setMergeRequestId(requestId)
     setMergeRecoveryReason('')

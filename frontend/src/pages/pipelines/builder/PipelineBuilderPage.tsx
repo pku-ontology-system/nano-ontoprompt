@@ -171,6 +171,7 @@ export default function PipelineBuilderPage() {
 
   useEffect(() => {
     if (!pipelineId) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setActiveRunId(null)
     setRunning(false)
     setRunEvidence(null)

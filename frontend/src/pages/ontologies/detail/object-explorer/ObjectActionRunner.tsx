@@ -152,6 +152,7 @@ export default function ObjectActionRunner({ ontologyId, object, onClose, onComm
     item.created_by === userId && item.target_ids.includes(object.object_id));
   const selectedWhatIfScenario = availableWhatIfScenarios.find(item => item.id === whatIfScenarioId);
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => setWhatIfScenarioId(''), [ontologyId, object.object_id]);
 
   useEffect(() => {

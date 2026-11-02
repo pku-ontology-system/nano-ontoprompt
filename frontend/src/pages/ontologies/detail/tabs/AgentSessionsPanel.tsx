@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useMemo, useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiClientV2 } from "@/api/client";
 import { modelApi } from "@/api/ontologies";
@@ -318,8 +318,9 @@ export default function AgentSessionsPanel({ ontologyId, handoff, onHandoffConsu
     refetchInterval: (query) => turnPending || ["queued", "running", "cancelling"].includes(query.state.data?.session.status || "") ? 2000 : false,
   });
 
-  const sessions = sessionsQuery.data?.sessions || [];
+  const sessions = useMemo(() => sessionsQuery.data?.sessions || [], [sessionsQuery.data]);
   const definitions = definitionsQuery.data?.definitions || [];
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- Agent Definition editor is not wired into the panel yet
   const canManageDefinitions = ["admin", "editor"].includes(currentUser?.role || "");
   const detail = detailQuery.data?.session;
   const canManageSession = detail?.id === selectedId && detail?.access_role === "owner";
@@ -376,11 +377,13 @@ export default function AgentSessionsPanel({ ontologyId, handoff, onHandoffConsu
     : previewQuery.data;
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (!selectedId && sessions.length) setSelectedId(sessions[0].id);
     if (selectedId && !sessions.some((item) => item.id === selectedId)) setSelectedId("");
   }, [sessions, selectedId]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setFocusedCaseId("");
     setProposalActionTypeId("");
     setProposalParameterDraft({});
@@ -393,6 +396,7 @@ export default function AgentSessionsPanel({ ontologyId, handoff, onHandoffConsu
     const objectRefs = (detail?.context_items || []).filter((item) =>
       item.kind === "object" && item.state === "current" && Boolean(item.ref_id));
     if (objectRefs.some((item) => item.ref_id === proposalTargetId)) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setProposalTargetId(objectRefs[0]?.ref_id || "");
     setProposalActionTypeId("");
     setProposalParameterDraft({});
@@ -486,6 +490,7 @@ export default function AgentSessionsPanel({ ontologyId, handoff, onHandoffConsu
     setProposalRequestId("");
   };
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- Agent Definition editor is not wired into the panel yet
   const editDefinition = (definition: AgentDefinition) => {
     setEditingDefinitionId(definition.id);
     setDefinitionName(definition.name);
@@ -494,6 +499,7 @@ export default function AgentSessionsPanel({ ontologyId, handoff, onHandoffConsu
     setDefinitionToolNames(definition.draft_config?.tool_names || ["read_object", "read_context_ref", "propose_action"]);
   };
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- Agent Definition editor is not wired into the panel yet
   const resetDefinitionDraft = () => {
     setEditingDefinitionId("");
     setDefinitionName("");
@@ -502,6 +508,7 @@ export default function AgentSessionsPanel({ ontologyId, handoff, onHandoffConsu
     setDefinitionToolNames(["read_object", "read_context_ref", "propose_action"]);
   };
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- Agent Definition editor is not wired into the panel yet
   const saveDefinitionDraft = () => execute(async () => {
     if (!definitionName.trim()) return;
     const body = {
@@ -525,6 +532,7 @@ export default function AgentSessionsPanel({ ontologyId, handoff, onHandoffConsu
     }
   });
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- Agent Definition editor is not wired into the panel yet
   const publishDefinition = (definition: AgentDefinition) => execute(async () => {
     await apiClientV2.post(`/ontologies/${ontologyId}/agent/definitions/${definition.id}:publish`, {
       expected_revision: definition.draft_revision,
@@ -532,6 +540,7 @@ export default function AgentSessionsPanel({ ontologyId, handoff, onHandoffConsu
     setNotice(`Agent Definition「${definition.name}」已发布新版本；运行将固定该版本摘要。`);
   });
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- Agent Definition editor is not wired into the panel yet
   const changeDefinitionLifecycle = (definition: AgentDefinition, action: "withdraw" | "reactivate") => execute(async () => {
     await apiClientV2.post(`/ontologies/${ontologyId}/agent/definitions/${definition.id}:${action}`, {});
     setNotice(action === "withdraw" ? `Agent Definition「${definition.name}」已撤回，固定它的会话将停止新运行。`

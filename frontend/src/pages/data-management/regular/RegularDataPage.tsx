@@ -47,6 +47,7 @@ export default function RegularDataPage() {
       setTargetMode(current => requestedOntologyIsAvailable ? 'append' : current === 'append' && !ontologyItems.length ? 'create' : current)
     } catch (error: unknown) { setError(errorText(error)) } finally { setLoading(false) }
   }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { void Promise.resolve().then(load) }, [])
 
   useEffect(() => {

@@ -39,7 +39,7 @@ export default function ServicePrincipalsPanel() {
     enabled: !!expandedId,
   })
 
-  const principals = principalsQuery.data?.items || []
+  const principals = useMemo(() => principalsQuery.data?.items || [], [principalsQuery.data])
   const pipelines = pipelinesQuery.data || []
   const activeGrants = useMemo(
     () => principals.flatMap(principal => principal.grants.filter(grant => grant.active)),

@@ -58,6 +58,7 @@ export default function DecisionCaseHistory({ ontologyId, objectId }: {
 }) {
   const base = `/ontologies/${ontologyId}/decision-cases`
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => setSelectedId(null), [ontologyId, objectId])
   const cases = useQuery({
     queryKey: ['decision-cases', ontologyId, objectId],

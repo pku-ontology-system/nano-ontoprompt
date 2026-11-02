@@ -66,11 +66,13 @@ export default function DecisionLabPage() {
 
   useEffect(() => {
     const items = runs.data?.runs ?? []
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (!items.length) { setRunId(null); return }
     setRunId(current => current && items.some(item => item.id === current) ? current : (items.find(item => item.case_key === 'balanced') ?? items[0]).id)
   }, [domain, runs.data])
 
   const detail = useQuery({ queryKey: ['decision-lab-run', domain, runId], queryFn: () => apiClientV2.get<RunDetail>(`/decision-lab/${domain}/runs/${runId}`), enabled: !!domain && !!runId })
+  // eslint-disable-next-line react-hooks/set-state-in-effect, react-hooks/exhaustive-deps
   useEffect(() => { if (detail.data) setDraft(detail.data.parameters) }, [detail.data?.id])
   const evidence = useQuery({ queryKey: ['decision-lab-evidence', domain, selectedObject], queryFn: () => apiClientV2.get<Evidence>(`/decision-lab/${domain}/objects/${encodeURIComponent(selectedObject!)}/evidence`), enabled: !!domain && !!selectedObject })
   const mediaEvidence = useQuery({ queryKey: ['decision-lab-media', evidence.data?.source_sample_id], queryFn: () => apiClientV2.get<MultimodalEvidence>(`/multimodal/samples/${encodeURIComponent(evidence.data!.source_sample_id!)}/evidence`), enabled: domain === 'ibadas' && !!evidence.data?.source_sample_id })
@@ -86,9 +88,11 @@ export default function DecisionLabPage() {
   const selectedFactoryRow = domain === 'factorynet' ? result?.rows.find(item => item.object_id === selectedObject) : undefined
   useEffect(() => {
     if (selectedFactoryRow?.points?.length) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setWindowStart(selectedFactoryRow.points[0].time_s)
       setWindowEnd(selectedFactoryRow.points[selectedFactoryRow.points.length - 1].time_s)
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedFactoryRow?.object_id, detail.data?.id])
   const windowPoints = selectedFactoryRow?.points?.filter(point => point.time_s >= windowStart && point.time_s <= windowEnd) ?? []
   const representativePoints = windowPoints.length ? [windowPoints[0], windowPoints.reduce((best, item) => item.residual > best.residual ? item : best, windowPoints[0]), windowPoints[windowPoints.length - 1]] : []

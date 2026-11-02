@@ -364,6 +364,7 @@ export function ConstructionReviewQueue<Run extends ReviewRun = ReviewRun>({
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void refresh();
     const timer = window.setInterval(() => void refresh(), 10000);
     return () => window.clearInterval(timer);

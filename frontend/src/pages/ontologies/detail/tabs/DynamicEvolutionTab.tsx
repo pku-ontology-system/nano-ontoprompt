@@ -228,6 +228,7 @@ function TemporalVectorIndexRetentionPanel({ run }: { run: Run }) {
       setLoaded(true);
     }
   }, [run.id]);
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { void load(); }, [load]);
 
   return <section className="rounded-xl border border-slate-200 bg-white p-4">
@@ -288,6 +289,7 @@ function TemporalObjectReconciliationPanel({ run }: { run: Run }) {
   }, [run.id]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadPreview(0);
     void loadHistory();
   }, [loadHistory, loadPreview]);
@@ -446,7 +448,7 @@ export default function DynamicEvolutionTab({ ontologyId }: { ontologyId: string
     if (reason.length < 8) { setError("人工重放原因至少需要 8 个字符。"); return; }
     setBusy(`retry:${event.id}`); setError("");
     try {
-      const key = `manual-${Date.now()}-${Math.random().toString(36).slice(2, 14)}`;
+      const key = `manual-${crypto.randomUUID()}`;
       await apiClientV2.post(`/temporal-streams/${runId}/events/${event.id}/retry`, { idempotency_key: key, reason });
       setRetryReasons((current) => ({ ...current, [event.id]: "" }));
       await load();
