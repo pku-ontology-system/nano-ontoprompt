@@ -1,0 +1,55 @@
+{
+  "listen_host": "127.0.0.1",
+  "listen_port": 28765,
+  "auto_ontology_dir": "/path/to/auto-ontology",
+  "work_dir": "runs",
+  "run_timeout_seconds": 1800,
+  "keep_runs": 30,
+  "store_admin": {
+    "host": "127.0.0.1",
+    "port": 25433,
+    "user": "postgres",
+    "password_env": "AO_STORE_PASSWORD"
+  },
+  "sources": {
+    "factory_twin": {
+      "label": "工厂排程关系库（演示）",
+      "privacy_level": "demo",
+      "description": "工厂孪生 fixture 的关系型副本：资源、设备、工单、排程项、排程项—资源桥表、排程依赖。只声明了一个外键。",
+      "connection_env": "AO_SOURCE_FACTORY_TWIN"
+    }
+  },
+  "models": {
+    "minimax-m3": {
+      "label": "MiniMax-M3（云端，经 LiteLLM 网关）",
+      "locality": "cloud",
+      "provider": "MiniMax",
+      "chat_model": "openai/MiniMax-M3",
+      "chat_endpoint": "http://127.0.0.1:24000/v1",
+      "chat_key_env": "LITELLM_API_KEY",
+      "embed_model": "nomic-embed-text",
+      "embed_endpoint": "http://127.0.0.1:11434/v1",
+      "embed_key": "ollama",
+      "embed_dim": 768,
+      "outbound": [
+        "库表名称和列名",
+        "列的数据类型与主外键声明",
+        "列的样本取值"
+      ],
+      "structured_output": "function_calling"
+    },
+    "qwen2.5-7b": {
+      "label": "Qwen2.5 7B（本机 Ollama）",
+      "locality": "local",
+      "provider": "Ollama",
+      "chat_model": "openai/qwen2.5:7b",
+      "chat_endpoint": "http://127.0.0.1:11434/v1",
+      "chat_key": "ollama",
+      "embed_model": "nomic-embed-text",
+      "embed_endpoint": "http://127.0.0.1:11434/v1",
+      "embed_key": "ollama",
+      "embed_dim": 768,
+      "outbound": []
+    }
+  }
+}

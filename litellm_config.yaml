@@ -6,6 +6,17 @@ model_list:
       api_base: https://api.minimaxi.com/v1
       api_key: os.environ/MINIMAX_API_KEY
 
+  # Auto Ontology 只在模型名带 openai/ 前缀时才走 OpenAI 兼容客户端，且把整个名字原样发给网关；
+  # 这里把该名字映射到 MiniMax。reasoning_split 让 MiniMax 把思考内容放进单独字段，
+  # 否则 <think> 段会混进结构化输出，导致 JSON 无法解析。
+  - model_name: openai/MiniMax-M3
+    litellm_params:
+      model: openai/MiniMax-M3
+      api_base: https://api.minimaxi.com/v1
+      api_key: os.environ/MINIMAX_API_KEY
+      extra_body:
+        reasoning_split: true
+
   # Workbench local audit/build helper (Ollama runs on the host).
   - model_name: qwen3.5:0.8b
     litellm_params:

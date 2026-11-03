@@ -1,0 +1,5 @@
+# Local runner settings and results: connection strings, tokens and run output never go into git.
+config.json
+.env.local
+runs/
+__pycache__/
