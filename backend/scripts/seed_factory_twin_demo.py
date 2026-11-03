@@ -296,6 +296,8 @@ def decision_page() -> dict:
                 {"label": "维护覆盖率", "before_path": "decision.kpis.3.value", "after_field": "coverage_after", "format": "percent"},
                 {"label": "新增占用产能（分钟）", "after_field": "cost", "format": "number"}]}},
         {"id": "replan", "type": "rerun_button", "title": "", "source": "decision", "path": "", "props": {"label": "用最新本体数据重跑", "steps": [
+            {"label": "高风险设备（台）", "path": "decision.kpis.2.value", "format": "number"},
+            {"label": "维护覆盖率", "path": "decision.kpis.3.value", "format": "percent"},
             {"label": "高风险暴露（分钟）", "path": "decision.metric.baseline", "format": "number"},
             {"label": "延误或未排工单", "path": "decision.kpis.0.value", "format": "number"}]}}],
         "layout": [{"i": "decision_kpis", "x": 0, "y": 0, "w": 24, "h": 3},
