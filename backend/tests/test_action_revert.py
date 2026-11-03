@@ -22,7 +22,9 @@ def test_revert_legacy_run_in_registered_ontology_fails_closed(db, admin_user):
     db.commit()
 
     with pytest.raises(HTTPException) as exc_info:
-        logic_actions.revert_action_run(ontology_id, original.id, db, admin_user)
+        logic_actions.revert_action_run(ontology_id, original.id, logic_actions.ActionRevertRequest(
+            client_request_id="revert-legacy-1", preview_digest="0" * 64, reason="undo a legacy run",
+        ), db, admin_user)
 
     db.refresh(original)
     row = db.get(EntityInstance, "order-1")

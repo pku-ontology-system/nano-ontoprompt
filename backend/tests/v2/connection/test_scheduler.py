@@ -32,19 +32,22 @@ def test_parse_cron_invalid_raises():
         svc.parse_cron("bad expression")
 
 
-def test_schedule_connection_returns_dict():
+def test_schedule_connection_is_reported_unregistered():
     svc = CronService()
     result = svc.schedule_connection_sync("conn-1", "0 8 * * *")
-    assert result["status"] == "scheduled"
+    # Connection sync has no persistent scheduler yet, so nothing claims it will run.
+    assert result["status"] == "unregistered"
     assert result["connection_id"] == "conn-1"
-    assert "celery_crontab" in result
+    assert result["cron"] == "0 8 * * *"
 
 
-def test_schedule_pipeline_returns_dict():
+def test_schedule_pipeline_points_to_persistent_schedules():
     svc = CronService()
     result = svc.schedule_pipeline_run("pl-1", "*/30 * * * *")
-    assert result["status"] == "scheduled"
+    # Pipelines run on persistent Pipeline Schedules; this helper registers nothing.
+    assert result["status"] == "unregistered"
     assert result["pipeline_id"] == "pl-1"
+    assert "Pipeline Schedule" in result["message"]
 
 
 def test_describe_cron_every_minute():

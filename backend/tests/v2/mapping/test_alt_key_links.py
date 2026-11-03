@@ -1,6 +1,7 @@
 """跨数据集 Link 推断 — 备用键(近唯一非主键列)值重叠 (PRD §2.4 ③ / F5.1)"""
 from unittest.mock import patch
 
+from tests.v2.mapping.complete_snapshots import complete_snapshots
 from app.models.ontology import OntologyProject
 from app.models.relation import Relation
 from app.models.v2.curated import CuratedDataset
@@ -59,8 +60,7 @@ def test_alt_key_relation_via_document_mentions(db, admin_user):
     db.commit()
 
     svc = MappingService(db)
-    with patch("app.services.v2.dataset_service.DatasetService.preview",
-               side_effect=lambda dataset_id, *a, **k: rows_by_ds[dataset_id]), \
+    with complete_snapshots(db, rows_by_ds), \
          patch.object(MappingService, "_write_neo4j",
                       side_effect=lambda _s, _c, ents: len(ents), autospec=True), \
          patch.object(MappingService, "_write_neo4j_relations", return_value=None), \
@@ -107,8 +107,7 @@ def test_exploded_rows_dedupe_relation_pairs(db, admin_user):
     db.commit()
 
     svc = MappingService(db)
-    with patch("app.services.v2.dataset_service.DatasetService.preview",
-               side_effect=lambda dataset_id, *a, **k: rows_by_ds[dataset_id]), \
+    with complete_snapshots(db, rows_by_ds), \
          patch.object(MappingService, "_write_neo4j",
                       side_effect=lambda _s, _c, ents: len(ents), autospec=True), \
          patch.object(MappingService, "_write_neo4j_relations", return_value=None), \

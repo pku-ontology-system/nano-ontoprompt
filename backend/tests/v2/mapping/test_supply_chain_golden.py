@@ -1,5 +1,6 @@
 from unittest.mock import patch
 
+from tests.v2.mapping.complete_snapshots import complete_snapshots
 from app.models.action import Action
 from app.models.entity import Entity
 from app.models.logic import LogicRule
@@ -102,7 +103,7 @@ def test_supply_chain_mapping_golden_prd_242_semantics(db, admin_user):
         _add_mapping(db, ontology.id, ds.id, entity_class, pk_by_entity[entity_class])
 
     service = MappingService(db)
-    with patch("app.services.v2.dataset_service.DatasetService.preview", side_effect=lambda dataset_id, *_args, **_kwargs: rows_by_dataset[dataset_id]), \
+    with complete_snapshots(db, rows_by_dataset), \
          patch.object(MappingService, "_write_neo4j", side_effect=lambda _self, _entity_class, entities: len(entities), autospec=True), \
          patch.object(MappingService, "_write_neo4j_relations", return_value=None), \
          patch("app.services.v2.vector.chroma_service.ChromaService.upsert_entities", return_value=None):

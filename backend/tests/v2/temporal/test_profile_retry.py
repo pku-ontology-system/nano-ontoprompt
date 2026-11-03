@@ -45,7 +45,7 @@ def _profile(db, *, status: str, llm_used: bool):
 
 
 @pytest.mark.parametrize("status", ["completed", "failed"])
-def test_standard_stale_or_failed_profile_is_requeued_for_m3(db, status):
+def test_standard_stale_or_failed_profile_is_requeued_for_m3(db, admin_user, status):
     dataset_id, profile_id = _profile(db, status=status, llm_used=False)
 
     with patch("app.routers.v2.temporal._queue_temporal_profile") as queue:
@@ -54,6 +54,7 @@ def test_standard_stale_or_failed_profile_is_requeued_for_m3(db, status):
             TemporalAnalysisRequest(privacy_level="standard"),
             None,
             db,
+            current_user=admin_user,
         )
 
     assert result["id"] == profile_id
@@ -66,7 +67,7 @@ def test_standard_stale_or_failed_profile_is_requeued_for_m3(db, status):
     queue.assert_called_once_with(profile_id, None)
 
 
-def test_standard_successful_m3_profile_is_reused_without_duplicate_task(db):
+def test_standard_successful_m3_profile_is_reused_without_duplicate_task(db, admin_user):
     dataset_id, profile_id = _profile(db, status="completed", llm_used=True)
 
     with patch("app.routers.v2.temporal._queue_temporal_profile") as queue:
@@ -75,6 +76,7 @@ def test_standard_successful_m3_profile_is_reused_without_duplicate_task(db):
             TemporalAnalysisRequest(privacy_level="standard"),
             None,
             db,
+            current_user=admin_user,
         )
 
     assert result["id"] == profile_id

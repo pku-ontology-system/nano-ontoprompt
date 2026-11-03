@@ -124,7 +124,7 @@ def test_projection_retry_delay_is_exponential_and_bounded():
 
 
 def test_celery_reconcile_scans_and_delivers_due_projection(db, ontology, admin_user, monkeypatch):
-    run = _seed_run(db, ontology["id"])
+    run = _seed_run(db, ontology["id"], actor_id=admin_user.id)
     session_factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
     monkeypatch.setattr("app.database.SessionLocal", session_factory)
     graph_writes = []
