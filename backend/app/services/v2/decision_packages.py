@@ -17,9 +17,9 @@ TRANSITIONS = {
 
 
 class DecisionPackageError(ValueError):
-    def __init__(self, code: str, message: str, status_code: int = 422):
+    def __init__(self, code: str, message: str, status_code: int = 422, details: dict | None = None):
         super().__init__(message)
-        self.code, self.status_code = code, status_code
+        self.code, self.status_code, self.details = code, status_code, details or {}
 
 
 def stable_digest(payload) -> str:
@@ -42,7 +42,45 @@ def execution_plan_digest(actions, *, include_delivery: bool | None = None) -> s
                           for row in actions])
 
 
-def transition(package, event: str, actor_id: str, *, expected_etag: int, reason: str = "") -> tuple[str, str]:
+MIN_OVERRIDE_REASON = 4
+
+
+def recommended_candidate(decision: dict) -> dict | None:
+    """The candidate the Function recommends: its own ``recommended`` flag, else the applicable candidate with the
+    best metric; ties go to the one the Function listed first (Functions list their candidates best-first).
+    None when nothing is applicable."""
+    applicable = [row for row in decision["candidates"] if row.get("applicable")]
+    if not applicable:
+        return None
+    flagged = [row for row in applicable if row.get("recommended") is True]
+    if flagged:
+        return flagged[0]
+    sign = 1 if decision["metric"]["direction"] == "minimize" else -1
+    return min(applicable, key=lambda row: sign * row["metric_after"])
+
+
+def _candidate_figures(candidate: dict) -> dict:
+    return {"metric_after": candidate["metric_after"], "cost": candidate.get("cost", 0), "protected": list(candidate["protected"]),
+            "harmed": list(candidate["harmed"]), "applicable": candidate["applicable"]}
+
+
+def override_summary(decision: dict, recommended: dict, chosen: dict) -> dict:
+    """What a reviewer needs to judge a choice that is not the recommended one."""
+    metric = decision["metric"]
+    return {"recommended_candidate_id": recommended["id"], "recommended_label": recommended["label"],
+            "chosen_candidate_id": chosen["id"], "chosen_label": chosen["label"],
+            "metric": {key: metric.get(key) for key in ("key", "label", "unit", "direction", "baseline")},
+            "recommended": _candidate_figures(recommended), "chosen": _candidate_figures(chosen)}
+
+
+def override_of(db, package) -> dict | None:
+    """The recorded human override of a package, if it has one."""
+    from app.models.v2.decision import DecisionPackageEvidence
+    row = db.query(DecisionPackageEvidence).filter_by(package_id=package.id, evidence_type="override").first()
+    return row.reference if row else None
+
+
+def transition(package, event: str, actor_id: str, *, expected_etag: int, reason: str = "", approval_note_required: bool = False) -> tuple[str, str]:
     if package.etag != expected_etag:
         raise DecisionPackageError("stale_etag", "Decision package changed; reload before retrying", 409)
     target = TRANSITIONS.get(package.status, {}).get(event)
@@ -52,6 +90,8 @@ def transition(package, event: str, actor_id: str, *, expected_etag: int, reason
         raise DecisionPackageError("self_review_forbidden", "The package author cannot review their own package", 403)
     if event in {"reject", "apply_failed"} and not reason.strip():
         raise DecisionPackageError("reason_required", "A reason is required", 422)
+    if event == "approve" and approval_note_required and not reason.strip():
+        raise DecisionPackageError("override_review_note_required", "该方案覆盖了推荐方案，批准时必须写审核意见", 422)
     before = package.content_digest
     package.status = target
     package.etag += 1
@@ -129,8 +169,11 @@ def pinned_snapshot(db, run, ontology_id):
     return FalkorReadAdapter(graph._graph(view.graph_key), graph_ontology_id=view.graph_key).read(ontology_id)
 
 
-def compile_package_actions(db, run, ontology_id, candidate_id, actor):
+def compile_package_actions(db, run, ontology_id, candidate_id, actor, *, override_reason: str | None = None, enforce_override: bool = False):
     """Compile a run candidate into package actions; returns (actions, evidence, title).
+
+    With ``enforce_override`` (package creation) choosing a candidate other than the recommended one needs a written
+    reason; it is recorded as ``override`` evidence, so it is covered by the package digest and shown to the reviewer.
 
     ``decision/v1`` results (any user Function) compile through the
     ontology's configured scenario Actions.  The built-in material-shortage
@@ -159,6 +202,14 @@ def compile_package_actions(db, run, ontology_id, candidate_id, actor):
                      "reference": {"candidate_id": candidate["id"], "metric": decision["metric"]["key"],
                                    "before": decision["metric"]["baseline"], "after": candidate["metric_after"],
                                    "cost": candidate.get("cost", 0), "harmed": candidate["harmed"]}}]
+        recommended = recommended_candidate(decision)
+        if enforce_override and recommended is not None and recommended["id"] != candidate["id"]:
+            summary = override_summary(decision, recommended, candidate)
+            reason = (override_reason or "").strip()
+            if len(reason) < MIN_OVERRIDE_REASON:
+                raise DecisionPackageError("override_reason_required", "选择的不是推荐方案，请写明覆盖理由", 422, summary)
+            reference = {**summary, "reason": reason}
+            evidence.append({"evidence_type": "override", "content_digest": stable_digest(reference), "reference": reference})
         return actions, evidence, candidate["label"]
 
     from app.services.v2.material_shortage_objects import CompileError, compile_candidate
@@ -240,7 +291,7 @@ def apply_package(db, package, user, *, expected_etag: int, request_id: str, con
                 "kind": "decision_package_applied", "package_id": package.id, "run_id": package.run_id,
                 "candidate_id": candidate_id, "title": package.title, "rationale": package.rationale,
                 "scenario_id": scenario.id, "merged_revision": scenario.head_revision, "applied_by": user.id,
-                "edits": applied, "before": before})
+                "edits": applied, "before": before, "override": override_of(db, package)})
             db.add(decision)
             db.flush()
             package.applied_decision_id = decision.id

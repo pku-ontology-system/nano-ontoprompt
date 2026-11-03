@@ -388,6 +388,7 @@ def run(inputs):
         candidates.append(candidate("naive", f"{task['name']} 直接插入 {label(naive[0]['resources'][0])} {_hm(naive[0]['start'])}（不调整其他任务）", naive))
     candidates.sort(key=lambda row: (not row["applicable"], row["metric_after"], row["delivery_risk_after"], row["cost"], row["id"]))
     for index, row in enumerate(candidates):
+        row["recommended"] = index == 0 and row["applicable"]
         row["verdict"] = "推荐" if index == 0 and row["applicable"] else ("可行" if row["applicable"] else "不可行：" + "、".join(
             sorted({item["code"] for item in row["hard_constraints"]})))
 

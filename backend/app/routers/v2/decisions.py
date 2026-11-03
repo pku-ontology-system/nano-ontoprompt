@@ -142,6 +142,8 @@ class PackageFromRunInput(BaseModel):
     candidate_id: str = Field(min_length=1, max_length=200)
     title: str | None = Field(default=None, max_length=200)
     rationale: str = Field(min_length=1, max_length=10000)
+    # Required when the chosen candidate is not the recommended one; recorded with the package as evidence.
+    override_reason: str | None = Field(default=None, max_length=4000)
 
 
 class PackageCommandInput(BaseModel):
@@ -173,6 +175,7 @@ def package_json(db, item):
                          "external_effect_class": row.external_effect_class, "receipt": row.receipt} for row in actions],
             "evidence": [{"id": row.id, "evidence_type": row.evidence_type, "reference": row.reference,
                           "content_digest": row.content_digest} for row in evidence],
+            "override": next((row.reference for row in evidence if row.evidence_type == "override"), None),
             "events": [{"sequence": row.sequence, "event_type": row.event_type, "actor_id": row.actor_id,
                         "reason": row.reason, "request_id": row.request_id} for row in events]}
 
@@ -221,7 +224,7 @@ def _insert_package(db, oid, user, *, scenario_id, scenario_revision, run_id, ti
 
 
 def _package_error(exc: DecisionPackageError):
-    raise HTTPException(exc.status_code, {"code": exc.code, "message": str(exc)}) from exc
+    raise HTTPException(exc.status_code, {"code": exc.code, "message": str(exc), **({"details": exc.details} if exc.details else {})}) from exc
 
 
 @router.post('/{oid}/scenario-study-runs/{run_id}/decision-packages')
@@ -237,7 +240,8 @@ def create_package_from_run(oid: str, run_id: str, body: PackageFromRunInput, db
     if scenario.head_revision != run.revision:
         raise HTTPException(409, {"code": "stale_scenario_revision", "message": "Scenario changed after this run"})
     try:
-        actions, evidence, label = package_service.compile_package_actions(db, run, oid, body.candidate_id, user)
+        actions, evidence, label = package_service.compile_package_actions(db, run, oid, body.candidate_id, user,
+                                                                         override_reason=body.override_reason, enforce_override=True)
     except DecisionPackageError as exc:
         _package_error(exc)
     return _insert_package(db, oid, user, scenario_id=scenario.id, scenario_revision=run.revision, run_id=run.id,
@@ -292,7 +296,8 @@ def transition_package(oid: str, package_id: str, body: PackageTransitionInput, 
     if duplicate:
         return package_json(db, item)
     try:
-        before, target = transition(item, body.event, user.id, expected_etag=body.expected_etag, reason=body.reason)
+        before, target = transition(item, body.event, user.id, expected_etag=body.expected_etag, reason=body.reason,
+                                    approval_note_required=body.event == "approve" and package_service.override_of(db, item) is not None)
     except DecisionPackageError as exc:
         raise HTTPException(exc.status_code, {"code": exc.code, "message": str(exc)}) from exc
     sequence = db.query(DecisionPackageEvent).filter_by(package_id=item.id).count()

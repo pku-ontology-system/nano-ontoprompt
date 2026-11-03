@@ -4,6 +4,7 @@ import { apiClientV2, formatApiError } from '@/api/client'
 import { AlertList, CoverageGrid, DataTable, DonutChart, GeoMap, KpiStrip, RankBars, StackedBarChart, type MapLink, type MapPoint } from '@/components/dashboard/widgets'
 import { aggregate, asRows, categoryColor, coordinate, formatCell, getPath, groupSeries, groupTotals, matches, plainId, template, tone, withinRange, type Format, type Row, type ToneRule, type Where } from '@/components/dashboard/binding'
 import DecisionPackagePanel from '@/pages/what-if/DecisionPackagePanel'
+import type { OverrideMetric } from '@/pages/what-if/decisionPackage'
 import type { DecisionRunContext } from '@/pages/what-if/decisionPackage'
 import type { ResolvedSource, ResolvedStudyRun, Widget } from './spec'
 import ScheduleGanttWidget from './ScheduleGanttWidget'
@@ -209,7 +210,10 @@ function ActionDetail({ rows, p, rt, source }: { rows: Row[]; p: P; rt: Runtime;
         {explanation.answer.risks.length > 0 && <ul className="list-disc pl-5 text-amber-800">{explanation.answer.risks.map((row, index) => <li key={index}>{row.claim} <span className="text-xs text-violet-700">[{row.evidence_ids.join(', ')}]</span></li>)}</ul>}
         <details className="text-xs"><summary className="cursor-pointer text-slate-500">证据（{explanation.evidence.length} 条）</summary><ul>{explanation.evidence.map(row => <li key={row.id}><strong>{row.id}</strong> {row.label}：{typeof row.value === 'object' ? JSON.stringify(row.value) : str(row.value)}</li>)}</ul></details></div>}
     </div>}
-    {!rt.editing && <div className="border-t pt-2"><DecisionPackagePanel context={context} candidate={{ id: str(candidate.id), applicable: candidate.applicable !== false }} /></div>}
+    {!rt.editing && <div className="border-t pt-2"><DecisionPackagePanel context={context} candidate={{ id: str(candidate.id), applicable: candidate.applicable !== false }}
+      plans={rows.map(row => ({ id: str(row.id), label: str(row.label), applicable: row.applicable !== false, recommended: row.recommended === true, metric_after: Number(row.metric_after ?? 0),
+        cost: Number(row.cost ?? 0), protected: list(row.protected).map(String), harmed: list(row.harmed).map(String) }))}
+      metric={getPath(source.outputs, str(p.metric_path) || 'decision.metric') as OverrideMetric | undefined} /></div>}
   </div>
 }
 

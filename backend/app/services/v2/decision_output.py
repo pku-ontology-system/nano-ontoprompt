@@ -33,7 +33,7 @@ SCHEMA = {
             "evidence": {"type": "array", "items": {"type": "object", "required": ["label", "value"]}}}}},
         "candidates": {"type": "array", "maxItems": 50, "items": {"type": "object",
             "required": ["id", "label", "applicable", "hard_constraints", "metric_after", "protected", "harmed", "actions"], "properties": {
-                "id": _ID, "label": {"type": "string"}, "applicable": {"type": "boolean"},
+                "id": _ID, "label": {"type": "string"}, "applicable": {"type": "boolean"}, "recommended": {"type": "boolean"},
                 "hard_constraints": {"type": "array", "items": {"type": "object", "required": ["code"]}},
                 "metric_after": {"type": "number"}, "cost": {"type": "number"},
                 "protected": {"type": "array", "items": _ID}, "harmed": {"type": "array", "items": _ID},

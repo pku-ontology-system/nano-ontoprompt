@@ -4,7 +4,7 @@ import { describe, plain, useRunPackage, type DecisionRunContext } from './decis
 import { formatStudyValue } from './studyDisplay'
 
 type Subject = { id: string; label: string; status: string; at_risk?: boolean; metric_value?: number; reasons?: string[]; path?: string[]; evidence?: Array<{ label: string; value: unknown }> }
-type Candidate = { id: string; label: string; applicable: boolean; hard_constraints: Array<{ code: string; [key: string]: unknown }>; metric_after: number; cost?: number; protected: string[]; harmed: string[]; actions: Array<{ action_type: string; parameters: Record<string, unknown> }> }
+type Candidate = { id: string; label: string; applicable: boolean; recommended?: boolean; hard_constraints: Array<{ code: string; [key: string]: unknown }>; metric_after: number; cost?: number; protected: string[]; harmed: string[]; actions: Array<{ action_type: string; parameters: Record<string, unknown> }> }
 /** decision/v1: the domain-neutral result any decision Function returns. */
 export type DecisionOutput = { schema: 'decision/v1'; title: string; subject_type: string; subject_label?: string; metric: { key: string; label: string; unit?: string; direction: 'minimize' | 'maximize'; baseline: number }; kpis?: Array<{ label: string; value: unknown }>; subjects: Subject[]; candidates: Candidate[] }
 
@@ -76,7 +76,7 @@ export default function DecisionWorkspace({ decision, context }: { decision: Dec
           {!candidate.applicable && <p className="candidate-warning">硬约束未满足，只能作为参考，不能提交执行。</p>}
           {candidate.harmed.length > 0 && <p className="candidate-warning">将使 {list(candidate.harmed)} 由无风险变为有风险。</p>}
           <ol className="candidate-actions">{candidate.actions.map((action, index) => <li key={index}><strong>{action.action_type}</strong><small>{describe(action.parameters)}</small></li>)}</ol>
-          <DecisionPackagePanel context={context} candidate={candidate} />
+          <DecisionPackagePanel context={context} candidate={candidate} plans={decision.candidates} metric={decision.metric} />
         </> : <p className="decision-muted">选择一个候选方案查看变更。</p>}
       </aside>
     </div>
