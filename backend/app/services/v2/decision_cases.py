@@ -106,6 +106,10 @@ def _event(db: Session, case: DecisionCase, name: str, actor_id: str | None,
     event = DecisionCaseEvent(case_id=case.id, sequence=sequence, event_type=name,
                               actor_id=actor_id, payload=payload, trace_id=trace_id)
     db.add(event)
+    # The application session does not autoflush.  Without this, two events added in one unit of work (for example
+    # "projection_synced" and "projection_attempt_finished") would both read the same max sequence and the commit
+    # would fail on the unique (case, sequence) key, leaving the projection attempt unfinished forever.
+    db.flush()
     return event
 
 
