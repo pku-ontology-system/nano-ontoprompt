@@ -49,7 +49,7 @@ def test_what_if_requires_a_selected_observation(db, admin_user):
     try:
         build_context(db, project.id)
     except WhatIfError as exc:
-        assert "选择一个 Observation" in str(exc)
+        assert "选择一个对象" in str(exc)
     else:
         raise AssertionError("What-If should not build a whole-ontology context without a target")
 
@@ -131,9 +131,10 @@ def test_what_if_rejects_unauthorized_link_assumption(db, admin_user):
         raise AssertionError("What-if must reject link assumptions outside the authorized projection")
 
 
-def test_what_if_context_uses_shared_object_property_and_link_projection(db, admin_user, editor_user, monkeypatch):
+def test_what_if_context_uses_shared_object_property_and_link_projection(db, admin_user, editor_user):
+    """build_context projects its replay context through Object Query's object, field and link policy."""
     from app.models.v2.security import OntologySecurityPolicy
-    from app.services.v2.what_if_service import verify_context_digest
+    from app.services.v2.what_if_service import _authorize_context_graph
 
     project = _project(db, admin_user, name="FactoryNet authorized neighborhood")
     db.add_all([
@@ -205,21 +206,17 @@ def test_what_if_context_uses_shared_object_property_and_link_projection(db, adm
         ],
     }
 
-    class FakeGraph:
-        available = True
-
-        def get_neighborhood(self, *_args, **_kwargs):
-            return graph_data
-
-    monkeypatch.setattr("app.services.v2.what_if_service.FalkorDBService", FakeGraph)
-    context = build_context(db, project.id, target_instance_id="obs-1", user=editor_user)
+    context, permission_digest, authorized_properties, _property_types, authorized_links = _authorize_context_graph(
+        db, project.id, None, graph_data, editor_user,
+    )
 
     assert {node["id"] for node in context["nodes"]} == {"obs-1", "obs-2"}
-    assert context["nodes"][0]["properties"]["secret"] is None
-    assert context["provenance"]["authorized_properties_by_object"]["obs-1"] == ["ordinal"]
+    obs_1 = next(node for node in context["nodes"] if node["id"] == "obs-1")
+    assert obs_1["properties"].get("secret") is None
+    assert authorized_properties["obs-1"] == ["ordinal"]
     assert [(edge["source"], edge["target"]) for edge in context["edges"]] == [("obs-1", "obs-2")]
-    assert context["provenance"]["authorized_link_types"] == ["NEXT_OBSERVATION"]
-    assert verify_context_digest(context)
+    assert authorized_links == ["NEXT_OBSERVATION"]
+    assert len(permission_digest) == 64
 
 
 def test_what_if_scenario_and_run_reads_are_owner_scoped(db, admin_user, editor_user):
@@ -263,10 +260,10 @@ def test_what_if_scenario_and_run_reads_are_owner_scoped(db, admin_user, editor_
         ),
     ])
     db.commit()
-    scenarios_response = what_if_router.list_scenarios(project.id, db, editor_user)
+    scenarios_response = what_if_router.list_scenarios(project.id, summary=False, db=db, user=editor_user)
     assert scenarios_response["scenarios"] == []
     try:
-        what_if_router.get_run(project.id, run.id, db, editor_user)
+        what_if_router.get_run(project.id, run.id, db=db, user=editor_user)
     except HTTPException as exc:
         assert exc.status_code == 404
     else:
@@ -328,6 +325,7 @@ def test_what_if_http_create_queue_and_owner_isolation_use_test_database(db, adm
 
     from app.deps import get_current_user, require_editor
     from app.routers.v2 import what_if as what_if_router
+    from app.schemas.v2.scenario_context import seal_scenario_context
 
     project = _project(db, admin_user, name="FactoryNet isolated API path")
     db.add(OntologySecurityPolicy(
@@ -362,6 +360,17 @@ def test_what_if_http_create_queue_and_owner_isolation_use_test_database(db, adm
             "authorized_link_types": [],
         },
     }
+    pin = "b" * 64
+    baseline["scenario_context"] = seal_scenario_context({
+        "ontology_id": project.id, "schema_revision_id": "revision-test", "schema_revision_hash": pin,
+        "data_model_snapshot_id": "snapshot-test", "data_model_snapshot_hash": pin,
+        "dataset_version_id": "dataset-test-v1", "dataset_version_hash": pin,
+        "replay_id": "replay-test", "source_id": "factorynet_cnc", "episode_id": "episode-test",
+        "time_kind": "ordinal", "time_value": "0", "watermark_ordinal": "0", "watermark_sequence": 0,
+        "checkpoint_digest": pin, "principal_id": admin_user.id, "permission_digest": pin,
+        "query_digest": pin, "evidence_digest": pin,
+        "source_adapter_id": "factorynet", "source_adapter_version": "1", "source_mapping_digest": pin,
+    }).model_dump(mode="json")
     monkeypatch.setattr(what_if_router, "build_context", lambda *_args, **_kwargs: baseline)
     monkeypatch.setattr(what_if_router, "revalidate_scenario_context", lambda *_args: baseline)
     dispatched = []

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from app.services.v2.pipeline.base import PipelineContext
 from app.services.v2.pipeline.steps.document_to_md import DocumentToMarkdownStep
-from app.services.v2.pipeline.steps.md_to_structured import MarkdownToStructuredStep
+from app.services.v2.pipeline.steps.md_to_structured import LLMExtractionError, MarkdownToStructuredStep
 from app.services.v2.pipeline.engine import execute_route_c
 
 
@@ -205,7 +205,8 @@ def test_md_to_structured_with_mock_llm():
             "model_id": "test-model",
         }
     })
-    with patch("app.services.v2.pipeline.steps.md_to_structured.MarkdownToStructuredStep._extract") as mock_extract:
+    with patch("app.services.v2.pipeline.steps.md_to_structured._get_first_model", return_value=MagicMock()), \
+         patch("app.services.v2.pipeline.steps.md_to_structured.MarkdownToStructuredStep._extract_fields") as mock_extract:
         mock_extract.return_value = {"date": "2024-01-15", "author": "John"}
         result = step.run(ctx, [SAMPLE_MD_ROW])
     assert result[0]["date"] == "2024-01-15"
@@ -213,28 +214,43 @@ def test_md_to_structured_with_mock_llm():
     assert result[0]["structured_extraction_ok"] is True
 
 
-def test_md_to_structured_llm_failure_graceful():
-    """LLM 호출 실패 시 오류 필드 추가 (크래시 없음)"""
+PROVIDER_FAILURE = LLMExtractionError("llm_schema", "provider_call_failed")
+
+
+def test_md_to_structured_llm_failure_fails_closed_by_default():
+    """A provider failure stops the step with a stable reason code."""
     step = MarkdownToStructuredStep()
-    ctx = make_ctx({
-        "md_to_structured": {
-            "target_schema": {"date": "날짜"},
-        }
-    })
-    with patch("app.services.v2.pipeline.steps.md_to_structured.MarkdownToStructuredStep._extract",
-               side_effect=RuntimeError("LLM timeout")):
+    ctx = make_ctx({"md_to_structured": {"target_schema": {"date": "날짜"}}})
+    with patch("app.services.v2.pipeline.steps.md_to_structured._get_first_model", return_value=MagicMock()), \
+         patch("app.services.v2.pipeline.steps.md_to_structured.MarkdownToStructuredStep._extract_fields",
+               side_effect=PROVIDER_FAILURE), \
+         pytest.raises(LLMExtractionError) as exc:
+        step.run(ctx, [SAMPLE_MD_ROW])
+    assert exc.value.reason_code == "provider_call_failed"
+    assert ctx.meta["md_to_structured"]["status"] == "failed"
+
+
+def test_md_to_structured_llm_failure_degrades_only_with_rule_based_policy():
+    """With fallback_policy=rule_based the whole source falls back to rules, marked degraded."""
+    step = MarkdownToStructuredStep()
+    ctx = make_ctx({"md_to_structured": {"target_schema": {"date": "날짜"}, "fallback_policy": "rule_based"}})
+    with patch("app.services.v2.pipeline.steps.md_to_structured._get_first_model", return_value=MagicMock()), \
+         patch("app.services.v2.pipeline.steps.md_to_structured.MarkdownToStructuredStep._extract_fields",
+               side_effect=PROVIDER_FAILURE):
         result = step.run(ctx, [SAMPLE_MD_ROW])
-    assert result[0]["structured_extraction_ok"] is False
-    assert "structured_extraction_error" in result[0]
+    outcome = ctx.meta["md_to_structured"]
+    assert outcome["status"] == "degraded" and outcome["effective_method"] == "rule_based"
+    assert outcome["fallback_reason"] == "provider_call_failed" and outcome["success"] == 0
+    assert result and all(row.get("extraction_method") == "rule_based" for row in result)
 
 
 def test_md_to_structured_auto_extract_accepts_records_object():
     step = MarkdownToStructuredStep()
     payload = '{"records":[{"record_id":"policy:1","row_type":"section","title":"Policy"}]}'
-    with patch("app.services.v2.pipeline.steps.md_to_structured._call_with_model", return_value=payload):
-        result = step._auto_extract_with_llm([SAMPLE_MD_ROW], MagicMock())
+    with patch("app.services.v2.pipeline.steps.md_to_structured._call_with_model_result", return_value=(payload, None)):
+        result, failure_reason = step._auto_extract_with_llm([SAMPLE_MD_ROW], MagicMock())
 
-    assert result is not None
+    assert failure_reason is None and result is not None
     assert result[0]["record_id"] == "policy:1"
     assert result[0]["row_type"] == "section"
 
@@ -256,13 +272,16 @@ def test_execute_route_c_basic():
     """Route C 전체 체인 실행 (빈 content → markitdown)"""
     ctx = make_ctx({
         "document_to_md": {"strategy": "markitdown"},
-        "md_to_structured": {"target_schema": {"date": "날짜"}},
+        # No model is configured, so the step may only run by declared rule fallback.
+        "md_to_structured": {"target_schema": {"date": "날짜"}, "fallback_policy": "rule_based"},
     })
     data = [{"filename": "test.txt", "content": b"Report date: 2024-01-15"}]
-    result, ctx2 = execute_route_c(ctx, data)
+    with patch("app.services.v2.pipeline.steps.md_to_structured._get_first_model", return_value=None):
+        result, ctx2 = execute_route_c(ctx, data)
     assert len(result) == 1
     assert ctx2.rows_out == 1
     assert "markdown_text" in result[0]
+    assert ctx2.meta["md_to_structured"]["status"] == "degraded"
 
 
 def test_execute_route_c_empty():

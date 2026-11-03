@@ -1,3 +1,4 @@
+from tests.v2.temporal_facts import published_facts
 from app.models.ontology import OntologyProject
 from app.models.v2.dataset import Dataset, DatasetVersion
 from app.models.v2.temporal_replay import DataModelSnapshot, TemporalFact, TemporalReplay, TemporalStreamEvent
@@ -244,7 +245,7 @@ def test_push_event_idempotency_and_late_event_gate(db, admin_user, monkeypatch)
         raise AssertionError("expected a late event rejection")
 
 
-def test_file_and_push_sequences_share_snapshot_hash(db, admin_user, monkeypatch):
+def test_file_and_push_sequences_publish_the_same_facts(db, admin_user, monkeypatch):
     ontology, dataset, version = _source(db, admin_user)
     monkeypatch.setattr(streams, "_resolve_source", lambda _db, _dataset_id, _version_id: (dataset, version, _rows()))
     monkeypatch.setattr(streams, "dispatch_stream", lambda _run_id: "test")
@@ -279,4 +280,9 @@ def test_file_and_push_sequences_share_snapshot_hash(db, admin_user, monkeypatch
     db.commit()
     push_snapshot = streams.publish_stream_run(db, push_run, created_by=admin_user.id)["snapshot"]
 
-    assert file_snapshot["snapshot_hash"] == push_snapshot["snapshot_hash"]
+    # Version 2 snapshot hashes bind each snapshot to its source context and
+    # event envelopes, so file and push snapshots hash differently; the facts
+    # the two sources publish must still be identical.
+    assert file_snapshot["snapshot_hash_version"] == push_snapshot["snapshot_hash_version"] == 2
+    assert file_snapshot["snapshot_hash"] != push_snapshot["snapshot_hash"]
+    assert published_facts(db, file_run) == published_facts(db, push_run) != []

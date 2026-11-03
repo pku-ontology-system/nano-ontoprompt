@@ -1,6 +1,7 @@
 """Explicit push source mapping and timezone-aware event time contract."""
 import pytest
 
+from tests.v2.temporal_facts import published_facts
 from app.models.ontology import OntologyProject
 from app.models.ontology_revision import OntologyRevision
 from app.models.v2.dataset import Dataset, DatasetVersion
@@ -181,7 +182,7 @@ def test_generic_push_delete_is_a_temporal_tombstone_and_upsert_can_restore(
     assert active_tombstones == 0
 
 
-def test_generic_file_and_push_have_same_snapshot_hash(db, admin_user, monkeypatch, isolated_stream_graph):
+def test_generic_file_and_push_publish_the_same_facts(db, admin_user, monkeypatch, isolated_stream_graph):
     ontology = OntologyProject(id="generic-file-stream", name="Sensor", domain="test",
                                data_class="temporal", created_by=admin_user.id)
     db.add(ontology)
@@ -227,4 +228,9 @@ def test_generic_file_and_push_have_same_snapshot_hash(db, admin_user, monkeypat
     push_run.status = "completed"
     db.commit()
     push_snapshot = streams.publish_stream_run(db, push_run, created_by=admin_user.id)["snapshot"]
-    assert file_snapshot["snapshot_hash"] == push_snapshot["snapshot_hash"]
+    # Version 2 snapshot hashes bind each snapshot to its source context and
+    # event envelopes, so file and push snapshots hash differently; the facts
+    # the two sources publish must still be identical.
+    assert file_snapshot["snapshot_hash_version"] == push_snapshot["snapshot_hash_version"] == 2
+    assert file_snapshot["snapshot_hash"] != push_snapshot["snapshot_hash"]
+    assert published_facts(db, file_run) == published_facts(db, push_run) != []
