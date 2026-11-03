@@ -11,9 +11,14 @@ from app.models.v2.mapping import OntologyMapping
 from app.services.v2.mapping_apply_runs import MappingApplyRunService
 from app.models.ontology import OntologyProject
 from app.models.v2.pipeline import Pipeline
+from app.models.v2.mapping_definition_review import MappingDefinitionReview
+from tests.v2.review_approvals import (
+    approve_mapping_definition as _approve_definition, ensure_actors as _actors, review_actors,
+)
 
 
 def _enqueue(db, *, review_id="review-1", mapping_id="mapping-1"):
+    _actors(db, "ontology-1")
     if db.get(CuratedDataset, "dataset-1") is None:
         db.add(CuratedDataset(id="dataset-1", name="reviewed source", status="approved"))
     if db.get(DatasetVersion, "version-1") is None:
@@ -25,19 +30,28 @@ def _enqueue(db, *, review_id="review-1", mapping_id="mapping-1"):
         db.add(CuratedReview(
             id=review_id, curated_dataset_id="dataset-1", status="approved",
             dataset_version_id="version-1", decided_at=datetime.now(timezone.utc),
+            **review_actors(),
         ))
-    if db.get(OntologyMapping, mapping_id) is None:
-        db.add(OntologyMapping(
+    mapping = db.get(OntologyMapping, mapping_id)
+    if mapping is None:
+        mapping = OntologyMapping(
             id=mapping_id, ontology_id="ontology-1", curated_dataset_id="dataset-1",
             entity_class="Supplier", field_mapping={"id": "supplier_id"}, status="active",
-        ))
+        )
+        db.add(mapping)
+        db.flush()
+    definition = (db.query(MappingDefinitionReview).filter_by(mapping_id=mapping_id).first()
+                  or _approve_definition(db, mapping))
     db.commit()
     return MappingApplyRunService(db).enqueue_review_mapping(
         mapping_id=mapping_id,
         ontology_id="ontology-1",
         curated_dataset_id="dataset-1",
         review_id=review_id,
+        mapping_review_id=definition.id,
         dataset_version_id="version-1",
+        requested_by=review_actors()["requested_by"],
+        request_actor_kind="user",
     )
 
 
@@ -77,7 +91,7 @@ def test_enqueue_rejects_reusing_idempotency_key_after_mapping_change(db):
     mapping.field_mapping = {"id": "other_id"}
     db.commit()
 
-    with pytest.raises(ValueError, match="different mapping request"):
+    with pytest.raises(ValueError, match="changed after approval"):
         _enqueue(db)
 
 
@@ -129,6 +143,7 @@ def test_execute_applies_mapping_once_and_persists_result(db):
 
     apply.assert_called_once_with(
         db, "mapping-1", "ontology-1", "version-1", "review-1",
+        mapping_review_id=run.provenance.mapping_review_id,
         expected_mapping_digest=run.mapping_digest,
         mapping_apply_run_id=run.id,
     )
@@ -155,7 +170,7 @@ def test_deterministic_mapping_error_is_terminal(db):
         result = MappingApplyRunService(db).execute(run.id, celery_task_id="task-1")
 
     assert result["status"] == "failed"
-    assert result["error_code"] == "ValueError"
+    assert result["error_code"] == "invalid_mapping_input"
     assert result["completed_at"] is not None
 
 
@@ -168,7 +183,7 @@ def test_transient_mapping_error_schedules_retry(db):
         result = MappingApplyRunService(db).execute(run.id, celery_task_id="task-1")
 
     assert result["status"] == "retry_wait"
-    assert result["error_code"] == "ConnectionError"
+    assert result["error_code"] == "worker_execution_error"
     assert result["next_attempt_at"] is not None
 
 
@@ -198,8 +213,8 @@ def test_mapping_definition_change_after_enqueue_blocks_application(db):
     result = MappingApplyRunService(db).execute(run.id, celery_task_id="task-1")
 
     assert result["status"] == "failed"
-    assert result["error_code"] == "ValueError"
-    assert "Mapping definition changed" in result["error_message"]
+    assert result["error_code"] == "invalid_mapping_input"
+    assert "Mapping definition changed" not in (result["error_message"] or "")  # details stay hidden
 
 
 def test_reconcile_requeues_expired_leases_but_preserves_live_worker(db):
@@ -212,12 +227,14 @@ def test_reconcile_requeues_expired_leases_but_preserves_live_worker(db):
 
     expired, _ = _enqueue(db, review_id="review-expired")
     expired.status = "running"
+    expired.execution_attempts = 1
     expired.celery_task_id = "expired-task"
     expired.run_lease_until = now - timedelta(minutes=1)
     expired.updated_at = now - timedelta(minutes=1)
 
     active, _ = _enqueue(db, review_id="review-active")
     active.status = "running"
+    active.execution_attempts = 1
     active.celery_task_id = "active-task"
     active.run_lease_until = now + timedelta(minutes=15)
     active.updated_at = now
@@ -263,7 +280,8 @@ def test_review_approval_and_all_mapping_runs_commit_before_any_dispatch(db, mon
     from app.services.v2.incremental.orchestrator import IncrementalOrchestrator
     from app.services.v2.mapping_apply_runs import serialize_mapping_apply_run
 
-    db.add(CuratedDataset(id="dataset-atomic", name="atomic source", status="in_review"))
+    _actors(db, "ontology-atomic")
+    db.add(CuratedDataset(id="dataset-atomic", name="atomic source", status="approved"))
     db.add(DatasetVersion(
         id="version-atomic", dataset_id="dataset-atomic", version_no=1,
         storage_uri="s3://datasets/atomic/v1.csv",
@@ -271,6 +289,7 @@ def test_review_approval_and_all_mapping_runs_commit_before_any_dispatch(db, mon
     db.add(CuratedReview(
         id="review-atomic", curated_dataset_id="dataset-atomic", status="approved",
         dataset_version_id="version-atomic", decided_at=datetime.now(timezone.utc),
+        **review_actors(),
     ))
     for mapping_id in ("mapping-atomic-a", "mapping-atomic-b"):
         db.add(OntologyMapping(
@@ -282,6 +301,8 @@ def test_review_approval_and_all_mapping_runs_commit_before_any_dispatch(db, mon
             status="active",
         ))
     db.flush()
+    for mapping_id in ("mapping-atomic-a", "mapping-atomic-b"):
+        _approve_definition(db, db.get(OntologyMapping, mapping_id))
 
     def assert_outbox_is_committed_before_dispatch(service, run_id):
         with SQLAlchemySession(bind=service._db.get_bind()) as observer:

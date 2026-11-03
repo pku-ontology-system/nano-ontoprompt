@@ -7,9 +7,11 @@ from app.models.v2.curated import CuratedDataset, CuratedReview, CuratedRowEdit
 from app.models.v2.dataset import DatasetVersion
 from app.models.v2.mapping import OntologyMapping
 from app.tasks.v2.mapping_apply import apply_approved_mapping
+from tests.v2.review_approvals import approve_mapping_definition, ensure_actors, review_actors
 
 
 def _seed_reviewed_mapping(db, *, review_version="version-1"):
+    ensure_actors(db, "ontology-1")
     db.add_all([
         CuratedDataset(id="curated-1", name="approved source", status="approved"),
         DatasetVersion(
@@ -19,12 +21,15 @@ def _seed_reviewed_mapping(db, *, review_version="version-1"):
         CuratedReview(
             id="review-1", curated_dataset_id="curated-1", status="approved",
             dataset_version_id=review_version, decided_at=datetime.now(timezone.utc),
+            **review_actors(),
         ),
         OntologyMapping(
             id="mapping-1", ontology_id="ontology-1", curated_dataset_id="curated-1",
             entity_class="Supplier", field_mapping={"supplier_id": "id"}, status="applied",
         ),
     ])
+    db.flush()
+    approve_mapping_definition(db, db.get(OntologyMapping, "mapping-1"))
     db.commit()
     return db.query(DatasetVersion).filter(DatasetVersion.id == review_version).one()
 

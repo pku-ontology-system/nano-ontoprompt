@@ -8,6 +8,14 @@ from app.models.v2.curated import CuratedDataset, CuratedReview
 from app.models.v2.mapping import OntologyMapping
 from datetime import datetime, timezone
 
+# Auto-apply needs an approved Mapping definition review for each Mapping.
+APPROVED_DEFINITION = SimpleNamespace(id="mapping-review-1")
+
+
+def approved_definitions():
+    return patch("app.services.v2.mapping_definition_reviews.approved_mapping_review_for_run",
+                 return_value=APPROVED_DEFINITION)
+
 
 # ── 测试辅助 ──────────────────────────────────────────────────────────
 
@@ -152,12 +160,13 @@ def test_on_review_approved_triggers_mapping():
     run_service = MagicMock()
     run_service.dispatch.return_value = run_result
     run = SimpleNamespace(id="mapping-run-1", status="pending")
-    with patch.object(orch, "_enqueue_mapping_apply", return_value=(run_service, run, True)) as mock_enqueue:
+    with approved_definitions(), \
+            patch.object(orch, "_enqueue_mapping_apply", return_value=(run_service, run, True)) as mock_enqueue:
         result = orch.on_review_approved("rev-1")
 
     assert len(result["triggered_mappings"]) == 1
     assert result["triggered_mappings"][0]["run_id"] == "mapping-run-1"
-    mock_enqueue.assert_called_once_with("map-1", "ont-1", "curated-1", "version-1", "rev-1")
+    mock_enqueue.assert_called_once_with("map-1", "ont-1", "curated-1", "version-1", "rev-1", "mapping-review-1")
     run_service.dispatch.assert_called_once_with("mapping-run-1")
     db.commit.assert_called_once()
 
@@ -177,7 +186,7 @@ def test_on_review_approved_skips_without_pinned_version():
 
     db.query.side_effect = query_side
     orch = IncrementalOrchestrator(db)
-    with patch.object(orch, "_enqueue_mapping_apply") as mock_trigger:
+    with approved_definitions(), patch.object(orch, "_enqueue_mapping_apply") as mock_trigger:
         result = orch.on_review_approved("rev-1")
 
     assert result["status"] == "skipped"
@@ -274,6 +283,6 @@ def test_full_incremental_chain():
         "deduplicated": False,
     }
     run = SimpleNamespace(id="mapping-run-1", status="pending")
-    with patch.object(orch, "_enqueue_mapping_apply", return_value=(run_service, run, True)):
+    with approved_definitions(), patch.object(orch, "_enqueue_mapping_apply", return_value=(run_service, run, True)):
         approve_result = orch.on_review_approved("rev-1")
     assert len(approve_result["triggered_mappings"]) == 1
