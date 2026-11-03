@@ -1,0 +1,13 @@
+{
+  "database": "factory_twin",
+  "tables_compiled": 6,
+  "chat_model": "openai/MiniMax-M3",
+  "embed_model": "nomic-embed-text",
+  "embed_dim": 768,
+  "locality": "cloud",
+  "llm_calls": 27,
+  "prepare_seconds": 0.5,
+  "ingest_seconds": 0.8,
+  "compile_seconds": 66.7,
+  "total_seconds": 69.5
+}

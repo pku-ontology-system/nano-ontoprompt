@@ -1,0 +1,22 @@
+{
+  "examples": [
+    {
+      "id": "factory_twin_minimax_m3",
+      "label": "工厂排程库 · MiniMax-M3 生成（云端，约 70 秒）",
+      "yaml": "factory_twin.minimax-m3.yaml",
+      "run": "factory_twin.minimax-m3.run.json",
+      "source_label": "工厂排程关系库（演示）",
+      "model_label": "MiniMax-M3",
+      "locality": "cloud"
+    },
+    {
+      "id": "factory_twin_qwen2_5_7b",
+      "label": "工厂排程库 · Qwen2.5 7B 生成（本机，约 160 秒）",
+      "yaml": "factory_twin.qwen2.5-7b.yaml",
+      "run": "factory_twin.qwen2.5-7b.run.json",
+      "source_label": "工厂排程关系库（演示）",
+      "model_label": "Qwen2.5 7B",
+      "locality": "local"
+    }
+  ]
+}

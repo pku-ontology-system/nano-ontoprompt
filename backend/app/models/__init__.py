@@ -33,6 +33,7 @@ from app.models.v2.workshop_app import WorkshopApp, WorkshopAppVersion
 from app.models.v2.ontology_query import McpScope, OntologyQuery, OntologyQueryVersion
 from app.models.v2.decision import DecisionPackage, DecisionPackageAction, DecisionPackageEvidence, DecisionPackageEvent, DecisionOutbox
 from app.models.v2.derived_projection import DerivedProjection, DerivedProjectionRun
+from app.models.v2.ontology_candidates import OntologyCandidateItem, OntologyCandidateSet
 from app.models.v2.mapping_apply_run import MappingApplyRun
 from app.models.v2.mapping_row_change import MappingRowChange, MappingRowProjectionEvent
 from app.models.v2.temporal_instance_reconciliation import TemporalInstanceReconciliation

@@ -1,0 +1,9 @@
+{
+  "database": "factory_twin",
+  "tables_compiled": 6,
+  "chat_model": "openai/qwen2.5:7b",
+  "embed_model": "nomic-embed-text",
+  "embed_dim": 768,
+  "ingest_seconds": 0.8,
+  "compile_seconds": 159.0
+}

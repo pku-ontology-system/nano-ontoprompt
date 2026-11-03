@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     chroma_host: str = "localhost"
     chroma_port: int = 8001
 
+    # Local Auto Ontology runner (tools/auto_ontology_runner). Empty URL: the AI candidate page offers file import only.
+    auto_ontology_runner_url: str = ""
+    auto_ontology_runner_token: str = ""
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 settings = Settings()

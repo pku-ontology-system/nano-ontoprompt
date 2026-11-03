@@ -1,0 +1,538 @@
+data_layer:
+  databases:
+  - id: 93995dff-ec39-45b0-9967-13706deba065
+    dialect: postgres
+    schemas:
+    - id: 2c4afa36-0935-4167-bd63-40ed546761f5
+      name: public
+      database_name: factory_twin
+      tables:
+      - id: 7edc345d-84e7-4a7c-8120-1965b376dbd9
+        name: factory_asset
+        description: ''
+        pk:
+        - asset_id
+        type: base table
+        columns:
+        - id: 448c1c45-bd2e-48e9-9533-c178bf0578b9
+          name: asset_id
+          description: ''
+          type: text
+          sample_values:
+          - EQ001
+          - EQ002
+          - EQ003
+          - EQ004
+          - EQ005
+          is_nullable: false
+          is_unique: true
+        - id: a9a186ab-99f9-49be-91a7-973e9079dc68
+          name: asset_name
+          description: ''
+          type: text
+          sample_values:
+          - Turbofan EQ001
+          - Turbofan EQ002
+          - Turbofan EQ003
+          - Turbofan EQ004
+          - Turbofan EQ005
+          is_nullable: true
+          is_unique: true
+        - id: 9fc82c47-d10f-4b8e-a4c8-b9bab389eb0f
+          name: resource_id
+          description: ''
+          type: text
+          sample_values:
+          - cell-cnc
+          - cell-cut
+          - cell-assembly
+          - cell-quality
+          is_nullable: true
+          is_unique: false
+        - id: 4a76b2aa-32fe-465a-a0ca-0b40d40ed3ea
+          name: risk_level
+          description: ''
+          type: text
+          sample_values:
+          - Medium
+          - High
+          - Low
+          is_nullable: true
+          is_unique: false
+        - id: 2ef9c701-773f-4b30-b662-8e6554b94c3b
+          name: health_score
+          description: ''
+          type: double precision
+          sample_values:
+          - 78.0
+          - 58.0
+          - 91.0
+          - 74.0
+          - 52.0
+          is_nullable: true
+          is_unique: true
+        - id: 5d044180-c0cd-4005-a9e9-d00b5589e554
+          name: latest_cycle
+          description: ''
+          type: integer
+          sample_values:
+          - 20
+          is_nullable: true
+          is_unique: false
+        - id: 28c411b1-b321-4d9d-87b2-6ba1825085b8
+          name: sensor_4
+          description: ''
+          type: double precision
+          sample_values:
+          - 1403.83
+          - 1416.49
+          - 1398.14
+          - 1408.31
+          - 1420.22
+          is_nullable: true
+          is_unique: true
+        - id: 86e23d63-22b5-4372-aacc-e17df1fcc561
+          name: sensor_11
+          description: ''
+          type: double precision
+          sample_values:
+          - 47.24
+          - 47.62
+          - 47.11
+          - 47.35
+          - 47.74
+          is_nullable: true
+          is_unique: true
+        - id: 7a66affc-1db7-41d5-901c-2307637dffad
+          name: maintenance_status
+          description: ''
+          type: text
+          sample_values:
+          - Monitor
+          - Planned
+          - Normal
+          is_nullable: true
+          is_unique: false
+        - id: 28bfefe8-ba61-4267-a9c6-a1246828e531
+          name: source_unit
+          description: ''
+          type: integer
+          sample_values:
+          - 1
+          - 2
+          - 3
+          - 4
+          - 5
+          is_nullable: true
+          is_unique: true
+      - id: 34218315-3a90-4cbd-9249-06277fc9e750
+        name: factory_resource
+        description: ''
+        pk:
+        - resource_id
+        type: base table
+        columns:
+        - id: 47cac20a-5dca-46b3-abf7-f7a669aec955
+          name: resource_id
+          description: ''
+          type: text
+          sample_values:
+          - cell-cut
+          - cell-cnc
+          - cell-assembly
+          - cell-quality
+          is_nullable: false
+          is_unique: true
+        - id: 8250de81-716d-40d8-90c1-8c3fc0df9a3d
+          name: resource_name
+          description: ''
+          type: text
+          sample_values:
+          - Cutting Cell
+          - CNC Cell
+          - Assembly Cell
+          - Quality Lab
+          is_nullable: false
+          is_unique: true
+        - id: 841d75a4-703a-4ba5-8601-060858c20273
+          name: capability
+          description: ''
+          type: text
+          sample_values:
+          - cut
+          - machine
+          - assemble
+          - inspect
+          is_nullable: true
+          is_unique: true
+      - id: 992f2851-28d2-4872-8437-ca9108a39c13
+        name: schedule_dependency
+        description: ''
+        pk: []
+        type: base table
+        columns:
+        - id: 5e416a90-2065-412f-acd7-18316454a44f
+          name: item_id
+          description: ''
+          type: text
+          sample_values:
+          - wo-100-machine
+          - wo-100-assemble
+          - wo-100-qa
+          - wo-200-machine
+          - wo-200-qa
+          is_nullable: true
+          is_unique: true
+        - id: fdca884b-9fd5-4652-9244-fb6ee5a8c601
+          name: predecessor_item_id
+          description: ''
+          type: text
+          sample_values:
+          - wo-100-cut
+          - wo-100-machine
+          - wo-100-assemble
+          - wo-200-cut
+          - wo-200-machine
+          is_nullable: true
+          is_unique: true
+      - id: 1869b9c6-9ce0-42fe-a4c4-121d0a481fa3
+        name: schedule_item
+        description: ''
+        pk:
+        - item_id
+        type: base table
+        columns:
+        - id: 61d65f1c-7a58-46d6-8869-4e6419684ff1
+          name: item_id
+          description: ''
+          type: text
+          sample_values:
+          - constraint-cut
+          - constraint-cnc
+          - constraint-assembly
+          - constraint-quality
+          - maint-EQ002
+          is_nullable: false
+          is_unique: true
+        - id: 217863e8-31e0-465a-a542-13475e0c3975
+          name: item_name
+          description: ''
+          type: text
+          sample_values:
+          - Cutting shift availability
+          - CNC shift availability
+          - Assembly shift availability
+          - Quality lab availability
+          - "Predictive inspection \xB7 EQ002"
+          is_nullable: true
+          is_unique: true
+        - id: a776df4a-b305-4fe1-824a-793b3e79abd2
+          name: primary_resource_id
+          description: ''
+          type: text
+          sample_values:
+          - cell-cnc
+          - cell-cut
+          - cell-quality
+          - cell-assembly
+          is_nullable: true
+          is_unique: false
+        - id: 2b87b731-aaf1-4d24-8c67-0af4591f7c66
+          name: order_id
+          description: ''
+          type: text
+          sample_values:
+          - WO-100
+          - WO-200
+          - SHIFT-A
+          - SHIFT-B
+          - SHIFT-C
+          is_nullable: true
+          is_unique: false
+        - id: e18cfe7f-5349-40b3-a3aa-b109e72ab200
+          name: layer
+          description: ''
+          type: text
+          sample_values:
+          - production
+          - constraint
+          - maintenance
+          is_nullable: true
+          is_unique: false
+        - id: 1e3b81d5-e015-4cb0-9d7e-e249211a0237
+          name: start_at
+          description: ''
+          type: timestamp with time zone
+          sample_values: []
+          is_nullable: true
+          is_unique: false
+        - id: 3c479212-4cb5-4626-b613-454510b764b5
+          name: end_at
+          description: ''
+          type: timestamp with time zone
+          sample_values: []
+          is_nullable: true
+          is_unique: false
+        - id: 8322d01e-4729-4ed2-88de-df430ea416d0
+          name: status
+          description: ''
+          type: text
+          sample_values:
+          - Released
+          - Available
+          - Planned
+          - Unscheduled
+          is_nullable: true
+          is_unique: false
+        - id: 2e4208b9-3b55-4b14-b8da-ab9a042d7958
+          name: priority
+          description: ''
+          type: integer
+          sample_values:
+          - 1
+          - 0
+          - 2
+          is_nullable: true
+          is_unique: false
+        - id: f74b4072-13ee-4b8c-b68a-753ff02e3e69
+          name: material_ready
+          description: ''
+          type: boolean
+          sample_values:
+          - true
+          is_nullable: true
+          is_unique: false
+        - id: 6009bff9-bf59-47b7-8748-8af376f2ec39
+          name: duration_minutes
+          description: ''
+          type: integer
+          sample_values:
+          - 60.0
+          is_nullable: true
+          is_unique: true
+      - id: 0cfe820e-979c-4f29-89d6-4d796ab4e406
+        name: schedule_item_resource
+        description: ''
+        pk: []
+        type: base table
+        columns:
+        - id: a2a544d4-4d2d-4c7a-94e7-9f724bee2be3
+          name: item_id
+          description: ''
+          type: text
+          sample_values:
+          - wo-100-assemble
+          - constraint-cut
+          - constraint-cnc
+          - constraint-assembly
+          - constraint-quality
+          is_nullable: true
+          is_unique: false
+        - id: 3966d6af-0761-48a3-8975-23a270b8c8a5
+          name: resource_id
+          description: ''
+          type: text
+          sample_values:
+          - cell-cnc
+          - cell-cut
+          - cell-quality
+          - cell-assembly
+          is_nullable: true
+          is_unique: false
+      - id: 49acda8e-9f68-4e90-b9bf-542066d05782
+        name: work_order
+        description: ''
+        pk:
+        - order_id
+        type: base table
+        columns:
+        - id: cfe60313-3a35-4d6c-b626-5daf55457e9b
+          name: order_id
+          description: ''
+          type: text
+          sample_values:
+          - M-EQ002
+          - SHIFT-A
+          - SHIFT-B
+          - SHIFT-C
+          - SHIFT-Q
+          is_nullable: false
+          is_unique: true
+        - id: 5da53983-4834-43f7-9b34-00cbff6807be
+          name: order_type
+          description: ''
+          type: text
+          sample_values:
+          - capacity
+          - production
+          - maintenance
+          is_nullable: true
+          is_unique: false
+        - id: d4ac63ea-dcdf-4c0a-8770-274d7e19be6f
+          name: due_at
+          description: ''
+          type: timestamp with time zone
+          sample_values: []
+          is_nullable: true
+          is_unique: true
+  foreign_keys:
+  - source_column_id: 9fc82c47-d10f-4b8e-a4c8-b9bab389eb0f
+    target_column_id: 47cac20a-5dca-46b3-abf7-f7a669aec955
+  joins: []
+semantic_layer:
+  terms:
+  - id: fb88b120-f256-4f32-a02f-2f42ab8f3e92
+    name: Asset Maintenance And Sensor Data
+    description: This term encompasses all data related to the unique identification,
+      naming, latest cycle information, and sensor readings of industrial assets.
+    represents:
+    - 7edc345d-84e7-4a7c-8120-1965b376dbd9
+    columns_attributes:
+    - id: 9460d11e-e5d2-47b4-8b29-db7665166a43
+      name: sensor11
+      description: Another sensor reading value recorded during the asset's operation,
+        also measured as a double precision floating-point number.
+      column_id: 86e23d63-22b5-4372-aacc-e17df1fcc561
+    - id: 9dc83da7-7245-48e7-bf61-eabab34b357c
+      name: Latest Cycle Number
+      description: The number representing the latest cycle or maintenance event for
+        the asset.
+      column_id: 5d044180-c0cd-4005-a9e9-d00b5589e554
+    - id: be842568-4a93-4d9c-b0ca-d69b814835e5
+      name: sensor4
+      description: A sensor reading value recorded during the asset's operation, measured
+        as a double precision floating-point number.
+      column_id: 28c411b1-b321-4d9d-87b2-6ba1825085b8
+    - id: d5dbf2b7-f5df-48a1-a0cb-680b330899b8
+      name: Asset Name
+      description: The name of the asset, prefixed with its type (Turbofan in this
+        case).
+      column_id: a9a186ab-99f9-49be-91a7-973e9079dc68
+    - id: ff50f58f-0715-4cb0-ba83-d518948f72ef
+      name: Asset Identifier
+      description: A unique identifier for each asset.
+      column_id: 448c1c45-bd2e-48e9-9533-c178bf0578b9
+  - id: 85a57f4b-7d66-4038-8e71-f438974c4dc3
+    name: Factory Resource
+    description: Information about different resources and capabilities used in the
+      manufacturing process.
+    represents:
+    - 34218315-3a90-4cbd-9249-06277fc9e750
+    columns_attributes:
+    - id: 0a5b34d1-fb46-4a0d-8771-b9b96f0a62af
+      name: Resource Name
+      description: The human-readable name of the resource or cell performing a particular
+        function in production, such as cutting, machining, assembly, or inspection.
+      column_id: 8250de81-716d-40d8-90c1-8c3fc0df9a3d
+    - id: 51b66c17-25a6-47d4-96b8-d5246b03bbdc
+      name: Capability
+      description: The specific capability or task that a resource is capable of performing
+        within the manufacturing process, such as cutting, machining, assembling,
+        or inspecting components.
+      column_id: 841d75a4-703a-4ba5-8601-060858c20273
+    - id: 80265d76-da5b-4fce-abd9-0947ca631521
+      name: Resource ID
+      description: A unique identifier for each resource representing a specific cell
+        or department within the manufacturing process.
+      column_id: 47cac20a-5dca-46b3-abf7-f7a669aec955
+  - id: 9dc0cabc-aea8-4fca-a9d5-f6467a6878f1
+    name: Schedule Dependency
+    description: A relationship between different items within the same or different
+      work orders based on their scheduling.
+    represents:
+    - 992f2851-28d2-4872-8437-ca9108a39c13
+    columns_attributes:
+    - id: 1adb363c-bdb9-4dfa-919e-65556928d794
+      name: Work Order Item ID
+      description: A unique identifier for each work order item, differentiated by
+        a prefix indicating the type of work order and a suffix that likely contains
+        a numeric identifier.
+      column_id: 5e416a90-2065-412f-acd7-18316454a44f
+  - id: 0da7a6f8-f71e-4621-9522-f7655724f1a5
+    name: Schedule Item
+    description: A single item in a schedule with attributes such as name, layer,
+      start and end times, status, priority, material readiness, and duration.
+    represents:
+    - 1869b9c6-9ce0-42fe-a4c4-121d0a481fa3
+    columns_attributes:
+    - id: 05b46c80-ff1f-476d-a0fc-d971203341c6
+      name: Item ID
+      description: ''
+      column_id: 61d65f1c-7a58-46d6-8869-4e6419684ff1
+    - id: 0ed84e85-12f8-484b-a38a-909967460757
+      name: Priority
+      description: ''
+      column_id: 2e4208b9-3b55-4b14-b8da-ab9a042d7958
+    - id: 185e33a0-e18c-4d70-91a2-f347e33f1a0e
+      name: endAt
+      description: ''
+      column_id: 3c479212-4cb5-4626-b613-454510b764b5
+    - id: 333a53b5-247d-4908-94af-c701423f3eae
+      name: startAt
+      description: ''
+      column_id: 1e3b81d5-e015-4cb0-9d7e-e249211a0237
+    - id: 631431ce-af29-479e-8fd8-d58f237d72d2
+      name: durationMinutes
+      description: ''
+      column_id: 6009bff9-bf59-47b7-8748-8af376f2ec39
+    - id: 7213090e-d2e2-40df-a4ef-251da1e3732d
+      name: Item Name
+      description: ''
+      column_id: 217863e8-31e0-465a-a542-13475e0c3975
+    - id: 9382d5d7-5efe-4211-8d6c-84bce152bfdc
+      name: Material Ready
+      description: ''
+      column_id: f74b4072-13ee-4b8c-b68a-753ff02e3e69
+    - id: d3ef34c7-0b73-4190-ae42-fa7787b63d6f
+      name: Status
+      description: ''
+      column_id: 8322d01e-4729-4ed2-88de-df430ea416d0
+    - id: ead9f0b6-dee1-4e2d-b212-1a43123ddf28
+      name: Layer
+      description: ''
+      column_id: e18cfe7f-5349-40b3-a3aa-b109e72ab200
+  - id: 76a07778-1b3b-4f95-b6b3-bef574b313d6
+    name: Work Order
+    description: ''
+    represents:
+    - 49acda8e-9f68-4e90-b9bf-542066d05782
+    columns_attributes:
+    - id: 83201789-3ed3-494e-bdfa-78abf34e36c3
+      name: Order Type
+      description: ''
+      column_id: 5da53983-4834-43f7-9b34-00cbff6807be
+    - id: 95a516b5-38b3-49cf-9ffc-0325ce14d346
+      name: Order ID
+      description: A unique identifier for each order, formatted as a string with
+        a prefix indicating its source.
+      column_id: cfe60313-3a35-4d6c-b626-5daf55457e9b
+    - id: a9605f9b-080c-4288-af59-98379582ad1b
+      name: Due At
+      description: ''
+      column_id: d4ac63ea-dcdf-4c0a-8770-274d7e19be6f
+  semantic_fks:
+  - column_attribute_id: 80265d76-da5b-4fce-abd9-0947ca631521
+    column_id: 9fc82c47-d10f-4b8e-a4c8-b9bab389eb0f
+    use_in_join_paths: true
+  - column_attribute_id: 95a516b5-38b3-49cf-9ffc-0325ce14d346
+    column_id: 2b87b731-aaf1-4d24-8c67-0af4591f7c66
+    use_in_join_paths: true
+  - column_attribute_id: 80265d76-da5b-4fce-abd9-0947ca631521
+    column_id: a776df4a-b305-4fe1-824a-793b3e79abd2
+    use_in_join_paths: true
+  - column_attribute_id: 80265d76-da5b-4fce-abd9-0947ca631521
+    column_id: 3966d6af-0761-48a3-8975-23a270b8c8a5
+    use_in_join_paths: true
+  - column_attribute_id: 05b46c80-ff1f-476d-a0fc-d971203341c6
+    column_id: fdca884b-9fd5-4652-9244-fb6ee5a8c601
+    use_in_join_paths: true
+  - column_attribute_id: 1adb363c-bdb9-4dfa-919e-65556928d794
+    column_id: a2a544d4-4d2d-4c7a-94e7-9f724bee2be3
+    use_in_join_paths: true
+  sql_attributes:
+    manual: []
+    table: []
+    sql: []
+    bridge_table: []
+  custom_analyses: []
+zones: []

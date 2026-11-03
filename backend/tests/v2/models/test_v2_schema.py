@@ -190,6 +190,8 @@ def test_all_v2_tables_registered():
         "v2_mapping_row_projection_events",
         "v2_ontology_action_run_claim_events",
         "v2_ontology_action_run_events",
+        "v2_ontology_candidate_items",
+        "v2_ontology_candidate_sets",
         "v2_pipeline_llm_invocation_events",
         "v2_pipeline_schedule_revisions",
         "v2_pipeline_schedule_runs",

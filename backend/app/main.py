@@ -71,6 +71,7 @@ from app.routers.v2 import decision_cases as decision_cases_v2
 from app.routers.v2 import supplier_studies as supplier_studies_v2
 from app.routers.v2 import scenario_studies as scenario_studies_v2
 from app.routers.v2 import rule_runtime as rule_runtime_v2
+from app.routers.v2 import ontology_candidates as ontology_candidates_v2
 from app.routers.v2 import graph_views as graph_views_v2
 from app.routers.v2 import workshop_apps as workshop_apps_v2
 from app.routers.v2 import ontology_queries as ontology_queries_v2
@@ -554,6 +555,7 @@ app.include_router(decision_cases_v2.router, prefix="/api/v2/ontologies", tags=[
 app.include_router(supplier_studies_v2.router, prefix="/api/v2/ontologies", tags=["v2-supplier-studies"])
 app.include_router(scenario_studies_v2.router, prefix="/api/v2/ontologies", tags=["v2-scenario-study-definitions"])
 app.include_router(rule_runtime_v2.router, prefix="/api/v2/ontologies", tags=["v2-rule-runtime"])
+app.include_router(ontology_candidates_v2.router, prefix="/api/v2/ontologies", tags=["v2-ontology-candidates"])
 app.include_router(graph_views_v2.router, prefix="/api/v2/ontologies", tags=["v2-graph-views"])
 app.include_router(workshop_apps_v2.router, prefix="/api/v2/ontologies", tags=["v2-workshop-apps"])
 app.include_router(ontology_queries_v2.router, prefix="/api/v2/ontologies", tags=["v2-ontology-queries"])
