@@ -8,6 +8,8 @@ import type { OverrideMetric } from '@/pages/what-if/decisionPackage'
 import type { DecisionRunContext } from '@/pages/what-if/decisionPackage'
 import type { ResolvedSource, ResolvedStudyRun, Widget } from './spec'
 import ScheduleGanttWidget from './ScheduleGanttWidget'
+import SensorPlaybackWidget from './SensorPlaybackWidget'
+import AlertActionWidget from './AlertActionWidget'
 
 export type Runtime = {
   ontologyId: string
@@ -75,6 +77,8 @@ export default function WidgetView({ widget, rt }: { widget: Widget; rt: Runtime
     case 'alert_list': return <AlertWidget rows={rows} p={p} rt={rt} title={widget.title} />
     case 'geo_map': return <MapWidget rows={rows} p={p} rt={rt} title={widget.title} />
     case 'schedule_gantt': return <ScheduleGanttWidget rows={rows} p={p} rt={rt} title={widget.title} />
+    case 'sensor_playback': return <SensorPlaybackWidget ontologyId={rt.ontologyId} playbackId={str(p.playback_id)} onChanged={rt.refresh} />
+    case 'alert_action': return <AlertActionWidget ontologyId={rt.ontologyId} playbackId={str(p.playback_id)} navigateTo={str(p.navigate) || undefined} onNavigate={rt.editing ? undefined : rt.navigate} onChanged={rt.refresh} />
     case 'rerun_button': return source?.kind === 'study_run' ? <RerunButton p={p} rt={rt} source={source} /> : <Empty text="请绑定 Study 运行结果数据源" />
     default: return <Empty text={`未知组件 ${widget.type}`} />
   }

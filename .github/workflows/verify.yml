@@ -93,6 +93,7 @@ jobs:
           python -m pytest
           tests/test_material_decision_package_flow.py
           tests/v2/test_material_decision_apply_real_falkor.py
+          tests/v2/test_sensor_playback_real_falkor.py
           tests/v2/graph/test_retired_nl_query.py
           -q --junitxml=integration-results.xml
       - name: Require integration tests to execute

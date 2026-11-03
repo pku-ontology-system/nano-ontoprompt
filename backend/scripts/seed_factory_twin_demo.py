@@ -5,7 +5,10 @@ Ontology types/objects, three user Functions (schedule search, schedule
 validation and a ``decision/v1`` plan comparison), three Scenario Action types,
 one tracking Scenario, a published decision Study with a completed baseline
 run, and a Workshop definition through the same reusable contracts used by any
-other domain.
+other domain.  It also seeds the sensor loop: a Time Series Property on every
+asset, the live Action "标记高风险", a rule that watches the T50 temperature of
+assets not yet marked high risk, and a playback of the recorded NASA C-MAPSS
+trajectories of the same five engines.
 
 Under JWT auth it also prepares a reviewer account, because a Decision Package
 author cannot approve their own package.  Its credentials are written only to
@@ -30,12 +33,15 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from app.models.v2.logic import OntologyStateMachine  # noqa: E402,F401  (the Action type's foreign key needs its table registered)
 from app.database import SessionLocal  # noqa: E402
 from app.models.entity import Entity  # noqa: E402
 from app.models.entity_instance import EntityInstance  # noqa: E402
 from app.models.ontology import OntologyProject  # noqa: E402
+from app.models.v2.action import OntologyActionType  # noqa: E402
 from app.models.v2.workshop_app import WorkshopApp  # noqa: E402
 from app.services.v2.graph.falkordb_service import FalkorDBService  # noqa: E402
+from app.services.v2.sensor_playback import series_id_for  # noqa: E402
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "factory_twin"
 NAME = "工厂数字孪生控制塔"
@@ -71,7 +77,8 @@ TYPE_DEFINITIONS = {
         ("asset_id", "string", "资产 ID"), ("name", "string", "资产名称"), ("resource_id", "string", "所属资源"),
         ("risk_level", "string", "风险等级"), ("health_score", "double", "健康评分"), ("latest_cycle", "integer", "最新周期"),
         ("sensor_4", "double", "传感器 4"), ("sensor_11", "double", "传感器 11"),
-        ("maintenance_status", "string", "维护状态"), ("source_unit", "integer", "源设备编号")]),
+        ("maintenance_status", "string", "维护状态"), ("source_unit", "integer", "源设备编号"),
+        ("t50_series", "string", "T50 时间序列")]),
     "ScheduleItem": properties([
         ("schedule_id", "string", "任务 ID"), ("name", "string", "任务名称"), ("resource", "json", "资源链接"),
         ("start", "timestamp", "开始时间"), ("end", "timestamp", "结束时间"), ("layer", "string", "排程层"),
@@ -92,7 +99,7 @@ def install_objects(ontology_id: str, fixture: dict) -> int:
         raise RuntimeError("FalkorDB is unavailable")
     rows_by_type = {
         "FactoryResource": [{**row, "resource_id": row["id"], "name": row["label"]} for row in fixture["resources"]],
-        "FactoryAsset": [{**row, "asset_id": row["id"]} for row in fixture["assets"]],
+        "FactoryAsset": [{**row, "asset_id": row["id"], "t50_series": series_id_for(ontology_id, row["id"], "sensor_4")} for row in fixture["assets"]],
         "ScheduleItem": [{**row, "schedule_id": row["id"], "object_type": "ScheduleItem"} for row in fixture["schedule_items"]],
     }
     nodes = []
@@ -219,6 +226,54 @@ def reviewer_account() -> dict | None:
     return reviewer
 
 
+# T50 threshold: mean + 3 standard deviations of the first 30 cycles of the five engines (1398.9 + 3 x 4.26), rounded.
+T50_THRESHOLD = 1412.0
+
+
+def mark_high_risk_action(ontology_id: str) -> str:
+    """The live Action a rule alert suggests: one property, on one asset, through review like any live change."""
+    with SessionLocal() as db:
+        action = OntologyActionType(
+            ontology_id=ontology_id, name="标记高风险", description="把设备的风险等级标为 High，使检修排程把它当作高风险设备", action_category="update",
+            status="published", enabled=True, target_entity_type="FactoryAsset",
+            parameters=[{"name": "asset", "type": "object", "object_type": "FactoryAsset"}],
+            effects=[{"op": "set_property", "target_parameter": "asset", "property": "risk_level", "static_value": "High"}])
+        db.add(action)
+        db.commit()
+        return action.id
+
+
+def sensor_rule(client, root: str, headers: dict, action_id: str) -> dict:
+    """Assets not yet marked high risk whose 10-cycle mean T50 stays above the threshold for three windows in a row."""
+    logic = {"input": {"kind": "base", "type_ref": {"api_name": "FactoryAsset"}},
+             "blocks": [{"kind": "filter", "where": {"kind": "comparison", "property": {"api_name": "risk_level"}, "op": "ne", "value": "High"}},
+                        {"kind": "series_window", "series_property": "t50_series", "window_points": 10, "aggregate": "avg", "op": "gte",
+                         "threshold": T50_THRESHOLD, "min_consecutive_windows": 3}],
+             "output": {"severity": "high", "properties": {"component": "低压涡轮出口温度 T50"}, "evidence_properties": ["name", "risk_level", "health_score"]},
+             "action": {"action_id": action_id, "object_parameter": "asset"}}
+    created = unwrap(client.post(f"{root}/rules", headers=headers, json={
+        "api_name": "t50_sustained_high", "display_name": "T50 温度持续偏高",
+        "description": f"低压涡轮出口温度 10 个周期均值连续 3 个窗口不低于 {T50_THRESHOLD:g} °R（5 台机组前 30 个周期均值 + 3σ），且设备尚未标为高风险", "logic": logic}), 201)
+    unwrap(client.post(f"{root}/rules/{created['rule']['id']}/proposals/{created['proposal']['id']}:review", headers=headers, json={"decision": "approve"}))
+    return created["rule"]
+
+
+def sensor_playback(client, root: str, headers: dict, ontology_id: str, rule_id: str) -> dict:
+    mapping = [{"asset_id": asset_id, "object_id": f"{ontology_id[:8]}:FactoryAsset:{asset_id}", "unit": unit}
+               for unit, asset_id in enumerate(["EQ001", "EQ002", "EQ003", "EQ004", "EQ005"], start=1)]
+    return unwrap(client.post(f"{root}/sensor-playbacks", headers=headers, json={
+        "name": "NASA C-MAPSS FD001 传感回放", "dataset_id": "cmapss_fd001_t50", "rule_id": rule_id, "mapping": mapping,
+        "start_cycle": 100, "step_cycles": 5}), 201)
+
+
+def sensor_page(playback_id: str, decision_page_id: str | None) -> dict:
+    return {"id": "sensors", "title": "传感预警与处置", "template": "free", "widgets": [
+        {"id": "playback", "type": "sensor_playback", "title": "", "source": None, "path": "", "props": {"playback_id": playback_id}},
+        {"id": "alerts", "type": "alert_action", "title": "", "source": None, "path": "",
+         "props": {"playback_id": playback_id, **({"navigate": decision_page_id} if decision_page_id else {})}}],
+        "layout": [{"i": "playback", "x": 0, "y": 0, "w": 24, "h": 15}, {"i": "alerts", "x": 0, "y": 15, "w": 24, "h": 14}]}
+
+
 def decision_page() -> dict:
     """Plan comparison and governed approval, built only from generic study_run widgets."""
     return {"id": "decision", "title": "方案对比与决策", "template": "free", "widgets": [
@@ -250,7 +305,7 @@ def decision_page() -> dict:
 
 
 def app_definition(fixture: dict, scenario_id: str, modify_action: str, create_action: str,
-                   search_asset: str, validation_asset: str, study_id: str | None = None) -> dict:
+                   search_asset: str, validation_asset: str, study_id: str | None = None, playback_id: str | None = None) -> dict:
     resources = [{"id": row["id"], "label": row["label"]} for row in fixture["resources"]]
     sources = [
         {"id": "schedule", "kind": "object_set", "label": "排程对象", "object_type": "ScheduleItem", "limit": 2000},
@@ -315,6 +370,8 @@ def app_definition(fixture: dict, scenario_id: str, modify_action: str, create_a
     ]}
     if study_id:
         definition["pages"].insert(2, decision_page())
+    if playback_id:
+        definition["pages"].insert(2, sensor_page(playback_id, "decision" if study_id else None))
     return definition
 
 
@@ -375,15 +432,19 @@ def main():
         scenario = unwrap(client.post(f"{root}/scenarios:from-live", headers=headers, json={
             "name": "Factory Twin · Shift Recovery", "description": "Isolated operator proposals before controlled merge", "mode": "tracking"}), 201)
         study = decision_study(client, root, headers, ontology_id)
+        mark_high_risk = mark_high_risk_action(ontology_id)
+        rule = sensor_rule(client, root, headers, mark_high_risk)
+        playback = sensor_playback(client, root, headers, ontology_id, rule["id"])
         definition = app_definition(fixture, scenario["id"], modify["id"], create["id"], search["id"], validation["id"],
-                                    study_id=study["study_id"])
+                                    study_id=study["study_id"], playback_id=playback["id"])
         app = unwrap(client.post(f"{root}/workshop-apps", headers=headers, json={"name": "Factory Twin Operations",
             "description": "Asset health, production/maintenance schedule, plan comparison, constraints, recommendations and governed decisions",
             "definition": definition}), 201)
         reviewer = reviewer_account()
         result = {"ontology_id": ontology_id, "app_id": app["id"], "scenario_id": scenario["id"],
                   "search_asset_id": search["id"], "validation_asset_id": validation["id"], "decision_asset_id": decision["id"],
-                  "maintenance_action_id": maintenance["id"], "decision_study_id": study["study_id"],
+                  "maintenance_action_id": maintenance["id"], "mark_high_risk_action_id": mark_high_risk, "rule_id": rule["id"],
+                  "playback_id": playback["id"], "decision_study_id": study["study_id"],
                   "decision_run_id": study["run_id"], "decision_scenario_id": study["scenario_id"], "objects": object_count,
                   "reviewer": reviewer["username"] if reviewer else None,
                   "url": f"/apps/workshop/{app['id']}?ontology={ontology_id}", "reused": False}

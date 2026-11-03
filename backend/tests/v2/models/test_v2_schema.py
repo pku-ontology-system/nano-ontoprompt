@@ -199,6 +199,8 @@ def test_all_v2_tables_registered():
         "v2_query_view_retention_events",
         "v2_scenario_checkpoints",
         "v2_scenario_retention_events",
+        "v2_sensor_playback_ticks",
+        "v2_sensor_playbacks",
         "v2_service_principal_audit_events",
         "v2_service_principal_grants",
         "v2_service_principals",

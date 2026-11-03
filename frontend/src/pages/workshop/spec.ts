@@ -45,7 +45,7 @@ export type ResolvedSource = ResolvedStudyRun | ResolvedOntologySource
 export type FieldKind = 'text' | 'number' | 'boolean' | 'select' | 'scalar_path' | 'field' | 'variable' | 'page' | 'list' | 'color' | 'logic_asset'
 export type FieldSpec = { key: string; label: string; kind: FieldKind; options?: string[]; item?: FieldSpec[]; help?: string; contract?: string }
 export type WidgetType = 'kpi_strip' | 'table' | 'bar_chart' | 'coverage_grid' | 'facet_list' | 'select' | 'stat_row' | 'banner' | 'action_list' | 'action_detail' | 'rerun_button'
-  | 'donut_chart' | 'rank_bars' | 'alert_list' | 'geo_map' | 'schedule_gantt'
+  | 'donut_chart' | 'rank_bars' | 'alert_list' | 'geo_map' | 'schedule_gantt' | 'sensor_playback' | 'alert_action'
 export type WidgetSpec = { type: WidgetType; label: string; description: string; w: number; h: number; usesArray: boolean; selectable: boolean; props: FieldSpec[]; defaults: Record<string, unknown> }
 
 const FORMAT = ['text', 'number', 'money', 'percent', 'date']
@@ -90,6 +90,10 @@ export const WIDGETS: WidgetSpec[] = [
     props: [{ key: 'variable', label: '读取的变量', kind: 'variable' }, { key: 'metrics', label: '前后指标', kind: 'list', item: [{ key: 'label', label: '名称', kind: 'text' }, { key: 'before_path', label: '执行前（来源路径）', kind: 'scalar_path' },
       { key: 'after_field', label: '执行后（动作字段）', kind: 'field' }, { key: 'format', label: '格式', kind: 'select', options: FORMAT }] }, { key: 'explain', label: '提供 AI 解释', kind: 'boolean' }],
     defaults: { metrics: [], explain: true } },
+  { type: 'sensor_playback', label: '传感回放', description: '回放记录下来的传感轨迹，每一步固定一个数据视图并评估规则；出现新告警时自动暂停。', w: 24, h: 15, usesArray: false, selectable: false,
+    props: [{ key: 'playback_id', label: '回放编号', kind: 'text' }], defaults: { playback_id: '' } },
+  { type: 'alert_action', label: '告警与处置', description: '列出回放规则的告警，把建议动作提交审核、批准、执行并关闭告警。', w: 24, h: 14, usesArray: false, selectable: false,
+    props: [{ key: 'playback_id', label: '回放编号', kind: 'text' }, { key: 'navigate', label: '处置后跳到页面', kind: 'page' }], defaults: { playback_id: '' } },
   { type: 'rerun_button', label: '重跑按钮', description: '用最新本体数据重跑数据源的 Study，并逐步显示前后变化。', w: 8, h: 2, usesArray: false, selectable: false,
     props: [{ key: 'label', label: '按钮文字', kind: 'text' }, { key: 'steps', label: '对比的数值', kind: 'list', item: [{ key: 'label', label: '名称', kind: 'text' }, { key: 'path', label: '数值', kind: 'scalar_path' }, { key: 'format', label: '格式', kind: 'select', options: FORMAT }] }],
     defaults: { label: '重跑并更新', steps: [] } },

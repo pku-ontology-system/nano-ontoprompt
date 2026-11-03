@@ -1,0 +1,23 @@
+{
+  "source": "NASA C-MAPSS FD001 train_FD001.txt (Prognostics Data Repository)",
+  "source_url": "https://phm-datasets.s3.amazonaws.com/NASA/6.+Turbofan+Engine+Degradation+Simulation+Data+Set.zip",
+  "source_member": "train_FD001.txt",
+  "license": "NASA public dataset; follow the source dataset terms",
+  "selection": "units 1-5, every cycle from the first to the failure cycle; the factory twin's EQ001-EQ005 are these units",
+  "channels": {
+    "sensor_4": "T50, low-pressure-turbine outlet temperature (degrees Rankine)",
+    "sensor_11": "Ps30, static pressure at the high-pressure-compressor outlet (psia)"
+  },
+  "units": {
+    "1": 192,
+    "2": 287,
+    "3": 179,
+    "4": 189,
+    "5": 269
+  },
+  "rows": 1116,
+  "sha256": {
+    "source_archive": "c9c5dec12a945a82e8bb4446589d7fb3cc057b5e5d81fa1a12e25ee9912ad3b2",
+    "sensor_trajectories.csv": "7fbc92c40c0c768a22ce794606e53da325769830c59d9b801b3fd6694a5f8de9"
+  }
+}

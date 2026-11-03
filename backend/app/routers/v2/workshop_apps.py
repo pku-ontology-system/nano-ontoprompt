@@ -37,6 +37,7 @@ WIDGETS: dict[str, set[str]] = {
     "action_list": {"label_field"}, "action_detail": {"variable"}, "rerun_button": {"steps"},
     "donut_chart": {"category_field"}, "rank_bars": {"label_field"}, "alert_list": {"title"}, "geo_map": {"lat_field", "lng_field"},
     "schedule_gantt": {"id_field", "label_field", "resource_field", "start_field", "end_field"},
+    "sensor_playback": {"playback_id"}, "alert_action": {"playback_id"},
 }
 # Page template -> region id -> columns it spans (of 24).  Kept in sync with the frontend templates.
 TEMPLATES: dict[str, dict[str, int]] = {
