@@ -160,7 +160,7 @@ def test_turn_persists_running_state_before_inference_and_finalizes_after_revali
     service._grounded_context = lambda _session: (refs, objects)
     observed = {}
 
-    def run_local_model(_task, _revision, _refs, _objects):
+    def run_local_model(_task, _revision, _refs, _objects, *_pinned_model, **_options):
         observer_factory = sessionmaker(bind=db.get_bind())
         observer = observer_factory()
         try:

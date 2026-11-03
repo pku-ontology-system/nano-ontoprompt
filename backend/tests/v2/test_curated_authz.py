@@ -1,10 +1,13 @@
 """Curated 审批权限 — PRD Security Logic: only admin can approve curated rows"""
 import uuid
+from unittest.mock import patch
 
 import pytest
 
 from app.models.user import User
 from app.models.v2.curated import CuratedDataset, CuratedReview, CuratedRowEdit
+from app.models.v2.dataset import DatasetVersion
+from app.services.v2.curated.review_service import ReviewService
 from app.models.v2.pipeline import Pipeline
 from app.services.auth_service import hash_password
 
@@ -43,13 +46,17 @@ def test_editor_cannot_approve_curated(curated_client, db, editor_user):
     assert r.status_code == 403
 
 
-def test_admin_can_approve_curated(curated_client, db, admin_user):
+def test_admin_quick_approve_opens_a_pending_review(curated_client, db, admin_user):
     ds_id = _make_curated(db)
     headers = _login(curated_client, "admin", "admin123")
     r = curated_client.post(f"/api/v2/curated/{ds_id}/review", params={"action": "approve"}, headers=headers)
-    assert r.status_code == 200
-    db.refresh(db.query(CuratedDataset).filter(CuratedDataset.id == ds_id).first())
-    assert db.query(CuratedDataset).filter(CuratedDataset.id == ds_id).first().status == "approved"
+    assert r.status_code == 200, r.text
+    # Approval needs a reviewer other than the requester, so the legacy shortcut
+    # only opens the review; the dataset stays in review until then.
+    assert r.json()["status"] == "pending" and r.json()["requested_by"] == admin_user.id
+    db.expire_all()
+    assert db.get(CuratedDataset, ds_id).status == "in_review"
+    assert db.query(CuratedReview).filter_by(curated_dataset_id=ds_id, status="pending").count() == 1
 
 
 def test_row_edit_audit_records_actor_and_requires_review_access(curated_client, db, editor_user):
@@ -60,26 +67,36 @@ def test_row_edit_audit_records_actor_and_requires_review_access(curated_client,
         id="row-edit-audit-dataset", name="row edit audit", status="in_review",
         pipeline_id=pipeline.id,
     )
+    version = DatasetVersion(
+        id="row-edit-audit-version", dataset_id=dataset.id, version_no=1,
+        storage_uri="memory://row-edit-audit/v1.json",
+    )
     review = CuratedReview(
         id="row-edit-audit-review", curated_dataset_id=dataset.id,
-        requested_by=editor_user.id, status="pending",
+        requested_by=editor_user.id, status="pending", dataset_version_id=version.id,
     )
     outsider = User(
         id=str(uuid.uuid4()), username="audit-outsider", email="audit-outsider@test.com",
         password_hash=hash_password("outsider123"), role="editor",
     )
-    db.add_all([pipeline, dataset, review, outsider])
+    db.add_all([pipeline, dataset, version, review, outsider])
     db.commit()
+    # Edits name rows by tokens bound to the pinned version and row content.
+    rows = [{"supplier_id": "supplier-7", "name": "Old name"}]
+    row_token = ReviewService.row_edit_token(version.id, 0, rows[0])
+    pinned_rows = patch("app.services.v2.dataset_service.DatasetService.preview_version_id",
+                        return_value=(version, rows))
 
     editor_headers = _login(curated_client, "editor", "editor123")
-    save = curated_client.post(
-        f"/api/v2/curated/reviews/{review.id}/edits",
-        json={"edits": [{
-            "row_pk": "supplier-7", "field_name": "name",
-            "old_value": "Old name", "new_value": "Reviewed name",
-        }]},
-        headers=editor_headers,
-    )
+    with pinned_rows:
+        save = curated_client.post(
+            f"/api/v2/curated/reviews/{review.id}/edits",
+            json={"edits": [{
+                "row_pk": row_token, "field_name": "name",
+                "old_value": "Old name", "new_value": "Reviewed name",
+            }]},
+            headers=editor_headers,
+        )
     assert save.status_code == 200, save.text
     assert save.json()["edits"][0]["edited_by"] == editor_user.id
 

@@ -59,13 +59,25 @@ def test_start_review_creates_record():
 
 def test_approve_updates_status():
     db, ds, review = make_db_with_dataset("in_review")
+    review.requested_by = "requester"
     svc = ReviewService(db)
-    result = svc.approve("rev-1", notes="数据看起来不错")
+    result = svc.approve("rev-1", notes="数据看起来不错", decided_by="reviewer")
     assert review.status == "approved"
+    assert review.decided_by == "reviewer"
     assert ds.status == "approved"
     assert review.notes == "数据看起来不错"
     assert review.decided_at is not None
     assert review.dataset_version_id == "version-1"
+
+
+def test_requester_cannot_approve_their_own_review():
+    from fastapi import HTTPException
+    db, ds, review = make_db_with_dataset("in_review")
+    review.requested_by = "requester"
+    with pytest.raises(HTTPException) as exc:
+        ReviewService(db).approve("rev-1", decided_by="requester")
+    assert exc.value.status_code == 409
+    assert review.status == "pending" and ds.status == "in_review"
 
 
 def test_start_review_allows_legacy_dataset_without_version_but_does_not_invent_one():
