@@ -21,9 +21,9 @@
   },
   "models": {
     "minimax-m3": {
-      "label": "MiniMax-M3（云端，经 LiteLLM 网关）",
+      "label": "MiniMax-M3",
       "locality": "cloud",
-      "provider": "MiniMax",
+      "provider": "MiniMax（经 LiteLLM 网关）",
       "chat_model": "openai/MiniMax-M3",
       "chat_endpoint": "http://127.0.0.1:24000/v1",
       "chat_key_env": "LITELLM_API_KEY",
@@ -39,9 +39,9 @@
       "structured_output": "function_calling"
     },
     "qwen2.5-7b": {
-      "label": "Qwen2.5 7B（本机 Ollama）",
+      "label": "Qwen2.5 7B",
       "locality": "local",
-      "provider": "Ollama",
+      "provider": "本机 Ollama",
       "chat_model": "openai/qwen2.5:7b",
       "chat_endpoint": "http://127.0.0.1:11434/v1",
       "chat_key": "ollama",

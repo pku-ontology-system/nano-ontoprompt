@@ -38,6 +38,7 @@ const ScenarioStudiesPage = React.lazy(() => import("@/pages/what-if/ScenarioStu
 const ComponentSpikesPage = React.lazy(() => import("@/pages/component-spikes/ComponentSpikesPage"));
 const OntologyDetailPage = React.lazy(() => import("@/pages/ontologies/detail/OntologyDetailPage"));
 const ObjectFullViewPage = React.lazy(() => import("@/pages/ontologies/detail/object-explorer/ObjectFullViewPage"));
+const AICandidatesPage = React.lazy(() => import("@/pages/ontologies/ai-candidates/AICandidatesPage"));
 
 class AppErrorBoundary extends React.Component<
   { children: React.ReactNode },
@@ -295,6 +296,10 @@ export default function App() {
             <Route
               path="/ontologies/:id/scenario-studies"
               element={<ProtectedRoute><ScenarioStudiesPage /></ProtectedRoute>}
+            />
+            <Route
+              path="/ontologies/:id/ai-candidates"
+              element={<ProtectedRoute><AICandidatesPage /></ProtectedRoute>}
             />
             <Route
               path="/scenario-studies"

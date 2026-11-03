@@ -123,7 +123,7 @@ export default function OntologyDetailPage() {
         <div className="ml-auto flex items-center gap-2">{decisionLabDomain && <button onClick={() => navigate(`/decision-lab?demo=${decisionLabDomain}`)} className="wb-button-primary">打开决策分析</button>}<details className="relative">
           <summary className="cursor-pointer list-none rounded-md bg-slate-900 px-3 py-2 text-xs text-white">新建 ▾</summary>
           <div className="absolute right-0 z-20 mt-1 w-44 rounded-md border border-slate-200 bg-white p-1 text-sm shadow-lg" role="menu">
-            {[["添加数据", () => select("sources")], ["运行规则", () => select("rules")], ["情景研究", () => navigate(`/ontologies/${id}/scenario-studies`)]].map(([label, run]) =>
+            {[["添加数据", () => select("sources")], ["运行规则", () => select("rules")], ["情景研究", () => navigate(`/ontologies/${id}/scenario-studies`)], ["AI 本体候选", () => navigate(`/ontologies/${id}/ai-candidates`)]].map(([label, run]) =>
               <button key={label as string} type="button" role="menuitem" onClick={(event) => { (event.currentTarget.closest("details") as HTMLDetailsElement).open = false; (run as () => void)(); }}
                 className="block w-full rounded px-3 py-1.5 text-left text-slate-700 hover:bg-slate-100">{label as string}</button>)}
           </div>

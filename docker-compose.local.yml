@@ -30,6 +30,9 @@ services:
       # The backend runs in Docker while Ollama runs on the host.
       OLLAMA_API_BASE: http://host.docker.internal:11434/v1
       CMAPSS_FD001_DEMO_DIR: /teacher-cmapss
+      # Local Auto Ontology runner (tools/auto_ontology_runner); empty = file import only.
+      AUTO_ONTOLOGY_RUNNER_URL: ${AUTO_ONTOLOGY_RUNNER_URL:-}
+      AUTO_ONTOLOGY_RUNNER_TOKEN: ${AUTO_ONTOLOGY_RUNNER_TOKEN:-}
     volumes:
       - ${CMAPSS_FD001_HOST_DIR:-./data/cmapss_fd001_demo}:/teacher-cmapss:ro
     extra_hosts:
