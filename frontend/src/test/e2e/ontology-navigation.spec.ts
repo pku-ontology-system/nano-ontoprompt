@@ -42,6 +42,8 @@ test('ontology opens on its overview; the sidebar is grouped by task and follows
   const nav = page.getByRole('navigation', { name: '主导航' });
   for (const group of ['数据接入', '本体建模', '探索', '推演', '应用', '告警', '智能体', '系统管理']) await expect(nav.getByText(group, { exact: true })).toBeVisible();
   await expect(nav.getByRole('link', { name: '本体总览' })).toHaveAttribute('aria-current', 'page');
+  // Entries whose feature could not be used on the demo data (nothing to open, no way to fill them) stay out of the sidebar; the pages remain reachable by URL.
+  for (const retired of ['业务数据', '逻辑规则', '决策分析', '动态演化（实验）']) await expect(nav.getByRole('link', { name: retired, exact: true })).toHaveCount(0);
   await expect(nav.getByLabel('3 条待处理告警')).toBeVisible();
   await expect(page.getByLabel('当前本体', { exact: true })).toHaveValue(ONT);
   const overview = page.getByRole('region', { name: '本体总览' });

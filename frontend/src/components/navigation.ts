@@ -1,4 +1,4 @@
-import { BellRing, Bot, Boxes, Brain, ChartNoAxesCombined, Database, FileSearch, GitCompareArrows, LayoutDashboard, LayoutGrid, Library, ListChecks, Network, Route, Settings, ShieldCheck, Shapes, Sparkles, SquareFunction, Table2, Timer, Workflow, SearchCode } from 'lucide-react'
+import { BellRing, Bot, Boxes, Brain, Database, FileSearch, GitCompareArrows, LayoutDashboard, LayoutGrid, Library, ListChecks, Network, Route, Settings, ShieldCheck, Shapes, Sparkles, SquareFunction, Table2, SearchCode } from 'lucide-react'
 
 /**
  * Primary navigation, grouped by what the user is doing (see
@@ -32,14 +32,11 @@ export const NAV_GROUPS: NavGroup[] = [
   ] },
   { label: '数据接入', entries: [
     { key: 'sources', label: '数据源', icon: Database, tab: 'sources', hint: '把数据导入当前本体' },
-    { key: 'manufacturing', label: '业务数据', icon: Table2, tab: 'manufacturing' },
-    { key: 'dynamic', label: '动态演化（实验）', icon: Timer, tab: 'dynamic', temporalOnly: true },
   ] },
   { label: '本体建模', entries: [
     { key: 'overview', label: '本体总览', icon: LayoutGrid, tab: 'overview' },
     { key: 'entities', label: '对象类型', icon: Shapes, tab: 'entities' },
     { key: 'data_model', label: '数据模型', icon: Boxes, tab: 'data_model' },
-    { key: 'logic', label: '逻辑规则', icon: Workflow, tab: 'logic' },
     { key: 'logic-assets', label: '函数', icon: SquareFunction, tab: 'logic-assets' },
     { key: 'queries', label: '本体查询', icon: SearchCode, path: id => `/apps/queries?ontology=${id}`, activeOn: /^\/apps\/queries/, hint: '可复用的数据查询，页面、接口和智能体共用' },
     { key: 'audit', label: '质量审查', icon: ShieldCheck, tab: 'audit' },
@@ -52,7 +49,6 @@ export const NAV_GROUPS: NavGroup[] = [
     { key: 'scenario-studies', label: '情景研究', icon: Sparkles, path: id => `/ontologies/${id}/scenario-studies`, activeOn: /^\/(ontologies\/[^/]+\/)?scenario-studies/, hint: '版本化的假设推演与已保存案例' },
     { key: 'scenarios', label: '情景沙箱', icon: GitCompareArrows, path: id => `/ontologies/${id}/scenarios`, activeOn: /^\/(ontologies\/[^/]+\/)?scenarios$/, hint: '在隔离副本上试改数据，再决定是否合并' },
     { key: 'decisions', label: '决策与影响链', icon: Route, tab: 'decisions' },
-    { key: 'decision-lab', label: '决策分析', icon: ChartNoAxesCombined, global: '/decision-lab', hint: '基准数据集上的有界决策分析' },
     { key: 'reasoning', label: '推理验证', icon: Brain, tab: 'reasoning' },
   ] },
   { label: '应用', entries: [
