@@ -12,7 +12,7 @@
 
 | Palantir 里的功能 | 开源项目 | 许可证 · 星标 · 最近更新 | 做什么，自带什么演示数据 | 我们现状 | 能不能直接抄 |
 |---|---|---|---|---|---|
-| 数据血缘（Data Lineage） | [OpenLineage](https://github.com/OpenLineage/OpenLineage)（标准）+ [Marquez](https://github.com/MarquezProject/marquez)（参考实现与界面） | Apache-2.0 · 2.8k / 2.3k★ · 11-09 / 11-04 | 统一的血缘事件（作业、数据集、运行）和血缘图界面；Marquez 的 `seed` 命令生成一家虚构外卖公司的血缘事件。生成器是 Java 代码（`SeedCommand.java`，约 5 KB），不是现成的数据文件，要用 Python 照着写；OpenLineage 的事件 JSON Schema 在 `spec/` | 没有血缘视图；来源证据和映射都有，但没连成图 | **能**：事件模型和图界面都可抄；顺带支持“改这一列会影响谁”的影响分析 |
+| 数据血缘（Data Lineage） | [OpenLineage](https://github.com/OpenLineage/OpenLineage)（标准）+ [Marquez](https://github.com/MarquezProject/marquez)（参考实现与界面） | Apache-2.0 · 2.8k / 2.3k★ · 11-09 / 11-04 | 统一的血缘事件（作业、数据集、运行）和血缘图界面；Marquez 的 `seed` 命令载入 `docker/metadata.template.json`（73 KB，26 条 OpenLineage 事件、13 个作业、13 个数据集，一家虚构外卖公司的血缘）；OpenLineage 的事件 JSON Schema 在 `spec/` | 没有血缘视图；来源证据和映射都有，但没连成图 | **能**：事件模型和图界面都可抄；顺带支持“改这一列会影响谁”的影响分析 |
 | 实体消歧（对象归并、去重） | [Splink](https://github.com/moj-analytical-services/splink) | MIT · 2.6k★ · 11-09 | 概率式记录匹配（Fellegi–Sunter + EM），SQL 后端（DuckDB）。自带演示数据：`fake_1000.csv`（56 KB，1000 行，250 个虚构人物，另有 99 KB 人工标注）、`historical_figures_with_errors_50k.parquet`（1.6 MB，5 万行带错误的历史人物，来自 Wikidata） | 没有；Auto Ontology 候选只按名称判重 | **能**：MIT；可以当库用，也可以只抄原理自己实现。备选：[dedupe](https://github.com/dedupeio/dedupe)（MIT，4.5k★，2025-07 后没更新）、[FollowTheMoney](https://github.com/opensanctions/followthemoney) + [nomenklatura](https://github.com/opensanctions/nomenklatura)（MIT，调查类实体数据模型和跨来源归并） |
 | 数据健康（Data Health） | [Great Expectations](https://github.com/great-expectations/great_expectations)（GitHub 现在重定向到 fivetran/great_expectations）；[Pandera](https://github.com/unionai-oss/pandera) | Apache-2.0 · 11.9k★ · 11-09；MIT · 4.5k★ · 11-06 | 用声明式“期望”检查数据（非空、唯一、取值范围、正则、引用完整性等，第三方列表称 300 多种），产出校验报告。演示数据：仓库测试集里有纽约出租车样例（如 `yellow_tripdata_sample_2018-01.csv`，约 0.9 MB，按月份分文件）和 `Titanic.csv` | 质量审查是大模型逐步审查，没有可重复的规则库 | **能**：期望库和报告结构可抄。Soda Core 的许可证 GitHub 没识别出来（检索结果称 Apache-2.0），先不选 |
 | 流程挖掘（Machinery，基于对象和事件） | [PM4Py](https://github.com/process-intelligence-solutions/pm4py)、[OCPA](https://github.com/ocpm/ocpa)；标准是 OCEL 2.0 | **AGPL-3.0** · 1.1k★；**GPL-3.0** · 49★（2025-05 后没更新） | 从“对象 + 事件”日志里挖流程图、瓶颈、耗时。OCEL 2.0 标准论文 CC BY 4.0；演示日志在 Zenodo（订单到现金、采购到付款、医院等，各条记录的许可证没核实） | 有“运营流程模型”（状态机），没有从事件日志挖流程 | **代码不能抄**（AGPL/GPL 会传染）；按 OCEL 2.0 规范自己写，数据可以用 |
@@ -39,4 +39,4 @@
 - 星标和更新日期是 2026-11-09 当天的快照。
 - “哪个功能对应 Palantir 的哪个应用”是本项目的归纳，不是官方说法。
 - 各项目的演示数据这次只查了文件名和大小，没有下载、没有打开；下载前要单独征得同意。
-- Marquez 的 `seed` 是程序生成的，演示数据不是现成文件。
+- 更正（2026-11-09 晚）：上一版写成“Marquez 的 seed 是程序生成的”是错的。`SeedCommand.java` 只是把一个事件 JSON 文件发给服务，演示数据就是 `docker/metadata.template.json`。

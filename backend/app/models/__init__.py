@@ -35,6 +35,7 @@ from app.models.v2.decision import DecisionPackage, DecisionPackageAction, Decis
 from app.models.v2.derived_projection import DerivedProjection, DerivedProjectionRun
 from app.models.v2.ontology_candidates import OntologyCandidateItem, OntologyCandidateSet
 from app.models.v2.sensor_playback import SensorPlayback, SensorPlaybackTick
+from app.models.v2.analysis import AnalysisRun, LineageEvent
 from app.models.v2.mapping_apply_run import MappingApplyRun
 from app.models.v2.mapping_row_change import MappingRowChange, MappingRowProjectionEvent
 from app.models.v2.temporal_instance_reconciliation import TemporalInstanceReconciliation
