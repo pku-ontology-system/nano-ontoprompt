@@ -102,6 +102,7 @@ docs/research/unofficial/*
 !docs/research/unofficial/OSS_ONTOLOGY_ANALYSIS_SURVEY_2026_11_09.md
 !docs/research/unofficial/OSS_ONTOLOGY_ANALYSIS_SURVEY_2026_11_09.csv
 !docs/research/unofficial/OSS_ONTOLOGY_ANALYSIS_SURVEY_2026_11_09_FUNCTIONS.csv
+!docs/research/unofficial/PALANTIR_FEATURES_AND_OSS_ANALOGS_2026_11_09.md
 !docs/research/official/PALANTIR_OFFICIAL_INDUSTRIAL_USE_CASE_VIDEO_REVIEW_2026_10_18.md
 # docs/archive/ 下的文件已被 git 跟踪，无需白名单；新归档文件用 git mv 移入即可
 pipeline-builder-redesign-plan.md
