@@ -8,13 +8,16 @@ const alerts = [1, 2, 3].map(i => ({ id: `a${i}`, rule_id: 'rule-1', rule_versio
   properties: {}, evidence: { peak: 50 + i, breaching_windows: 2 }, suggested_action: null, occurrence_count: i, recovered_at: null,
   resolution_note: '', created_at: '2026-10-18T00:00:00+00:00' }));
 
-async function mount(page: Page, path = `/ontologies/${ONT}`) {
+// Some entries are kept out of the sidebar for now (TEMPORARILY_HIDDEN in navigation.ts). Tests of the full navigation reveal them
+// first; `hidden: true` mounts the app the way a new visitor sees it.
+async function mount(page: Page, path = `/ontologies/${ONT}`, { hidden = false } = {}) {
   const posts: string[] = [];
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.addInitScript(() => {
+  await page.addInitScript(showAll => {
     localStorage.setItem('token', 'nav-test');
     localStorage.setItem('auth-store', JSON.stringify({ state: { token: 'nav-test', user: { id: 'test-user', username: 'admin', role: 'admin' } }, version: 0 }));
-  });
+    if (showAll) localStorage.setItem('workbench_show_all_nav', '1');
+  }, !hidden);
   await page.route(url => url.pathname.startsWith('/api/'), route => {
     const url = new URL(route.request().url());
     const p = url.pathname;
@@ -51,6 +54,24 @@ test('ontology opens on its overview; the sidebar is grouped by task and follows
   await overview.getByRole('button', { name: /Machine/ }).click();
   await expect(page).toHaveURL(/tab=objects.*objectType=Machine/);
   await page.screenshot({ path: 'test-results/nav-objects.png', fullPage: true });
+});
+
+test('entries kept out of the sidebar for now stay reachable: ?nav=all shows them, ?nav=default hides them again', async ({ page }) => {
+  await mount(page, `/ontologies/${ONT}`, { hidden: true });
+  const nav = page.getByRole('navigation', { name: '主导航' });
+  for (const link of ['首页', '本体库', '数据源', '本体总览', '对象类型', '数据模型', '设置']) await expect(nav.getByRole('link', { name: link, exact: true })).toBeVisible();
+  for (const link of ['函数', '本体查询', '质量审查', '对象浏览器', '关系图', '情景研究', '情景沙箱', '决策与影响链', '推理验证', 'Workshop 应用', '告警中心', '运行规则', '智能体决策', '模型与审查']) await expect(nav.getByRole('link', { name: link, exact: true })).toHaveCount(0);
+  for (const group of ['探索', '推演', '应用', '告警', '智能体']) await expect(nav.getByText(group, { exact: true })).toHaveCount(0);
+  await expect(nav.getByLabel('3 条待处理告警')).toHaveCount(0);
+  // Only the sidebar changes: the page itself still opens, and the choice to show everything is remembered in this browser.
+  await page.goto(`/ontologies/${ONT}?tab=alerts`);
+  await expect(page.getByRole('region', { name: '告警中心' })).toBeVisible();
+  await page.goto(`/ontologies/${ONT}?nav=all`);
+  await expect(nav.getByRole('link', { name: '对象浏览器', exact: true })).toBeVisible();
+  await page.goto(`/ontologies/${ONT}`);
+  await expect(nav.getByRole('link', { name: '告警中心', exact: true })).toBeVisible();
+  await page.goto(`/ontologies/${ONT}?nav=default`);
+  await expect(nav.getByRole('link', { name: '对象浏览器', exact: true })).toHaveCount(0);
 });
 
 test('data is added from inside the ontology; wizards open pre-targeted', async ({ page }) => {

@@ -69,6 +69,31 @@ export const NAV_GROUPS: NavGroup[] = [
 
 export const NAV_ENTRIES = NAV_GROUPS.flatMap(group => group.entries)
 
+/**
+ * Entries kept out of the sidebar for now (2026-11-09): the analysis, exploration and simulation pages
+ * are being replaced by features built from open-source projects. Only the sidebar changes: the pages,
+ * tabs, links inside pages and the /apps/<key> pickers all still work. Delete a key here to bring its
+ * entry back; `?nav=all` shows every entry in this browser (remembered), `?nav=default` hides them again.
+ */
+export const TEMPORARILY_HIDDEN: ReadonlySet<string> = new Set([
+  'logic-assets', 'queries', 'audit',
+  'objects', 'graph',
+  'scenario-studies', 'scenarios', 'decisions', 'reasoning',
+  'workshop', 'alerts', 'rules', 'agent', 'models',
+])
+
+const SHOW_ALL_KEY = 'workbench_show_all_nav'
+
+/** Whether hidden entries are shown. Reads (and, for `?nav=all` / `?nav=default`, updates) the choice kept in this browser. */
+export function resolveShowAllNav(search: string): boolean {
+  const flag = new URLSearchParams(search).get('nav')
+  try {
+    if (flag === 'all') localStorage.setItem(SHOW_ALL_KEY, '1')
+    if (flag === 'default') localStorage.removeItem(SHOW_ALL_KEY)
+    return localStorage.getItem(SHOW_ALL_KEY) === '1'
+  } catch { return flag === 'all' }
+}
+
 /** Where an entry goes. Without a current ontology, ontology-scoped entries open a picker. */
 export function entryHref(entry: NavEntry, ontologyId: string | null): string {
   if (entry.global) return entry.global

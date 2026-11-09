@@ -8,10 +8,12 @@ import { apiClientV2 } from '@/api/client'
 import { useAuthStore } from '@/stores/authStore'
 import {
   NAV_GROUPS,
+  TEMPORARILY_HIDDEN,
   entryHref,
   isEntryActive,
   ontologyIdFromUrl,
   readStoredOntology,
+  resolveShowAllNav,
   urlForOntologySwitch,
   writeStoredOntology,
 } from '@/components/navigation'
@@ -39,6 +41,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     queryFn: () => apiClientV2.get<{ total: number }>(`/ontologies/${currentId}/alerts?status=open&limit=1`),
   })
   const alertCount = openAlerts.data?.total ?? 0
+  const showAllNav = resolveShowAllNav(location.search)
   // On short screens the active entry can sit below the fold; keep it visible.
   const navRef = useRef<HTMLElement>(null)
   useEffect(() => {
@@ -64,7 +67,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
         <nav ref={navRef} className="workbench-scrollbar flex-1 overflow-y-auto px-3 py-3" aria-label="主导航">
           {NAV_GROUPS.map(group => {
-            const entries = group.entries.filter(entry => !entry.temporalOnly || current?.data_class === 'temporal')
+            const entries = group.entries.filter(entry => (!entry.temporalOnly || current?.data_class === 'temporal') && (showAllNav || !TEMPORARILY_HIDDEN.has(entry.key)))
             if (!entries.length) return null
             return <div key={group.label || 'start'} className="mb-2.5">
               {group.label && <p className={`${collapsed ? 'text-center' : 'px-3'} mb-0.5 text-[10px] font-semibold tracking-[.14em] text-slate-400/80`}>{collapsed ? '·' : group.label}</p>}
