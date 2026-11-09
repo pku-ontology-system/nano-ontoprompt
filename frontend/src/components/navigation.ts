@@ -1,4 +1,4 @@
-import { BellRing, Bot, Boxes, Brain, Database, FileSearch, GitCompareArrows, LayoutDashboard, LayoutGrid, Library, ListChecks, Network, Route, Settings, ShieldCheck, Shapes, Sparkles, SquareFunction, Table2, SearchCode } from 'lucide-react'
+import { BellRing, Bot, Boxes, Brain, Database, FileSearch, GitCompareArrows, HeartPulse, LayoutDashboard, LayoutGrid, Library, ListChecks, Merge, Network, Route, Settings, ShieldCheck, Shapes, Sparkles, SquareFunction, Table2, SearchCode, Waypoints, Workflow } from 'lucide-react'
 
 /**
  * Primary navigation, grouped by what the user is doing (see
@@ -40,6 +40,12 @@ export const NAV_GROUPS: NavGroup[] = [
     { key: 'logic-assets', label: '函数', icon: SquareFunction, tab: 'logic-assets' },
     { key: 'queries', label: '本体查询', icon: SearchCode, path: id => `/apps/queries?ontology=${id}`, activeOn: /^\/apps\/queries/, hint: '可复用的数据查询，页面、接口和智能体共用' },
     { key: 'audit', label: '质量审查', icon: ShieldCheck, tab: 'audit' },
+  ] },
+  { label: '数据分析', entries: [
+    { key: 'analysis-health', label: '数据健康', icon: HeartPulse, global: '/analysis/health', hint: '照 Great Expectations：用期望检查数据' },
+    { key: 'analysis-resolution', label: '实体消歧', icon: Merge, global: '/analysis/resolution', hint: '照 Splink：找出指向同一对象的多条记录' },
+    { key: 'analysis-lineage', label: '数据血缘', icon: Waypoints, global: '/analysis/lineage', hint: '照 OpenLineage / Marquez：数据从哪来、流到哪去' },
+    { key: 'analysis-pipeline', label: '流水线演示', icon: Workflow, global: '/analysis/pipeline', hint: '一个数据集走完三个功能' },
   ] },
   { label: '探索', entries: [
     { key: 'objects', label: '对象浏览器', icon: Table2, tab: 'objects', hint: '查找、筛选对象并执行操作' },

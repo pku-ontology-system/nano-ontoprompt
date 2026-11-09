@@ -43,7 +43,8 @@ async function mount(page: Page, path = `/ontologies/${ONT}`, { hidden = false }
 test('ontology opens on its overview; the sidebar is grouped by task and follows the current ontology', async ({ page }) => {
   await mount(page);
   const nav = page.getByRole('navigation', { name: '主导航' });
-  for (const group of ['数据接入', '本体建模', '探索', '推演', '应用', '告警', '智能体', '系统管理']) await expect(nav.getByText(group, { exact: true })).toBeVisible();
+  for (const group of ['数据接入', '本体建模', '数据分析', '探索', '推演', '应用', '告警', '智能体', '系统管理']) await expect(nav.getByText(group, { exact: true })).toBeVisible();
+  for (const link of ['数据健康', '实体消歧', '数据血缘', '流水线演示']) await expect(nav.getByRole('link', { name: link, exact: true })).toBeVisible();
   await expect(nav.getByRole('link', { name: '本体总览' })).toHaveAttribute('aria-current', 'page');
   // Entries whose feature could not be used on the demo data (nothing to open, no way to fill them) stay out of the sidebar; the pages remain reachable by URL.
   for (const retired of ['业务数据', '逻辑规则', '决策分析', '动态演化（实验）']) await expect(nav.getByRole('link', { name: retired, exact: true })).toHaveCount(0);
@@ -59,7 +60,7 @@ test('ontology opens on its overview; the sidebar is grouped by task and follows
 test('entries kept out of the sidebar for now stay reachable: ?nav=all shows them, ?nav=default hides them again', async ({ page }) => {
   await mount(page, `/ontologies/${ONT}`, { hidden: true });
   const nav = page.getByRole('navigation', { name: '主导航' });
-  for (const link of ['首页', '本体库', '数据源', '本体总览', '对象类型', '数据模型', '设置']) await expect(nav.getByRole('link', { name: link, exact: true })).toBeVisible();
+  for (const link of ['首页', '本体库', '数据源', '本体总览', '对象类型', '数据模型', '数据健康', '实体消歧', '数据血缘', '流水线演示', '设置']) await expect(nav.getByRole('link', { name: link, exact: true })).toBeVisible();
   for (const link of ['函数', '本体查询', '质量审查', '对象浏览器', '关系图', '情景研究', '情景沙箱', '决策与影响链', '推理验证', 'Workshop 应用', '告警中心', '运行规则', '智能体决策', '模型与审查']) await expect(nav.getByRole('link', { name: link, exact: true })).toHaveCount(0);
   for (const group of ['探索', '推演', '应用', '告警', '智能体']) await expect(nav.getByText(group, { exact: true })).toHaveCount(0);
   await expect(nav.getByLabel('3 条待处理告警')).toHaveCount(0);
