@@ -249,7 +249,9 @@ def expect_compound_columns_to_be_unique(df, column_list, mostly=None):
     columns = [_column(df, c) for c in column_list]
     complete = pd.concat(columns, axis=1).notna().all(axis=1)
     duplicated = df.duplicated(subset=list(column_list), keep=False)
-    shown = df[list(column_list)].astype(str).agg(" | ".join, axis=1)
+    shown = columns[0].astype("string")
+    for column in columns[1:]:
+        shown = shown + " | " + column.astype("string")  # missing stays missing, so incomplete rows are not judged
     return _map_result(shown.where(complete), duplicated & complete, _mostly(mostly))
 
 
@@ -371,10 +373,11 @@ def validate(df: pd.DataFrame, suite: dict, *, dataset_id: str = "") -> dict:
         raise ExpectationError("a suite can hold at most 200 expectations")
     results = [run_expectation(df, item) for item in expectations]
     ok = sum(1 for r in results if r["success"])
+    errored = sum(1 for r in results if r["exception_info"]["raised_exception"])
     return {
         "success": ok == len(results),
         "statistics": {"evaluated_expectations": len(results), "successful_expectations": ok, "unsuccessful_expectations": len(results) - ok,
-                       "success_percent": round(100.0 * ok / len(results), 2)},
+                       "errored_expectations": errored, "success_percent": round(100.0 * ok / len(results), 2)},
         "results": results,
         "meta": {"suite_name": suite.get("name") or "suite", "dataset_id": dataset_id, "row_count": int(len(df)), "column_count": int(df.shape[1]),
                  "run_time_ms": int((time.perf_counter() - started) * 1000)},

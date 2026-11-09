@@ -159,3 +159,11 @@ def test_term_frequency_adjusted_comparisons_are_flagged_and_still_link():
     assert out["evaluation"]["precision"] >= 0.9 and out["evaluation"]["recall"] >= 0.85
     adjusted = [x for ex in out["examples"]["confident"] for x in ex["contributions"] if "词频校正" in x["label"]]
     assert adjusted, "an exact agreement on a tf-adjusted field should say how common the value is"
+
+
+def test_error_examples_really_are_errors(result):
+    threshold = result["settings"]["threshold_match_probability"]
+    assert all(e["same_entity"] is False and e["probability"] >= threshold for e in result["examples"]["false_positives"])
+    assert all(e["same_entity"] is True and e["probability"] < threshold for e in result["examples"]["false_negatives"])
+    if result["evaluation"]["precision"] == 1.0:
+        assert result["examples"]["false_positives"] == [], "with no wrong link there is nothing to show under 'wrongly merged'"

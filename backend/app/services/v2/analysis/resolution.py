@@ -428,8 +428,8 @@ def run(df: pd.DataFrame, settings: dict) -> dict:
         examples["borderline"] = [explain(int(p)) for p in (scored["probability"] - 0.5).abs().nsmallest(EXAMPLES).index]
         examples["confident"] = [explain(int(p)) for p in scored["weight"].nlargest(4).index]
         if same is not None:
-            examples["false_positives"] = [explain(int(p)) for p in scored["weight"].where(above & ~same).nlargest(EXAMPLES).index]
-            examples["false_negatives"] = [explain(int(p)) for p in scored["weight"].where(~above & same).nlargest(EXAMPLES).index]
+            examples["false_positives"] = [explain(int(p)) for p in scored["weight"].where(above & ~same).dropna().nlargest(EXAMPLES).index]  # dropna: nlargest of an all-NaN series returns NaN rows
+            examples["false_negatives"] = [explain(int(p)) for p in scored["weight"].where(~above & same).dropna().nlargest(EXAMPLES).index]
 
     edges = np.arange(-30, 32, 2)
     histogram = {"bin_start": edges[:-1].tolist(), "bin_width": 2}

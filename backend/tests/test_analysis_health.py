@@ -117,7 +117,7 @@ def test_validate_summarises_the_suite(table):
     ]}
     report = health.validate(table, suite, dataset_id="demo")
     assert report["success"] is False
-    assert report["statistics"] == {"evaluated_expectations": 3, "successful_expectations": 2, "unsuccessful_expectations": 1, "success_percent": 66.67}
+    assert report["statistics"] == {"evaluated_expectations": 3, "successful_expectations": 2, "unsuccessful_expectations": 1, "errored_expectations": 0, "success_percent": 66.67}
     assert report["meta"]["row_count"] == 10 and report["meta"]["suite_name"] == "demo"
     with pytest.raises(health.ExpectationError):
         health.validate(table, {"expectations": []})
@@ -136,3 +136,11 @@ def test_suggested_suite_describes_the_table_and_passes_on_it():
     assert report["success"] is True, [r for r in report["results"] if not r["success"]]
     # the same suite catches a drifted batch
     assert health.validate(frame.assign(age=frame["age"] + 500), suite)["success"] is False
+
+
+def test_compound_uniqueness_copes_with_missing_values():
+    frame = pd.DataFrame({"first": ["ann", "ann", None, "bob", "bob"], "last": ["lee", "lee", "x", "ray", None], "dob": ["1990", "1990", "1990", "1980", "1980"]})
+    result = one(frame, "expect_compound_columns_to_be_unique", column_list=["first", "last", "dob"])
+    assert result["exception_info"]["raised_exception"] is False
+    assert result["success"] is False and result["result"]["unexpected_count"] == 2  # the two ann/lee/1990 rows; rows with a missing part are not judged
+    assert health.validate(frame, {"expectations": [{"expectation_type": "expect_compound_columns_to_be_unique", "kwargs": {"column_list": ["first", "last", "dob"]}}]})["statistics"]["errored_expectations"] == 0

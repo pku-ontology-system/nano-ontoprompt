@@ -21,6 +21,8 @@ def demo_dir(tmp_path, monkeypatch):
                  "inputs": [{"namespace": "food", "name": "tmp_menus"}], "outputs": [{"namespace": "food", "name": "public.menus"}], "producer": "t"}]
     (tmp_path / "marquez_metadata.template.json").write_text(json.dumps(template))
     monkeypatch.setattr(demos, "DEMO_DIR", tmp_path)
+    for entry in demos.CATALOG:  # the recorded hashes belong to the real files; the stand-ins here are small and synthetic
+        monkeypatch.setitem(entry, "sha256", "")
     return tmp_path
 
 
@@ -66,6 +68,8 @@ def test_health_run_is_stored_and_listed(client, auth_headers, demo_dir):
     assert [r["id"] for r in listed] == [run["id"]] and "result" not in listed[0]
     default = client.get(f"{BASE}/health/suites/splink-fake-1000", headers=auth_headers).json()
     assert default["suite"]["name"] == "fake_1000_basic" and "expect_column_values_to_be_unique" in default["expectation_types"]
+    baseline = client.get(f"{BASE}/health/suites/splink-fake-1000?baseline=true", headers=auth_headers).json()["suite"]
+    assert baseline["name"] == "splink-fake-1000_baseline" and any(e["expectation_type"] == "expect_column_values_to_be_unique" for e in baseline["expectations"])
 
 
 def test_a_bad_suite_is_a_422_with_the_reason(client, auth_headers, demo_dir):
@@ -118,17 +122,17 @@ def test_the_pipeline_chains_the_engines_and_leaves_a_lineage_graph(client, auth
     assert run["result"]["resolution"]["evaluation"]["f1"] > 0.8 and run["result"]["health"]["statistics"]["evaluated_expectations"] >= 8
     graph = client.get(f"{BASE}/lineage/graph?namespace=workbench", headers=auth_headers).json()
     nodes = {n["id"]: n for n in graph["nodes"]}
-    raw = nodes["dataset:workbench:splink_fake_1000.raw"]
+    raw = nodes["dataset:workbench:fake_1000.raw"]
     assert raw["quality"]["failed"] >= 1 and raw["quality"]["passed"] >= 1  # the demo suite's row-count check fails on the small stand-in
     assert [f["name"] for f in raw["fields"]][:2] == ["unique_id", "first_name"]
-    entities = nodes["dataset:workbench:splink_fake_1000.entities"]
-    assert "entity_id" in entities["column_lineage"] and any(x.startswith("splink_fake_1000.raw.") for x in entities["column_lineage"]["entity_id"])
-    assert all(nodes[f"job:workbench:splink_fake_1000.{step}"]["status"] == "success" for step in ("ingest", "validate", "resolve"))
-    upstream = client.get(f"{BASE}/lineage/graph?node=dataset:workbench:splink_fake_1000.entities&direction=upstream&depth=5", headers=auth_headers).json()
-    assert {n["id"] for n in upstream["nodes"]} == {"dataset:workbench:splink_fake_1000.entities", "job:workbench:splink_fake_1000.resolve", "dataset:workbench:splink_fake_1000.raw", "job:workbench:splink_fake_1000.ingest"}
+    entities = nodes["dataset:workbench:fake_1000.entities"]
+    assert "entity_id" in entities["column_lineage"] and any(x.startswith("fake_1000.raw.") for x in entities["column_lineage"]["entity_id"])
+    assert all(nodes[f"job:workbench:fake_1000.{step}"]["status"] == "success" for step in ("ingest", "validate", "resolve"))
+    upstream = client.get(f"{BASE}/lineage/graph?node=dataset:workbench:fake_1000.entities&direction=upstream&depth=5", headers=auth_headers).json()
+    assert {n["id"] for n in upstream["nodes"]} == {"dataset:workbench:fake_1000.entities", "job:workbench:fake_1000.resolve", "dataset:workbench:fake_1000.raw", "job:workbench:fake_1000.ingest"}
     again = client.post(f"{BASE}/pipeline/run", headers=auth_headers, json={}).json()
     graph = client.get(f"{BASE}/lineage/graph?namespace=workbench", headers=auth_headers).json()
-    assert next(n for n in graph["nodes"] if n["id"] == "job:workbench:splink_fake_1000.resolve")["run_count"] == 2 and again["id"] != run["id"]
+    assert next(n for n in graph["nodes"] if n["id"] == "job:workbench:fake_1000.resolve")["run_count"] == 2 and again["id"] != run["id"]
 
 
 def test_only_editors_run_things_but_everyone_signed_in_can_look(client, viewer_headers, auth_headers, demo_dir):

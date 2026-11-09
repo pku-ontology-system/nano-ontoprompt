@@ -99,9 +99,11 @@ def preview(dataset_id: str, limit: int = Query(20, ge=1, le=50)):
 # ---- data health -----------------------------------------------------------------------------------------------------
 
 @router.get("/health/suites/{dataset_id}")
-def default_suite(dataset_id: str):
+def default_suite(dataset_id: str, baseline: bool = False):
+    """The suite a demo is run with, or (baseline=true) one read off the data as it is now."""
     try:
-        return {"suite": demos.health_suite(dataset_id), "expectation_types": sorted(health.EXPECTATIONS)}
+        suite = health.suggest_suite(demos.load_frame(dataset_id), name=f"{dataset_id}_baseline") if baseline else demos.health_suite(dataset_id)
+        return {"suite": suite, "expectation_types": sorted(health.EXPECTATIONS)}
     except KNOWN as error:
         raise translate(error) from error
 

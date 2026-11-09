@@ -22,7 +22,9 @@ WORKBENCH_FACET_URL = "urn:workbench:facet:{}"
 
 
 def _slug(dataset_id: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "_", dataset_id.lower()).strip("_")
+    """Job and dataset names are prefixed with the dataset, without the tool: splink-fake-1000 -> fake_1000."""
+    head, _, rest = dataset_id.lower().partition("-")
+    return re.sub(r"[^a-z0-9]+", "_", rest or head).strip("_")
 
 
 def _facet(schema: str, body: dict[str, Any], *, custom: bool = False) -> dict[str, Any]:
