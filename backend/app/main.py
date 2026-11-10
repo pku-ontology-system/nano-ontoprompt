@@ -74,6 +74,7 @@ from app.routers.v2 import rule_runtime as rule_runtime_v2
 from app.routers.v2 import ontology_candidates as ontology_candidates_v2
 from app.routers.v2 import sensor_playback as sensor_playback_v2
 from app.routers.v2 import analysis as analysis_v2
+from app.routers.v2 import ontology_imports as ontology_imports_v2
 from app.routers.v2 import graph_views as graph_views_v2
 from app.routers.v2 import workshop_apps as workshop_apps_v2
 from app.routers.v2 import ontology_queries as ontology_queries_v2
@@ -560,6 +561,7 @@ app.include_router(rule_runtime_v2.router, prefix="/api/v2/ontologies", tags=["v
 app.include_router(ontology_candidates_v2.router, prefix="/api/v2/ontologies", tags=["v2-ontology-candidates"])
 app.include_router(sensor_playback_v2.router, prefix="/api/v2/ontologies", tags=["v2-sensor-playback"])
 app.include_router(analysis_v2.router, prefix="/api/v2/analysis", tags=["v2-analysis"])
+app.include_router(ontology_imports_v2.router, prefix="/api/v2/ontology-imports", tags=["v2-ontology-imports"])
 app.include_router(graph_views_v2.router, prefix="/api/v2/ontologies", tags=["v2-graph-views"])
 app.include_router(workshop_apps_v2.router, prefix="/api/v2/ontologies", tags=["v2-workshop-apps"])
 app.include_router(ontology_queries_v2.router, prefix="/api/v2/ontologies", tags=["v2-ontology-queries"])

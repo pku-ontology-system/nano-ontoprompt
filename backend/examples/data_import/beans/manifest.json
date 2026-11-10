@@ -1,0 +1,310 @@
+{
+ "source": "AI-Lab-Makerere/beans (Hugging Face), train split",
+ "url": "https://huggingface.co/datasets/AI-Lab-Makerere/beans",
+ "license": "MIT",
+ "images": 60,
+ "bytes": 3452847,
+ "selection": "20 images per class, evenly spaced within each class of the train split",
+ "files": [
+  {
+   "file": "bean_angular_leaf_spot_0000.jpg",
+   "bytes": 77685,
+   "sha256": "6009480c282fa2ed20841269fef9634d1a584620b6d2834cb89bb1e5a24c5814"
+  },
+  {
+   "file": "bean_angular_leaf_spot_0018.jpg",
+   "bytes": 55989,
+   "sha256": "33d7c18734a65c03d9ef45a6279c2a6e03e7797fb374029b053cee74c11f02d5"
+  },
+  {
+   "file": "bean_angular_leaf_spot_0036.jpg",
+   "bytes": 80098,
+   "sha256": "a46e57d9da6012db5ade00a3c497d0fd220fbface8675f74db87ba41c78c16db"
+  },
+  {
+   "file": "bean_angular_leaf_spot_0054.jpg",
+   "bytes": 61310,
+   "sha256": "21263de8c3caa51e653b6f3800b94c9bc7c2b80201fac8f099d085bdb90c1525"
+  },
+  {
+   "file": "bean_angular_leaf_spot_0072.jpg",
+   "bytes": 53094,
+   "sha256": "42aacd39c2d2ef38e66e4819d7e0b6fc1876ac600889a00cd76ff2a9bf2ade1e"
+  },
+  {
+   "file": "bean_angular_leaf_spot_0091.jpg",
+   "bytes": 88901,
+   "sha256": "e2300a8ca1680d52e5627edaf58096da4a9a688a6fffa5e83592a93db36c55da"
+  },
+  {
+   "file": "bean_angular_leaf_spot_0109.jpg",
+   "bytes": 44832,
+   "sha256": "70cf2774a1306ededc351a3a9f338c69dd3874350a662341712cdff7461f6cd2"
+  },
+  {
+   "file": "bean_angular_leaf_spot_0127.jpg",
+   "bytes": 49915,
+   "sha256": "a8cd866c9ee6817048562d0425764f2c287be87e80af5f65f6d76ad403d57551"
+  },
+  {
+   "file": "bean_angular_leaf_spot_0145.jpg",
+   "bytes": 48217,
+   "sha256": "047da9d7c8d3771f2922e9ff1d821724e99beb9ec4afeb62a6bca067a1fa9dd1"
+  },
+  {
+   "file": "bean_angular_leaf_spot_0163.jpg",
+   "bytes": 52670,
+   "sha256": "9f47e2709937974a4c4d92cc825f7d981c138ffa5476d1575812308efd49acb8"
+  },
+  {
+   "file": "bean_angular_leaf_spot_0181.jpg",
+   "bytes": 52807,
+   "sha256": "b9e99f3c44faa13d8d29009f331a468714cddca751af5a1ef54bb5d1eab170df"
+  },
+  {
+   "file": "bean_angular_leaf_spot_0199.jpg",
+   "bytes": 59047,
+   "sha256": "cc7890326006d64d8f1fd949fa681886e5976142f4bb626480a16dd2aed017df"
+  },
+  {
+   "file": "bean_angular_leaf_spot_0217.jpg",
+   "bytes": 63477,
+   "sha256": "5e89faf193698b0f833dbe929336bb908b963d8da409ed4bbf0812198d8f9ae5"
+  },
+  {
+   "file": "bean_angular_leaf_spot_0235.jpg",
+   "bytes": 56573,
+   "sha256": "3e131839650be30b81e12b7f4cb4dd2d2381a14699424afc35e17b63d5f10fbb"
+  },
+  {
+   "file": "bean_angular_leaf_spot_0253.jpg",
+   "bytes": 52205,
+   "sha256": "8196e350c3e5b559bad217aabc575c959c944067a41fda325a7b7ebb0e573a5a"
+  },
+  {
+   "file": "bean_angular_leaf_spot_0272.jpg",
+   "bytes": 65668,
+   "sha256": "219e0fd07192347c9c019312d9832aeb60a75d9f830136b93b70cc6a3908c1a1"
+  },
+  {
+   "file": "bean_angular_leaf_spot_0290.jpg",
+   "bytes": 44783,
+   "sha256": "483fd9ff9fc1869953995204886271a48d9d3b2001c865cf3c72325733181da5"
+  },
+  {
+   "file": "bean_angular_leaf_spot_0308.jpg",
+   "bytes": 52613,
+   "sha256": "8c0f0c341ad1967aba84b0e16ed3dfd50338bd768228deddc438bae1617d0b70"
+  },
+  {
+   "file": "bean_angular_leaf_spot_0326.jpg",
+   "bytes": 61657,
+   "sha256": "837f542d315db4e316ad5d622c07ff874509f41de342606a75d107f81be7daad"
+  },
+  {
+   "file": "bean_angular_leaf_spot_0344.jpg",
+   "bytes": 48744,
+   "sha256": "1401fbbd616308511aee5010ea9dafe9cc1c1ea45358c0f9972681224c4d8c91"
+  },
+  {
+   "file": "bean_bean_rust_0345.jpg",
+   "bytes": 38561,
+   "sha256": "75c503901c22d9894ac01af5bcb3fbcbf98950c5d9d07c6a1d7b42c501466d71"
+  },
+  {
+   "file": "bean_bean_rust_0363.jpg",
+   "bytes": 56332,
+   "sha256": "085f36c82418260428cc68c74c3bb7a748641f32f1ba3c03da935f4f0a33f593"
+  },
+  {
+   "file": "bean_bean_rust_0382.jpg",
+   "bytes": 60015,
+   "sha256": "da2b9d8032a90ef66fab9e80a7817e5c8deed308fdc2c6a06a1e3ad10aa56610"
+  },
+  {
+   "file": "bean_bean_rust_0400.jpg",
+   "bytes": 59315,
+   "sha256": "58c7b502413bb6e1fe7c3fc1976b7d9e8f3f05431b0851b18d22b1793e1669de"
+  },
+  {
+   "file": "bean_bean_rust_0418.jpg",
+   "bytes": 55984,
+   "sha256": "9250658386b0fa11bf5b76f4f5c4c102d6fe887c5e5039c470699371412df73e"
+  },
+  {
+   "file": "bean_bean_rust_0436.jpg",
+   "bytes": 64008,
+   "sha256": "9e06a9b33101c9abc8f204d4885aac326f12bbf3adb1a8fc3382426cb55d9220"
+  },
+  {
+   "file": "bean_bean_rust_0455.jpg",
+   "bytes": 50222,
+   "sha256": "d3638f37dae1a9be39ecbc9de6ba71d124ced1c614cb643972ee2606f29f7946"
+  },
+  {
+   "file": "bean_bean_rust_0473.jpg",
+   "bytes": 58437,
+   "sha256": "b86f453e60bbdeda9d9febb0a4ef34636a6048bb258d8cc29c8aad8fa9b05d8b"
+  },
+  {
+   "file": "bean_bean_rust_0491.jpg",
+   "bytes": 44103,
+   "sha256": "d07aebc31da51a48ca87576bbbe293ebe62fa28a64c480f6f5b9f223c52baae2"
+  },
+  {
+   "file": "bean_bean_rust_0509.jpg",
+   "bytes": 79552,
+   "sha256": "cea665cbcc5e210df379c7a49d92620bcfb9ae5422680c23bce697801545d53e"
+  },
+  {
+   "file": "bean_bean_rust_0528.jpg",
+   "bytes": 61931,
+   "sha256": "f5a8b4ac68471d8b857677459d3115fd4ff50eee4c1818323f42bf916a286bd0"
+  },
+  {
+   "file": "bean_bean_rust_0546.jpg",
+   "bytes": 43472,
+   "sha256": "1b0fe69daa3cfe9aa996eca2d660c03b81b4c6fab7bb41dad1ef610f9066a597"
+  },
+  {
+   "file": "bean_bean_rust_0564.jpg",
+   "bytes": 44645,
+   "sha256": "fc25001c428b3f6ce877756a13417ba25d50b7f80124142e608e427ae2454322"
+  },
+  {
+   "file": "bean_bean_rust_0582.jpg",
+   "bytes": 58451,
+   "sha256": "607c16296f181d2196fc31884f8eb05624a0f6fa53c6e69d324170d64434b412"
+  },
+  {
+   "file": "bean_bean_rust_0601.jpg",
+   "bytes": 46544,
+   "sha256": "e7f11a060a929a3230b6c27c902c6cec99b1e333e78281284990ce1e70b45bc1"
+  },
+  {
+   "file": "bean_bean_rust_0619.jpg",
+   "bytes": 45759,
+   "sha256": "5b8827ac9d7257fa63238c919c385fbbcb3b505d1d14eca8bd4e3ed15817cb61"
+  },
+  {
+   "file": "bean_bean_rust_0637.jpg",
+   "bytes": 61504,
+   "sha256": "98eb087df6485f61c8eda89d98e201cdf863a88958070a338b065a0a8746b61b"
+  },
+  {
+   "file": "bean_bean_rust_0655.jpg",
+   "bytes": 60449,
+   "sha256": "5365688143e733f020a1c580829a5a3810a8a525f1de09d9460b80d2f9db7fd4"
+  },
+  {
+   "file": "bean_bean_rust_0674.jpg",
+   "bytes": 45605,
+   "sha256": "b11623984085b234ef29c29cb4d4e7115b9d337b33f125574bc101927773df3c"
+  },
+  {
+   "file": "bean_bean_rust_0692.jpg",
+   "bytes": 47874,
+   "sha256": "7d30dcc0f380aed2bd9acea00cd6a56c26d20ae3a2dce4c4020e71a9ae1f78a9"
+  },
+  {
+   "file": "bean_healthy_0693.jpg",
+   "bytes": 62092,
+   "sha256": "476be1879a53694f4b75dc1686f284066f6b74f225bd02d099151935e0a61f84"
+  },
+  {
+   "file": "bean_healthy_0711.jpg",
+   "bytes": 65365,
+   "sha256": "6919057be56b943d72e456adc41d5630535f3c42b34700d98fed3f50f59b1aeb"
+  },
+  {
+   "file": "bean_healthy_0729.jpg",
+   "bytes": 66025,
+   "sha256": "fe32b2eef85b8def88504a468c1170576377e1474afe597ddcf79f20b9ef9e57"
+  },
+  {
+   "file": "bean_healthy_0747.jpg",
+   "bytes": 46296,
+   "sha256": "4afe9896c53a931a10e2186e7e016ac97a5772d7f653716fee75a494175ed954"
+  },
+  {
+   "file": "bean_healthy_0765.jpg",
+   "bytes": 58044,
+   "sha256": "465214b8d465d58fd651156b8dbd4d006f3522231d24a1ec2b7c0250888703b1"
+  },
+  {
+   "file": "bean_healthy_0782.jpg",
+   "bytes": 55909,
+   "sha256": "6027f7de1cd84222f643814db012f21ba4ab31af6a952da0d4eaf74350d938f2"
+  },
+  {
+   "file": "bean_healthy_0800.jpg",
+   "bytes": 58628,
+   "sha256": "228e8342c45b835dd58c98d70cb8f0269a8f6f5cb7f10fa7884c5583f68ca958"
+  },
+  {
+   "file": "bean_healthy_0818.jpg",
+   "bytes": 63033,
+   "sha256": "be059ba976b7d4878b0105cad13aed6cbfc1f04bae0a43dd57b58fc61f809698"
+  },
+  {
+   "file": "bean_healthy_0836.jpg",
+   "bytes": 44194,
+   "sha256": "5b15f13ca99eae7aa61ef5fe5a18181c846bc31d9f1b126d03ee89916d076212"
+  },
+  {
+   "file": "bean_healthy_0854.jpg",
+   "bytes": 75120,
+   "sha256": "508d51ab3ed62cbf4e3dbe0bcc09da0088326601be5df02dfcbe535305566959"
+  },
+  {
+   "file": "bean_healthy_0872.jpg",
+   "bytes": 49737,
+   "sha256": "803eb1263949cea840c62bd0a1c7d3bbf88575edecf398713decef9982206abf"
+  },
+  {
+   "file": "bean_healthy_0890.jpg",
+   "bytes": 62740,
+   "sha256": "06db878626779a1527c04d0acaa5c2c662d9c0290bf32889d92ae848bc3349ec"
+  },
+  {
+   "file": "bean_healthy_0908.jpg",
+   "bytes": 64914,
+   "sha256": "74eeadd89aeed986fc94f0d6129a451e2a47990b9157cfde659bcedce67dbcd3"
+  },
+  {
+   "file": "bean_healthy_0926.jpg",
+   "bytes": 59551,
+   "sha256": "3849c11468aee957094455f66da0f97ebfcbb8646d4c201cc1bc7b31bde47445"
+  },
+  {
+   "file": "bean_healthy_0944.jpg",
+   "bytes": 56765,
+   "sha256": "422b055023ae7e5e886700c25a6754e5d7c257f73193743fd2b4dfc7d4907eaf"
+  },
+  {
+   "file": "bean_healthy_0961.jpg",
+   "bytes": 80215,
+   "sha256": "e78c1f14df0fb04c454a45c2f4c4d600a1cb5b48b500fdbe834f62714f6f87c2"
+  },
+  {
+   "file": "bean_healthy_0979.jpg",
+   "bytes": 71597,
+   "sha256": "38a60c6ef77d40f378ad447c0509c21b5798772cc5dedb7259c6a178f5f54d29"
+  },
+  {
+   "file": "bean_healthy_0997.jpg",
+   "bytes": 48073,
+   "sha256": "2acaf095ad767a0623316207e3acd61a17bfe6446c228ca6998961840d46d9b3"
+  },
+  {
+   "file": "bean_healthy_1015.jpg",
+   "bytes": 58093,
+   "sha256": "ac694dfecba2e9c20da7f08da2655abd5a947961dec3e6125ac84f7081b3eb53"
+  },
+  {
+   "file": "bean_healthy_1033.jpg",
+   "bytes": 53408,
+   "sha256": "2cb0fe41ef1249f6c8c02c907ce41a57d62cce78d6885dd0bde02c5384508fc5"
+  }
+ ]
+}
