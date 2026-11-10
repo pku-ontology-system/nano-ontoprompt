@@ -6,15 +6,16 @@ from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.deps import get_current_user, get_db, require_editor
 from app.services.v2.object_query.authorization import require_ontology_access
 from app.services.v2.object_query.errors import ObjectQueryError
 from app.models.user import User
-from app.models.v2.analysis import AnalysisRun
+from app.models.v2.analysis import AnalysisRun, LineageEvent
 from app.routers.v2.object_query import get_falkordb
-from app.services.v2.analysis import demos, health, lineage, ontology_analysis, ontology_duplicates, ontology_lineage, ontology_resolution, ontology_source, pipeline, resolution
+from app.services.v2.analysis import demos, health, lineage, ontology_analysis, ontology_duplicates, ontology_lineage, ontology_metadata, ontology_resolution, ontology_source, pipeline, resolution
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -38,10 +39,14 @@ def scope(db: Session, ontology_id: str, user: User) -> None:
 def translate(error: Exception) -> HTTPException:
     if isinstance(error, demos.DemoError):
         return fail(404 if str(error).startswith("unknown") else 409, "demo_unavailable", str(error))
+    if isinstance(error, ontology_source.SnapshotNotAllowed):
+        return fail(403, "snapshot_not_allowed", str(error))
     if isinstance(error, ontology_source.OntologySourceError):
         return fail(404, "object_type_not_found", str(error))
     if isinstance(error, health.ExpectationError):
         return fail(422, "invalid_suite", str(error))
+    if isinstance(error, resolution.NotApplicable):
+        return fail(422, "resolution_not_applicable", str(error))
     if isinstance(error, resolution.ResolutionError):
         return fail(422, "invalid_resolution_settings", str(error))
     return fail(422, "invalid_lineage_event", str(error))
@@ -104,6 +109,45 @@ class Busy:
     def __exit__(self, *exc):
         _BUSY.release()
         return False
+
+
+# ---- the whole platform at a glance --------------------------------------------------------------------------------------
+
+@router.get("/overview")
+def platform_overview(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """What is in the platform, for the home screen: the ontologies the caller may see with their sizes, the analysis runs, and the lineage."""
+    from app.models.entity_instance import EntityInstance
+    from app.models.relation import Relation
+    from app.models.v2.ontology_candidates import OntologyCandidateSet
+    from app.models.ontology import OntologyProject
+
+    visible = []
+    for project in db.query(OntologyProject).order_by(OntologyProject.created_at.desc()).all():
+        try:
+            require_ontology_access(db, project.id, str(user.id), user.role)
+        except ObjectQueryError:
+            continue
+        visible.append(project)
+    ids = [p.id for p in visible]
+    objects = dict(db.query(EntityInstance.ontology_id, func.count(EntityInstance.id)).filter(EntityInstance.ontology_id.in_(ids), EntityInstance.is_deleted.is_(False)).group_by(EntityInstance.ontology_id).all()) if ids else {}
+    links = dict(db.query(Relation.ontology_id, func.count(Relation.id)).filter(Relation.ontology_id.in_(ids)).group_by(Relation.ontology_id).all()) if ids else {}
+    imported = {}
+    for cset in db.query(OntologyCandidateSet).filter(OntologyCandidateSet.ontology_id.in_(ids), OntologyCandidateSet.status == "published").all() if ids else []:
+        info = (cset.generator or {}).get("import")
+        if info and cset.ontology_id not in imported:
+            imported[cset.ontology_id] = {"tables": len(info.get("tables", [])), "sources": len(info.get("sources", [])), "kind": info.get("kind"), "replay": info.get("replay")}
+    from app.models.entity import Entity
+    types = dict(db.query(Entity.ontology_id, func.count(Entity.id)).filter(Entity.ontology_id.in_(ids), Entity.is_source_deleted.is_(False)).group_by(Entity.ontology_id).all()) if ids else {}
+    ontologies = [{"id": p.id, "name": p.name, "domain": p.domain, "status": p.status, "build_mode": p.build_mode, "created_at": p.created_at.isoformat() if p.created_at else None,
+                   "types": int(types.get(p.id, 0)), "objects": int(objects.get(p.id, 0)), "link_types": int(links.get(p.id, 0)), "imported": imported.get(p.id)} for p in visible]
+    run_rows = db.query(AnalysisRun).order_by(AnalysisRun.created_at.desc()).limit(40).all()
+    by_kind = dict(db.query(AnalysisRun.kind, func.count(AnalysisRun.id)).group_by(AnalysisRun.kind).all())
+    health = [r.summary.get("success_percent") for r in run_rows if r.kind == "health" and isinstance(r.summary.get("success_percent"), (int, float))]
+    lineage_jobs = db.query(LineageEvent.job_namespace, LineageEvent.job_name).filter(LineageEvent.source.startswith(ontology_lineage.SOURCE_PREFIX)).distinct().count()
+    return {"ontologies": ontologies, "runs": [run_payload(r, full=False) for r in run_rows[:12]], "runs_by_kind": {k: int(v) for k, v in by_kind.items()},
+            "health": {"average": round(sum(health) / len(health), 1) if health else None, "runs": len(health)}, "lineage_jobs": int(lineage_jobs),
+            "totals": {"ontologies": len(ontologies), "types": sum(o["types"] for o in ontologies), "objects": sum(o["objects"] for o in ontologies), "link_types": sum(o["link_types"] for o in ontologies),
+                       "imports": len(imported), "runs": int(sum(by_kind.values())), "lineage_jobs": int(lineage_jobs)}}
 
 
 # ---- demo datasets ---------------------------------------------------------------------------------------------------
@@ -230,16 +274,22 @@ def ontology_resolution_preset(ontology_id: str, object_type: str, ground_truth:
     """Comparison settings drafted from the type's properties, with the reason for each choice. ground_truth="" scores nothing."""
     try:
         frame, description, info = ontology_source.load_frame(db, user, graph, ontology_id, object_type)
-        return {**ontology_resolution.suggest(frame, description, ground_truth=ground_truth), "read": info}
+        keys = [fk["property"] for fk in ontology_metadata.foreign_keys(db, ontology_id, object_type)]
+        return {**ontology_resolution.suggest(frame, description, ground_truth=ground_truth, references=keys), "read": info}
     except KNOWN as error:
         raise translate(error) from error
 
 
 def execute_ontology_resolution(db: Session, user: User, graph: Any, ontology_id: str, body: OntologyResolutionInput, loaded: tuple | None = None) -> AnalysisRun:
     frame, description, info = loaded or ontology_source.load_frame(db, user, graph, ontology_id, body.object_type)
-    drafted = None if body.settings else ontology_resolution.suggest(frame, description, ground_truth=body.ground_truth)
+    keys = [] if body.settings else [fk["property"] for fk in ontology_metadata.foreign_keys(db, ontology_id, body.object_type)]
+    drafted = None if body.settings else ontology_resolution.suggest(frame, description, ground_truth=body.ground_truth, references=keys)
     result = ontology_resolution.run(frame, body.settings or drafted["settings"])
-    result["source"] = {"kind": "ontology", "ontology_id": ontology_id, "object_type": body.object_type, "read": info, "notes": drafted["notes"] if drafted else []}
+    notes = list(drafted["notes"]) if drafted else []
+    biggest, records = result["summary"]["largest_cluster"], result["summary"]["records"]
+    if records and biggest >= max(25, records // 20):  # one group holding a twentieth of everything: the comparison is too loose and has chained different things together
+        notes.insert(0, f"注意：最大的一组有 {biggest:,} 个对象（占全部的 {biggest / records:.0%}），多半是比较条件太宽松，把不同的对象连成了一串；调高匹配概率阈值或收紧粗筛规则再看")
+    result["source"] = {"kind": "ontology", "ontology_id": ontology_id, "object_type": body.object_type, "read": info, "notes": notes}
     summary = {**result["summary"], **{k: result["evaluation"][k] for k in ("precision", "recall", "f1")}} if result["evaluation"] else dict(result["summary"])
     params = {"ontology_id": ontology_id, "object_type": body.object_type, "custom_settings": body.settings is not None}
     return store(db, user, "resolution", ontology_analysis.dataset_id(ontology_id, body.object_type), f"{body.object_type} · 实体消歧（本体）", params, summary, result)
@@ -363,21 +413,25 @@ def run_ontology_pipeline(ontology_id: str, body: OntologyPipelineInput, db: Ses
         with Busy():
             frame, description, info = ontology_source.load_frame(db, user, graph, ontology_id, body.object_type)
             health_row, _ = execute_ontology_health(db, user, graph, ontology_id, OntologyHealthInput(object_type=body.object_type), loaded=(frame, description, info))
-            resolution_row = execute_ontology_resolution(db, user, graph, ontology_id, OntologyResolutionInput(object_type=body.object_type), loaded=(frame, description, info))
+            try:
+                resolution_row = execute_ontology_resolution(db, user, graph, ontology_id, OntologyResolutionInput(object_type=body.object_type), loaded=(frame, description, info))
+                not_applicable = None
+            except resolution.NotApplicable as error:  # the type has nothing to tell individuals apart: the other two steps still run
+                resolution_row, not_applicable = None, str(error)
             written = ontology_lineage.generate(db, user, ontology_id)
     except KNOWN as error:
         db.rollback()
         raise translate(error) from error
     ns = written["namespace"]
-    report, result = health_row.result, resolution_row.result
-    evaluation = {k: result["evaluation"][k] for k in ("precision", "recall", "f1")} if result["evaluation"] else {}
+    report, result = health_row.result, resolution_row.result if resolution_row else None
+    evaluation = {k: result["evaluation"][k] for k in ("precision", "recall", "f1")} if result and result["evaluation"] else {}
+    resolve_summary = {**{k: result["summary"][k] for k in ("records", "candidate_pairs", "entities_found")}, **evaluation} if result else {"skipped": True, "reason": not_applicable}
     steps = [{"key": "ingest", "title": "读取对象", "node": f"dataset:{ns}:{body.object_type}", "summary": {"rows": int(len(frame)), "columns": len(description["properties"])}},
              {"key": "validate", "title": "数据健康检查", "node": f"job:{ns}:validate.{body.object_type}", "summary": {**report["statistics"], "success": report["success"], "suite": report["meta"].get("suite_name")}},
-             {"key": "resolve", "title": "实体消歧", "node": f"job:{ns}:resolve.{body.object_type}",
-              "summary": {**{k: result["summary"][k] for k in ("records", "candidate_pairs", "entities_found")}, **evaluation}}]
+             {"key": "resolve", "title": "实体消歧", "node": f"job:{ns}:resolve.{body.object_type}", "summary": resolve_summary}]
     outcome = {"dataset_id": ontology_analysis.dataset_id(ontology_id, body.object_type), "title": f"{body.object_type}（本体）", "sha256": None,
                "source": {"kind": "ontology", "ontology_id": ontology_id, "object_type": body.object_type, "read": info}, "steps": steps, "health": report, "resolution": result,
-               "runs": {"health": health_row.id, "resolution": resolution_row.id},
+               "runs": {"health": health_row.id, "resolution": resolution_row.id if resolution_row else None},
                "lineage": {"namespace": ns, "focus": f"dataset:{ns}:{body.object_type}", "events": written["events"], "ontology_id": ontology_id}}
     row = store(db, user, "pipeline", outcome["dataset_id"], f"{body.object_type} · 流水线（本体）", {"ontology_id": ontology_id, "object_type": body.object_type},
                 {s["key"]: s["summary"] for s in steps}, outcome)

@@ -1,7 +1,7 @@
 """The lineage of an ontology, written as OpenLineage events from what the platform already records about it.
 
-source table --[Auto Ontology run]--> object type --[rule]--> alerts --[decision]--> decision cases
-                                          \\--[health check]--> report      \\--[entity resolution]--> entities
+source --[load]--> tables --[SQL]--> computed tables --[model build]--> object type --[rule]--> alerts --[decision]--> decision cases
+                                                                            \\--[health check]--> report      \\--[entity resolution]--> entities
 
 Nothing here is guessed: a type is linked to a table only where an Auto Ontology candidate was published for it, a property to a column only
 where the candidate recorded the source field, a rule to the properties its logic names, a decision case to the alert it was raised from.
@@ -26,7 +26,7 @@ from app.services.v2.analysis import lineage, ontology_metadata, ontology_source
 from app.services.v2.analysis.ontology_suite import identity_property
 
 PRODUCER = "urn:workbench:ontology-lineage"
-LAYERS = {"source": "数据源表", "build": "Auto Ontology 生成", "object": "对象类型", "rule": "规则", "alert": "告警", "decision": "处置", "analysis": "数据分析"}
+LAYERS = {"source": "数据源", "load": "读取", "table": "数据表", "transform": "计算", "build": "建模", "object": "对象类型", "rule": "规则", "alert": "告警", "decision": "处置", "analysis": "数据分析"}
 FILTER_BLOCKS = {"filter"}
 
 
@@ -103,9 +103,11 @@ class Builder:
 
     # ---- jobs
     def job(self, name: str, layer: str, description: str, started: datetime, took: float, *, inputs: list[dict], outputs: list[dict], ref: dict | None = None,
-            run_facets: dict | None = None) -> None:
+            run_facets: dict | None = None, sql: str | None = None) -> None:
         run_id = str(uuid.uuid4())
         facets = {"documentation": ol.facet("DocumentationJobFacet", {"description": description}, producer=PRODUCER), **ol.layer(layer, PRODUCER), **(ref or {})}
+        if sql:
+            facets["sql"] = ol.facet("SQLJobFacet", {"query": sql}, producer=PRODUCER)
         self.events.append(ol.event("START", self.ns, name, run_id, started, job_facets=facets, run_facets=run_facets, producer=PRODUCER))
         self.events.append(ol.event("COMPLETE", self.ns, name, run_id, started + timedelta(seconds=max(took, 0.001)), inputs=inputs, outputs=outputs, job_facets=facets,
                                     run_facets=run_facets, producer=PRODUCER))
@@ -123,6 +125,9 @@ class Builder:
         for set_id, rows in by_set.items():
             meta = sets[set_id]
             generator = meta.get("generator") or {}
+            if generator.get("import"):
+                self.imported_build(set_id, meta, rows, generator["import"])
+                continue
             source_label = generator.get("source_label") or "关系库"
             source_ns = f"source:{source_label}"[:200]
             tables: dict[str, dict] = {}
@@ -148,6 +153,56 @@ class Builder:
             self.job(f"autoontology.{set_id[:8]}", "build", f"Auto Ontology 候选集“{meta.get('set_title')}”：{len(rows)} 个对象类型经人工审阅后发布",
                      started, float(generator.get("seconds") or 1), inputs=list(tables.values()), outputs=outputs, ref=ol.ref("candidate_set", ontology_id=self.ontology_id, set_id=set_id),
                      run_facets=run_facets)
+
+    def imported_build(self, set_id: str, meta: dict, rows: list, imp: dict) -> None:
+        """An import: its sources, the jobs that read them into tables, the SQL that computes more tables, and the build that turns the tables into types."""
+        label = imp.get("title") or meta.get("set_title") or "导入"
+        table_ns, origin_ns = f"source:{label}"[:200], f"origin:{label}"[:200]
+        created = self.when(meta.get("created_at"))
+        tables = {t["name"]: t for t in imp.get("tables", [])}
+
+        def table_dataset(t: dict, column_lineage: dict | None = None) -> dict:
+            kind = {"stage": "中间表", "bridge": "关系表", "event": "事件表", "asset": "文件资产表"}.get(t.get("kind"), "表")
+            return self.plain(t["name"], "table", f"{kind} {t['name']}（{t.get('label') or ''}）：{t.get('rows', 0):,} 行" + ("，由 SQL 计算得出" if t.get("derived") else ""),
+                              fields=[{"name": c["name"], "type": c.get("type")} for c in t.get("columns", [])], column_lineage=column_lineage, namespace=table_ns,
+                              ref=ol.ref("source_table", table=t["name"], source=label))
+
+        offset = 0
+        for src in imp.get("sources", []):
+            detail = " · ".join(x for x in (src.get("license"), src.get("note")) if x)
+            origin = self.plain(src["title"], "source", f"{src['title']}" + (f"（{detail}）" if detail else ""), namespace=origin_ns, ref=ol.ref("source_file", url=src.get("url") or "", source_kind=src.get("kind") or ""))
+            outputs = [table_dataset(t) for t in tables.values() if t.get("source") == src["id"]]
+            if outputs:
+                self.job(f"load.{src['id']}", "load", f"读取 {src['title']}：{len(outputs)} 张表", created + timedelta(seconds=offset), 1.0, inputs=[origin], outputs=outputs,
+                         ref=ol.ref("source_file", url=src.get("url") or "", source_kind=src.get("kind") or ""))
+                offset += 1
+        for t in tables.values():
+            derived = t.get("derived")
+            if not derived:
+                continue
+            lineage_of = {}
+            for column, refs in (derived.get("columns") or {}).items():
+                fields = [{"namespace": table_ns, "name": r.split(".", 1)[0], "field": r.split(".", 1)[1]} for r in refs if "." in r and r.split(".", 1)[0] in tables]
+                if fields:
+                    lineage_of[column] = {"inputFields": fields, "transformationDescription": derived.get("description") or "由 SQL 计算"}
+            self.job(f"transform.{t['name']}", "transform", derived.get("description") or f"计算 {t['name']}", created + timedelta(seconds=offset), 1.0,
+                     inputs=[table_dataset(tables[n]) for n in derived.get("inputs", []) if n in tables], outputs=[table_dataset(t, lineage_of or None)], sql=derived.get("sql"))
+            offset += 1
+        outputs = []
+        for name, evidence, draft in rows:
+            lineage_of = {}
+            for prop in draft.get("properties") or []:
+                field = str(prop.get("source_field") or "")
+                if "." in field and prop.get("id") in {p["api_name"] for p in self.types[name]["properties"]}:
+                    table, column = field.rsplit(".", 1)
+                    lineage_of[prop["id"]] = {"inputFields": [{"namespace": table_ns, "name": table, "field": column}], "transformationDescription": "属性取自表里的这一列"}
+            outputs.append(self.type_dataset(name, column_lineage=lineage_of or None))
+        built = [t for t in tables.values() if t.get("kind") != "stage"]
+        replay = imp.get("replay")
+        description = f"导入“{label}”：{len(rows)} 个对象类型由 {len(built)} 张表按主键和外键建出，一次发布" + (f"；事件表 {replay['table']} 逐步载入（{replay.get('cursor')}/{replay.get('total')}）" if replay else "")
+        self.job(f"import.{set_id[:8]}", "build", description, created + timedelta(seconds=offset), 2.0, inputs=[table_dataset(t) for t in built], outputs=outputs,
+                 ref=ol.ref("candidate_set", ontology_id=self.ontology_id, set_id=set_id),
+                 run_facets={"importRun": ol.facet("ImportRunFacet", {"tables": len(built), "types": len(rows), "links": len(imp.get("links", [])), "bundle": imp.get("bundle")}, custom=True, producer=PRODUCER)})
 
     def draft_of(self, item_id: str) -> dict:
         from app.models.v2.ontology_candidates import OntologyCandidateItem

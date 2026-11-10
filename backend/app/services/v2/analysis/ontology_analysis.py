@@ -16,22 +16,38 @@ def dataset_id(ontology_id: str, object_type: str) -> str:
     return f"ontology:{ontology_id}:{object_type}"[:80]
 
 
+def _keys_from_database(db: Any, ontology_id: str, object_type: str, column: str) -> list | None:
+    """The values of one property across the objects of a type, read from the stored rows: enough to check that a foreign key points at something
+    that exists, and far cheaper than reading the whole type through the object query. None when the database has no rows for the type."""
+    from app.models.entity import Entity
+    from app.models.entity_instance import EntityInstance
+
+    entity = ontology_metadata.type_entities(db, ontology_id).get(object_type)
+    if entity is None:
+        return None
+    rows = db.query(EntityInstance.row_data).filter(EntityInstance.entity_id == entity.id, EntityInstance.is_deleted.is_(False)).all()
+    return [row[0].get(column) for row in rows] if rows else None
+
+
 def _references(db: Any, user: Any, graph: Any, ontology_id: str, object_type: str) -> list[dict]:
     """Foreign keys with the values they may take: the keys of the objects they point at."""
     out = []
-    cache: dict[str, pd.DataFrame | None] = {}
+    cache: dict[tuple[str, str], list | None] = {}
     for fk in ontology_metadata.foreign_keys(db, ontology_id, object_type):
-        target = fk["target_type"]
-        if target not in cache:
-            try:
-                cache[target] = ontology_source.load_frame(db, user, graph, ontology_id, target, limit=MAX_REFERENCE_VALUES + 1)[0]
-            except (ontology_source.OntologySourceError, Exception):  # the target may be hidden from this user: then the key cannot be checked
-                cache[target] = None
-        frame = cache[target]
-        if frame is None or fk["target_property"] not in frame.columns:
+        key = (fk["target_type"], fk["target_property"])
+        if key not in cache:
+            cache[key] = _keys_from_database(db, ontology_id, *key)
+            if cache[key] is None:  # no stored rows: read the objects the way a person would see them
+                try:
+                    frame = ontology_source.load_frame(db, user, graph, ontology_id, fk["target_type"], limit=MAX_REFERENCE_VALUES + 1)[0]
+                    cache[key] = frame[fk["target_property"]].tolist() if fk["target_property"] in frame.columns else None
+                except Exception:  # noqa: BLE001  the target may be hidden from this user: then the key cannot be checked
+                    cache[key] = None
+        values = cache[key]
+        if values is None:
             continue
-        values = [v for v in frame[fk["target_property"]].dropna().unique().tolist()]
-        out.append({**fk, "values": values if len(values) <= MAX_REFERENCE_VALUES else None})
+        unique = list(dict.fromkeys(v for v in values if v is not None and not (isinstance(v, float) and pd.isna(v))))
+        out.append({**fk, "values": unique if len(unique) <= MAX_REFERENCE_VALUES else None})
     return out
 
 

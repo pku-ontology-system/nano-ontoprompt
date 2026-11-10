@@ -12,11 +12,14 @@ fields plus a prior. The same pipeline is rebuilt here on DuckDB, which Splink a
 4. when the table carries the true entity id, the result is scored (pairwise precision / recall) and mistakes are explained
    field by field.
 
-Only structured settings are accepted (column names, `substr` terms), never SQL text, because the settings come from the browser.
+`link_across` (a column name) turns the run from de-duplication into linkage: records are only paired when they carry different values of that
+column, e.g. two shops or two systems that each list a thing once. Only structured settings are accepted (column names, `substr` terms), never
+SQL text, because the settings come from the browser.
 """
 from __future__ import annotations
 
 import math
+import re
 import time
 from typing import Any
 
@@ -28,6 +31,7 @@ from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
 
 EPS = 1e-6
+_WORD = re.compile(r"[a-z0-9]+")
 SMOOTHING = 1.0  # one pseudo-match per field, spread over its levels like random pairs, so a level never seen among matches is a veto of bounded size
 MAX_ROWS = 200_000
 MAX_CANDIDATE_PAIRS = 12_000_000
@@ -36,6 +40,10 @@ EXAMPLES = 8
 
 class ResolutionError(ValueError):
     """The settings or the data cannot be used for linkage."""
+
+
+class NotApplicable(ResolutionError):
+    """The objects carry nothing that tells one individual from another, so asking which are "the same" has no answer."""
 
 
 def _ident(name: Any, columns: set[str]) -> str:
@@ -48,7 +56,7 @@ def _clean(side: str, col: str) -> str:
     return f"lower(trim(CAST({side}.{col} AS VARCHAR)))"
 
 
-def compile_comparison(spec: dict, columns: set[str]) -> dict:
+def compile_comparison(spec: dict, columns: set[str], index: int = 0) -> dict:
     """One field's comparison as a SQL CASE that returns an agreement level. -1 means a value is missing (no evidence)."""
     kind = spec.get("type")
     col = _ident(spec.get("column"), columns)
@@ -76,14 +84,43 @@ def compile_comparison(spec: dict, columns: set[str]) -> dict:
         whens = f"WHEN {sl} = {sr} THEN {n + 1} " + " ".join(f"WHEN levenshtein({sl}, {sr}) <= {t} THEN {n - j}" for j, t in enumerate(thresholds))
         case = f"CASE WHEN {null} THEN -1 {whens} ELSE 0 END"
         levels += [(n - j, f"编辑距离 ≤ {t}") for j, t in reversed(list(enumerate(thresholds)))] + [(n + 1, "完全一致")]
+    elif kind == "code":  # a model number, SKU, serial: the same thing is written the same, up to punctuation and a suffix; a different code is a different thing
+        cl, cr = (f"regexp_replace({side}, '[^a-z0-9]', '', 'g')" for side in (sl, sr))
+        case = (f"CASE WHEN {null} THEN -1 WHEN length({cl}) > 0 AND {cl} = {cr} THEN 2 "
+                f"WHEN least(length({cl}), length({cr})) >= 5 AND (starts_with({cl}, {cr}) OR starts_with({cr}, {cl})) THEN 1 ELSE 0 END")
+        levels += [(1, "一个是另一个的前缀（多出的只是后缀）"), (2, "完全一致")]
+    elif kind == "ratio":  # an amount: the same thing costs about the same; the relative difference is graded
+        raw = spec.get("thresholds") or [0.02, 0.1, 0.3]
+        thresholds = sorted({float(t) for t in raw})
+        if not thresholds or thresholds[0] <= 0:
+            raise ResolutionError("relative-difference thresholds must be positive")
+        n = len(thresholds)
+        x, y = f"TRY_CAST(l.{col} AS DOUBLE)", f"TRY_CAST(r.{col} AS DOUBLE)"
+        gap = f"(abs({x} - {y}) / NULLIF(greatest(abs({x}), abs({y})), 0))"
+        null = f"({x} IS NULL OR {y} IS NULL OR isnan({x}) OR isnan({y}))"
+        whens = f"WHEN {x} = {y} THEN {n + 1} " + " ".join(f"WHEN {gap} <= {t} THEN {n - j}" for j, t in enumerate(thresholds))
+        case = f"CASE WHEN {null} THEN -1 {whens} ELSE 0 END"
+        levels += [(n - j, f"相差 ≤ {t:.0%}") for j, t in reversed(list(enumerate(thresholds)))] + [(n + 1, "完全一致")]
+    elif kind == "tokens":
+        raw = spec.get("thresholds") or [0.8, 0.5, 0.3]
+        thresholds = sorted({float(t) for t in raw}, reverse=True)
+        if not thresholds or any(not 0 < t < 1 for t in thresholds):
+            raise ResolutionError("token-overlap thresholds must lie between 0 and 1")
+        n = len(thresholds)
+        a, b = f'l."__tok{index}"', f'r."__tok{index}"'  # the distinct words of each record, listed once per record in `run` rather than once per pair
+        shared = f"len(list_intersect({a}, {b}))"
+        overlap = f"(CAST({shared} AS DOUBLE) / NULLIF(len({a}) + len({b}) - {shared}, 0))"
+        whens = f"WHEN {sl} = {sr} THEN {n + 1} " + " ".join(f"WHEN {overlap} >= {t} THEN {n - i}" for i, t in enumerate(thresholds))
+        case = f"CASE WHEN {null} THEN -1 {whens} ELSE 0 END"
+        levels += [(lvl, f"共同词占比 ≥ {thresholds[n - lvl]}") for lvl in range(1, n + 1)] + [(n + 1, "完全一致")]
     elif kind == "email":
         ul, ur = f"split_part({sl}, '@', 1)", f"split_part({sr}, '@', 1)"
         case = (f"CASE WHEN {null} THEN -1 WHEN {sl} = {sr} THEN 4 WHEN {ul} = {ur} THEN 3 "
                 f"WHEN jaro_winkler_similarity({sl}, {sr}) >= 0.88 THEN 2 WHEN jaro_winkler_similarity({ul}, {ur}) >= 0.88 THEN 1 ELSE 0 END")
         levels += [(1, "用户名相似度 ≥ 0.88"), (2, "邮箱相似度 ≥ 0.88"), (3, "用户名一致"), (4, "邮箱完全一致")]
     else:
-        raise ResolutionError(f"unknown comparison type '{kind}'; use exact, name, jaro_winkler, levenshtein or email")
-    return {"column": spec["column"], "type": kind, "case": case, "tf": bool(spec.get("tf")), "top": max(a for a, _ in levels),
+        raise ResolutionError(f"unknown comparison type '{kind}'; use exact, name, jaro_winkler, levenshtein, tokens, code, ratio or email")
+    return {"column": spec["column"], "type": kind, "case": case, "tf": bool(spec.get("tf")), "top": max(lvl for lvl, _ in levels), "words": kind == "tokens",
             "levels": [{"level": a, "label": b} for a, b in sorted(levels)]}
 
 
@@ -125,7 +162,7 @@ def normalise_settings(df: pd.DataFrame, settings: dict) -> dict:
         raise ResolutionError(f"'{uid}' must be unique and never empty")
     if len(df) > MAX_ROWS:
         raise ResolutionError(f"at most {MAX_ROWS} rows can be linked")
-    comparisons = [compile_comparison(c, columns) for c in settings.get("comparisons") or []]
+    comparisons = [compile_comparison(c, columns, i) for i, c in enumerate(settings.get("comparisons") or [])]
     if not comparisons:
         raise ResolutionError("at least one comparison is needed")
     rules = settings.get("blocking_rules") or []
@@ -143,6 +180,9 @@ def normalise_settings(df: pd.DataFrame, settings: dict) -> dict:
     truth = settings.get("ground_truth")
     if truth and truth not in columns:
         raise ResolutionError(f"ground truth column '{truth}' does not exist")
+    across = settings.get("link_across") or None
+    if across:
+        _ident(across, columns)
     threshold = float(settings.get("threshold_match_probability", 0.9))
     if not 0 < threshold < 1:
         raise ResolutionError("threshold_match_probability must lie between 0 and 1")
@@ -150,7 +190,7 @@ def normalise_settings(df: pd.DataFrame, settings: dict) -> dict:
     if not 0 < recall <= 1:
         raise ResolutionError("training.recall must lie in (0, 1]")
     return {
-        "unique_id": uid, "comparisons": comparisons, "blocking_rules": rules, "ground_truth": truth, "threshold_match_probability": threshold,
+        "unique_id": uid, "comparisons": comparisons, "blocking_rules": rules, "ground_truth": truth, "threshold_match_probability": threshold, "link_across": across,
         "display_columns": [c for c in (settings.get("display_columns") or []) if c in columns] or [c for c in df.columns if str(c) != str(truth)][:8],
         "training": {"deterministic_rules": deterministic, "recall": recall, "em_blocking": em_rules, "u_max_pairs": int(training.get("u_max_pairs", 1_000_000)),
                      "em_iterations": int(training.get("em_iterations", 25)), "seed": int(training.get("seed", 7))},
@@ -165,12 +205,20 @@ def _gamma_select(comparisons: list[dict], *, with_tf: bool = False) -> str:
     return ", ".join(parts)
 
 
-def _pairs_query(table: str, rules: list[list], columns: set[str], select: str) -> str:
+def _across_sql(across: str | None) -> str:
+    """Only pair records that carry different values of the `link_across` column (a missing value pairs with nothing)."""
+    if not across:
+        return ""
+    ident = '"' + across.replace('"', '""') + '"'
+    return f" AND l.{ident} <> r.{ident}"
+
+
+def _pairs_query(table: str, rules: list[list], columns: set[str], select: str, across: str | None = None) -> str:
     """Candidate pairs (by row number) from blocking rules; a pair found by an earlier rule is not produced again by a later one."""
     parts = []
     for i, rule in enumerate(rules):
         skip = "".join(f" AND NOT COALESCE(({_rule_sql(prev, columns)}), FALSE)" for prev in rules[:i])
-        parts.append(f"SELECT l.__rid AS id_l, r.__rid AS id_r, {select} FROM {table} l JOIN {table} r ON l.__rid < r.__rid AND {_rule_sql(rule, columns)}{skip}")
+        parts.append(f"SELECT l.__rid AS id_l, r.__rid AS id_r, {select} FROM {table} l JOIN {table} r ON l.__rid < r.__rid AND {_rule_sql(rule, columns)}{skip}{_across_sql(across)}")
     return " UNION ALL ".join(parts)
 
 
@@ -187,9 +235,9 @@ def _initial_m(levels: list[dict]) -> np.ndarray:
     return arr
 
 
-def _random_u(con, comparisons: list[dict], sample: pd.DataFrame, select: str) -> tuple[list[np.ndarray], int]:
+def _random_u(con, comparisons: list[dict], sample: pd.DataFrame, select: str, across: str | None = None) -> tuple[list[np.ndarray], int]:
     con.register("sample_df", pa.Table.from_pandas(sample, preserve_index=False))  # Arrow: DuckDB 1.2 cannot read pandas 3's new str dtype
-    frame = con.execute(f"SELECT {select} FROM sample_df l JOIN sample_df r ON l.__rid < r.__rid").df()
+    frame = con.execute(f"SELECT {select} FROM sample_df l JOIN sample_df r ON l.__rid < r.__rid{_across_sql(across)}").df()
     total = len(frame)
     out = []
     for i, comp in enumerate(comparisons):
@@ -312,6 +360,9 @@ def run(df: pd.DataFrame, settings: dict) -> dict:
         if comp["tf"]:  # share of the (non-empty) records that carry each value
             cleaned = work[comp["column"]].astype("string").str.strip().str.lower().replace("", pd.NA)
             work[f"__tf{k}"] = (cleaned.map(cleaned.value_counts()).astype(float) / max(1, int(cleaned.notna().sum()))).astype("float32")
+        if comp["words"]:  # the distinct lower-case words of the value, so the pair comparison is a list intersection
+            cleaned = work[comp["column"]].astype("string").str.strip().str.lower()
+            work[f"__tok{k}"] = pd.Series([sorted(set(_WORD.findall(v))) if isinstance(v, str) else None for v in cleaned.astype(object)], index=work.index, dtype=object)
     con = duckdb.connect(":memory:")
     try:
         con.register("df", pa.Table.from_pandas(work, preserve_index=False))
@@ -325,11 +376,16 @@ def run(df: pd.DataFrame, settings: dict) -> dict:
         # u: how often each level occurs among random pairs (assumed to be almost all non-matches)
         sample_rows = min(n, int(math.ceil(math.sqrt(2 * train["u_max_pairs"]))) + 1)
         sample = work if sample_rows >= n else work.sample(n=sample_rows, random_state=train["seed"])
-        u, u_pairs = _random_u(con, comps, sample, select)
+        across = cfg["link_across"]
+        u, u_pairs = _random_u(con, comps, sample, select, across)
 
         # prior: pairs that agree on a deterministic rule, corrected for the share of true matches those rules are assumed to catch
-        total_pairs = n * (n - 1) // 2
-        rule_hits = int(con.execute(f"SELECT count(*) FROM ({_pairs_query('df', train['deterministic_rules'], columns, '1 AS one')})").fetchone()[0])
+        if across:
+            per_value = work[across].astype("string").dropna().value_counts().to_numpy(dtype="int64")
+            total_pairs = int((int(per_value.sum()) ** 2 - int((per_value ** 2).sum())) // 2)
+        else:
+            total_pairs = n * (n - 1) // 2
+        rule_hits = int(con.execute(f"SELECT count(*) FROM ({_pairs_query('df', train['deterministic_rules'], columns, '1 AS one', across)})").fetchone()[0])
         lam = float(np.clip(rule_hits / train["recall"] / max(1, total_pairs), 1e-9, 0.5))
 
         # m: EM on pairs that share a blocking rule, one session per rule, averaged over the sessions that could estimate a field
@@ -339,7 +395,7 @@ def run(df: pd.DataFrame, settings: dict) -> dict:
         for rule in train["em_blocking"]:
             blocked = _rule_columns(rule)
             fixed = {k for k, c in enumerate(comps) if c["column"] in blocked}
-            patterns_sql = f"SELECT {', '.join(f'g{k}' for k in range(len(comps)))}, count(*) AS n FROM ({_pairs_query('df', [rule], columns, select)}) GROUP BY ALL"
+            patterns_sql = f"SELECT {', '.join(f'g{k}' for k in range(len(comps)))}, count(*) AS n FROM ({_pairs_query('df', [rule], columns, select, across)}) GROUP BY ALL"
             table = con.execute(patterns_sql).df()
             if table.empty:
                 sessions.append({"rule": rule, "pairs": 0, "iterations": 0, "lambda": None})
@@ -358,10 +414,10 @@ def run(df: pd.DataFrame, settings: dict) -> dict:
         prior_weight = math.log2(lam / (1 - lam))
 
         # candidate pairs for prediction
-        candidates = int(con.execute(f"SELECT count(*) FROM ({_pairs_query('df', cfg['blocking_rules'], columns, '1 AS one')})").fetchone()[0])
+        candidates = int(con.execute(f"SELECT count(*) FROM ({_pairs_query('df', cfg['blocking_rules'], columns, '1 AS one', across)})").fetchone()[0])
         if candidates > MAX_CANDIDATE_PAIRS:
             raise ResolutionError(f"the blocking rules produce {candidates:,} pairs (limit {MAX_CANDIDATE_PAIRS:,}); make them stricter")
-        pairs = con.execute(_pairs_query("df", cfg["blocking_rules"], columns, select_with_tf)).df()
+        pairs = con.execute(_pairs_query("df", cfg["blocking_rules"], columns, select_with_tf, across)).df()
     finally:
         con.close()
 
@@ -443,7 +499,7 @@ def run(df: pd.DataFrame, settings: dict) -> dict:
 
     return {
         "settings": {"unique_id": uid_name, "comparisons": [{"column": c["column"], "type": c["type"], "tf": c["tf"]} for c in comps], "blocking_rules": cfg["blocking_rules"],
-                     "threshold_match_probability": threshold, "ground_truth": truth_name, "training": train},
+                     "threshold_match_probability": threshold, "ground_truth": truth_name, "link_across": cfg["link_across"], "training": train},
         "summary": {"records": n, "total_possible_pairs": total_pairs, "candidate_pairs": int(len(pairs)), "pairs_above_threshold": int(above.sum()), "entities_found": int(n_clusters),
                     "records_in_clusters": int(sizes[sizes >= 2].sum()), "singletons": int((sizes == 1).sum()), "largest_cluster": int(sizes.max()) if n else 0,
                     "run_time_ms": int((time.perf_counter() - started) * 1000)},

@@ -7,10 +7,13 @@ snapshot (the object query refuses to continue a live read), so a data view is c
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 import pandas as pd
 
+_VIEWS: dict[tuple[str, str], tuple[str, float, tuple]] = {}   # (ontology, user) -> (data view id, expires at, what the ontology looked like)
+VIEW_SECONDS = 300
 OBJECT_ID = "__object_id"
 PAGE = 200
 MAX_OBJECTS = 10_000
@@ -19,6 +22,10 @@ INTERNAL = {"_instance_id"}
 
 class OntologySourceError(ValueError):
     """The object type is not there, or cannot be read as a table."""
+
+
+class SnapshotNotAllowed(OntologySourceError):
+    """Reading more than a page needs a pinned snapshot, which only an editor may create."""
 
 
 def _object_query():
@@ -41,16 +48,16 @@ def object_types(db: Any, user: Any, ontology_id: str) -> list[dict]:
 
 
 def object_counts(db: Any, user: Any, graph_service: Any, ontology_id: str, names: list[str]) -> dict[str, dict | None]:
-    """{type: {count, capped}} from one page of each type: exact up to a page, `capped` when there are more. Exact totals need a pinned
-    snapshot (the object query refuses them on a live read), which is not worth a data view for a picker. A type that cannot be read is None."""
-    module, out = _object_query(), {}
-    for name in names:
-        try:
-            page = _load(module, ontology_id, name, {"ontology_id": ontology_id, "consistency": "live"}, {"page_size": PAGE}, db, user, graph_service)
-            out[name] = {"count": len(page.objects), "capped": bool(page.page.has_more)}
-        except Exception:  # noqa: BLE001  a count is a convenience; the caller shows "unknown"
-            out[name] = None
-    return out
+    """{type: {count, capped}}: how many objects each type has, counted in the database (exact, and cheap for ontologies too large to read live)."""
+    from sqlalchemy import func
+
+    from app.models.entity import Entity
+    from app.models.entity_instance import EntityInstance
+
+    rows = (db.query(Entity.name_en, func.count(EntityInstance.id)).join(EntityInstance, EntityInstance.entity_id == Entity.id)
+            .filter(Entity.ontology_id == ontology_id, EntityInstance.is_deleted.is_(False)).group_by(Entity.name_en).all())
+    counted = {name: int(count) for name, count in rows}
+    return {name: {"count": counted.get(name, 0), "capped": False} for name in names}
 
 
 def _load(module: Any, ontology_id: str, object_type: str, context: dict, read: dict, db: Any, user: Any, graph_service: Any) -> Any:
@@ -70,30 +77,83 @@ def frame_from_objects(objects: list[Any], properties: list[str]) -> pd.DataFram
     return pd.DataFrame(rows, columns=[OBJECT_ID, *properties])
 
 
+def _snapshot_view(module: Any, db: Any, user: Any, graph_service: Any, ontology_id: str) -> str:
+    """A pinned data view of the ontology for paged reads. Building one copies the whole graph, so one view serves every read for a few minutes
+    as long as the ontology has not changed (same number of objects, same revision)."""
+    from sqlalchemy import func
+
+    from app.models.entity_instance import EntityInstance
+    from app.models.ontology import OntologyProject
+    from app.schemas.v2.object_query import QueryDataViewCreate
+
+    if getattr(user, "role", None) == "viewer":
+        raise SnapshotNotAllowed("这个类型的对象多于 200 个，要先固定一份快照才能读完；只读账号不能创建快照，请用有编辑权限的账号运行")
+    project = db.get(OntologyProject, ontology_id)
+    signature = (db.query(func.count(EntityInstance.id)).filter(EntityInstance.ontology_id == ontology_id).scalar(), getattr(project, "current_revision_id", None))
+    key = (ontology_id, str(user.id))
+    cached = _VIEWS.get(key)
+    if cached and cached[1] > time.time() and cached[2] == signature:
+        return cached[0]
+    view = module.create_data_view(ontology_id, QueryDataViewCreate(source_ontology_id=ontology_id, source_manifest_digest="analysis", retention_seconds=3600), db, user, graph_service)
+    view_id, status = (view["view_id"], view.get("status")) if isinstance(view, dict) else (view.view_id, getattr(view, "status", None))
+    if status not in (None, "ready"):
+        raise OntologySourceError(f"the snapshot of the ontology is {status}, so more than one page of objects cannot be read yet")
+    _VIEWS[key] = (view_id, time.time() + VIEW_SECONDS, signature)
+    return view_id
+
+
+def _read_snapshot(module: Any, db: Any, user: Any, graph_service: Any, ontology_id: str, object_type: str, view_id: str, limit: int, info: dict) -> list[Any]:
+    """Every page of one type from a pinned view. One query core serves all the pages (a page request on its own re-reads the whole view each time),
+    with the permission policy applied exactly as the object query applies it; if the core cannot be built, the pages are requested one by one."""
+    context = {"ontology_id": ontology_id, "consistency": "snapshot", "data_view_id": view_id}
+    objects: list[Any] = []
+    try:
+        from app.schemas.v2.object_query import LoadObjectSetRequest
+
+        access = module._authorize(ontology_id, db, user)
+        metadata = module.load_sql_metadata(db, ontology_id)
+        view = module.require_ready(db, view_id, ontology_id, principal_id=user.id, is_admin=user.role == "admin")
+        request = LoadObjectSetRequest.model_validate({"expression": {"kind": "base", "type_ref": {"api_name": object_type}}, "context": context, "read": {"page_size": PAGE}})
+        request = request.model_copy(update={"context": module._pin_context_to_view(request.context, view, access.context.metadata_revision_id)})
+        core = module.QueryCore(metadata, module.FalkorReadAdapter(graph_service._graph(view.graph_key), graph_ontology_id=view.graph_key),
+                                module._query_policy(db, ontology_id, user, metadata_revision_id=request.context.revision_id, access_projection=access))
+        resources = module.ResourceService(db, ontology_id, user, metadata, authorization_projection=access)
+
+        def page_of(token: str | None) -> Any:
+            return core.load(request.model_copy(update={"read": request.read.model_copy(update={"page_size": PAGE, "page_token": token})}), resources)
+    except (AttributeError, TypeError):
+        def page_of(token: str | None) -> Any:
+            return _load(module, ontology_id, object_type, context, {"page_size": PAGE, **({"page_token": token} if token else {})}, db, user, graph_service)
+
+    token = None
+    while True:
+        page = page_of(token)
+        objects += list(page.objects)
+        if not page.page.has_more:
+            break
+        if len(objects) >= limit:
+            info["truncated"] = True
+            break
+        token = page.page.next_page_token
+    return objects
+
+
 def load_objects(db: Any, user: Any, graph_service: Any, ontology_id: str, object_type: str, *, limit: int = MAX_OBJECTS) -> tuple[list[Any], dict]:
     """All objects of one type, up to `limit`. Errors from the object query pass through unchanged."""
     from app.schemas.v2.object_query import QueryDataViewCreate
 
     module = _object_query()
-    first = _load(module, ontology_id, object_type, {"ontology_id": ontology_id, "consistency": "live"}, {"page_size": PAGE}, db, user, graph_service)
-    objects, info = list(first.objects), {"object_type": object_type, "snapshot": False, "truncated": False}
-    if first.page.has_more:
-        view = module.create_data_view(ontology_id, QueryDataViewCreate(source_ontology_id=ontology_id, source_manifest_digest=f"analysis:{object_type}", retention_seconds=3600), db, user, graph_service)
-        view_id, status = (view["view_id"], view.get("status")) if isinstance(view, dict) else (view.view_id, getattr(view, "status", None))
-        if status not in (None, "ready"):
-            raise OntologySourceError(f"the snapshot of {object_type} is {status}, so more than one page of objects cannot be read yet")
+    try:
+        first = _load(module, ontology_id, object_type, {"ontology_id": ontology_id, "consistency": "live"}, {"page_size": PAGE}, db, user, graph_service)
+    except Exception as exc:  # noqa: BLE001
+        if (getattr(exc, "detail", None) or {}).get("code") != "query_too_complex":
+            raise
+        first = None  # a live read scans the whole ontology and refuses past 10,000 objects; a pinned snapshot has no such limit
+    objects, info = (list(first.objects) if first else []), {"object_type": object_type, "snapshot": False, "truncated": False}
+    if first is None or first.page.has_more:
+        view_id = _snapshot_view(module, db, user, graph_service, ontology_id)
         context = {"ontology_id": ontology_id, "consistency": "snapshot", "data_view_id": view_id}
-        objects, token = [], None
-        while True:
-            read = {"page_size": PAGE, **({"page_token": token} if token else {})}
-            page = _load(module, ontology_id, object_type, context, read, db, user, graph_service)
-            objects += list(page.objects)
-            if not page.page.has_more:
-                break
-            if len(objects) >= limit:
-                info["truncated"] = True
-                break
-            token = page.page.next_page_token
+        objects = _read_snapshot(module, db, user, graph_service, ontology_id, object_type, view_id, limit, info)
         info.update(snapshot=True, data_view_id=view_id)
     return objects[:limit], info
 

@@ -52,7 +52,14 @@ def build_ontology_suite(object_type: str, properties: list[dict], *, raw_defini
             items.append(item)
 
     add(_expect("table_row_count_to_be_between", f"本体里有 {object_type} 这个类型，应当已有对象", min_value=1))
-    identity, how = identity_property(object_type, names, primary_keys or [])
+    keys = [k for k in (primary_keys or []) if k in names]
+    if len(keys) > 1:  # a composite key identifies an object only together
+        for key in keys:
+            add(_expect("column_values_to_not_be_null", f"复合主键的一部分（Auto Ontology 记录的主键 {' + '.join(keys)}）不能为空", column=key))
+        add(_expect("compound_columns_to_be_unique", f"复合主键 {' + '.join(keys)} 的组合不能重复", column_list=keys))
+        identity, how = None, ""
+    else:
+        identity, how = identity_property(object_type, names, primary_keys or [])
     if identity:
         add(_expect("column_values_to_not_be_null", f"对象标识（{how}）不能为空", column=identity))
         add(_expect("column_values_to_be_unique", f"对象标识（{how}）不能重复", column=identity))
