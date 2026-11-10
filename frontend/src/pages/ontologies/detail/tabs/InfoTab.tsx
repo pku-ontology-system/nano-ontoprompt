@@ -255,7 +255,9 @@ export default function InfoTab({ ontology }: { ontology: OntologyDetail }) {
             <dd>
               {isPipelineMode
                 ? <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-blue-50 border border-blue-200 text-blue-700">数据管道映射</span>
-                : <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-amber-50 border border-amber-200 text-amber-700">简易 LLM 提取</span>
+                : ontology.build_mode === 'data_import'
+                  ? <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-emerald-50 border border-emerald-200 text-emerald-700">数据导入</span>
+                  : <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-amber-50 border border-amber-200 text-amber-700">简易 LLM 提取</span>
               }
             </dd>
           </div>

@@ -1,152 +1,182 @@
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import {
-  Activity,
-  ArrowRight,
-  Database,
-  Images,
-  Network,
-  Radio,
-  ShieldCheck,
-  Timer,
-} from 'lucide-react'
-import { apiClientV2 } from '@/api/client'
-import StatusBadge from '@/components/StatusBadge'
-import { DEFAULT_DYNAMIC_RUN_PATH } from '@/config/demoRoutes'
+import { Activity, ArrowRight, Boxes, Database, GitBranch, HeartPulse, Layers, Merge, Network, Workflow } from 'lucide-react'
+import { analysisApi, type OverviewOntology } from '@/api/analysis'
+import { ontologyApi } from '@/api/ontologies'
+import Chart from './Chart'
 
-interface RecentOntology {
-  id: string
-  name: string
-  domain: string
-  status: string
-  entity_count: number
-  logic_count: number
-  action_count: number
-  updated_at: string
+const NEON = ['#22d3ee', '#a78bfa', '#fbbf24', '#34d399', '#f472b6', '#60a5fa', '#fb923c']
+const KIND_ICON: Record<string, typeof Activity> = { health: HeartPulse, resolution: Merge, pipeline: Workflow }
+const KIND_LABEL: Record<string, string> = { health: '数据健康', resolution: '实体消歧', pipeline: '流水线' }
+
+function useCountUp(target: number, ms = 1500) {
+  const [value, setValue] = useState(0)
+  useEffect(() => {
+    let frame = 0
+    const start = performance.now()
+    const tick = (now: number) => {
+      const t = Math.min(1, (now - start) / ms)
+      setValue(Math.round(target * (1 - Math.pow(1 - t, 3))))
+      if (t < 1) frame = requestAnimationFrame(tick)
+    }
+    frame = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(frame)
+  }, [target, ms])
+  return value
 }
 
-interface DashboardStats {
-  ontology_count: number
-  entity_count: number
-  logic_count: number
-  action_count: number
-  dataset_count?: number
-  task_count?: number
-  review_count?: number
-  recent_ontologies: RecentOntology[]
-  domain_counts: Record<string, number>
-  status_counts: Record<string, number>
-  data_class_counts?: Record<string, number>
+function useClock() {
+  const [now, setNow] = useState(() => new Date())
+  useEffect(() => { const id = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(id) }, [])
+  return now
 }
 
-const FALLBACK: DashboardStats = {
-  ontology_count: 0,
-  entity_count: 0,
-  logic_count: 0,
-  action_count: 0,
-  dataset_count: 0,
-  task_count: 0,
-  review_count: 0,
-  recent_ontologies: [],
-  domain_counts: {},
-  status_counts: {},
-  data_class_counts: { regular: 0, temporal: 0, multimodal: 0 },
+function Kpi({ label, value, icon: Icon, accent }: { label: string; value: number; icon: typeof Activity; accent: string }) {
+  const shown = useCountUp(value)
+  return <div className="bs-panel p-3" data-testid={`kpi-${label}`}>
+    <div className="flex items-center gap-2 text-[11px] tracking-[.18em] text-cyan-200/70"><Icon size={13} style={{ color: accent }} />{label}</div>
+    <p className="bs-glow mt-1 text-[28px] font-semibold leading-none tabular-nums" style={{ color: accent }}>{shown.toLocaleString('zh-CN')}</p>
+  </div>
 }
 
-type Icon = typeof Database
+function Panel({ title, children, className = '' }: { title: string; children: React.ReactNode; className?: string }) {
+  return <section className={`bs-panel flex min-h-0 flex-col p-4 ${className}`}>
+    <h2 className="mb-2 flex items-center gap-2 text-xs font-medium tracking-[.2em] text-cyan-200/80"><span className="bs-dot" />{title}</h2>
+    <div className="min-h-0 flex-1">{children}</div>
+  </section>
+}
 
-const dataTypes: Array<{
-  title: string
-  subtitle: string
-  detail: string
-  icon: Icon
-  tone: string
-  path: string
-  countKey?: string
-}> = [
-  { title: '时序数据', subtitle: '序列与时间轴', detail: 'FactoryNet · Ordinal · Instant', icon: Activity, tone: 'teal', path: '/data/temporal' },
-  { title: '动态数据构建', subtitle: '逐事件接收', detail: '开始 · 暂停 · 单步 · 历史事实', icon: Radio, tone: 'amber', path: DEFAULT_DYNAMIC_RUN_PATH, countKey: 'temporal' },
-  { title: '多模态数据', subtitle: '图像、深度与点云', detail: 'RGB-D · 掩码 · 证据关联', icon: Images, tone: 'violet', path: '/data/multimodal' },
-]
+function ago(iso: string | null) {
+  if (!iso) return ''
+  const seconds = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000)
+  if (seconds < 90) return '刚刚'
+  if (seconds < 5400) return `${Math.round(seconds / 60)} 分钟前`
+  if (seconds < 129600) return `${Math.round(seconds / 3600)} 小时前`
+  return `${Math.round(seconds / 86400)} 天前`
+}
 
-const viewTypes: Array<{ title: string; detail: string; icon: Icon; path: string }> = [
-  { title: '本体关系', detail: '实体类型、属性与关系', icon: Network, path: '/ontologies' },
-  { title: '实体记录', detail: '实体类型与来源记录', icon: Database, path: '/ontologies' },
-  { title: '时序记录', detail: '顺序、窗口与时间轴', icon: Timer, path: '/data/temporal' },
-  { title: '证据工作区', detail: '媒体、来源与本体联动', icon: Images, path: '/data/multimodal' },
-  { title: '质量审查', detail: '规则校验与审查留痕', icon: ShieldCheck, path: '/ontologies' },
-]
-
-const cases = [
-  { name: 'FactoryNet CNC', tag: '时序数据', detail: '机器、工序、传感器与时间轴', path: '/data/temporal', icon: Activity, tone: 'bg-teal-50 text-teal-700' },
-  { name: 'I‑BADAS', tag: '多模态数据', detail: '12 组 RGB-D、掩码与点云样例', path: '/data/multimodal', icon: Images, tone: 'bg-violet-50 text-violet-700' },
-]
-
-function toneClasses(tone: string) {
-  return tone === 'blue'
-    ? { icon: 'bg-blue-50 text-blue-700', border: 'hover:border-blue-300' }
-    : tone === 'teal'
-      ? { icon: 'bg-teal-50 text-teal-700', border: 'hover:border-teal-300' }
-      : tone === 'amber'
-        ? { icon: 'bg-amber-50 text-amber-700', border: 'hover:border-amber-300' }
-        : { icon: 'bg-violet-50 text-violet-700', border: 'hover:border-violet-300' }
+function runLine(run: { kind: string; title: string; summary: Record<string, unknown> }) {
+  const s = run.summary
+  if (run.kind === 'health') return `${s.successful_expectations ?? '?'}/${s.evaluated_expectations ?? '?'} 条期望通过`
+  if (run.kind === 'resolution') return `${s.records ?? '?'} → ${s.entities_found ?? '?'} 个实体`
+  return '健康检查 + 实体消歧 + 血缘'
 }
 
 export default function OverviewPage() {
   const navigate = useNavigate()
-  const query = useQuery<DashboardStats>({
-    queryKey: ['dashboard-stats'],
-    queryFn: () => apiClientV2.get<DashboardStats>('/dashboard'),
-  })
-  const data = { ...FALLBACK, ...(query.data ?? {}) }
-  const classCounts = data.data_class_counts ?? FALLBACK.data_class_counts
-  const updated = data.recent_ontologies ?? []
+  const now = useClock()
+  const overview = useQuery({ queryKey: ['platform-overview'], queryFn: analysisApi.overview, refetchInterval: 30000 })
+  const data = overview.data
+  const featured = useMemo<OverviewOntology[]>(() => (data?.ontologies ?? []).filter(o => o.types > 0 && o.objects > 0).sort((a, b) => b.objects - a.objects).slice(0, 5), [data])
+  const [turn, setTurn] = useState(0)
+  const [pinned, setPinned] = useState<string | null>(null)
+  useEffect(() => { const id = setInterval(() => setTurn(t => t + 1), 9000); return () => clearInterval(id) }, [])
+  const current = featured.find(o => o.id === pinned) ?? featured[turn % Math.max(featured.length, 1)] ?? null
+  const graph = useQuery({ queryKey: ['overview-graph', current?.id], queryFn: () => ontologyApi.getGraph(current!.id), enabled: !!current })
 
-  return (
-    <div className="mx-auto max-w-[1540px] space-y-7">
-      <header className="flex items-end justify-between gap-6">
+  const graphOption = useMemo(() => {
+    const nodes = graph.data?.nodes ?? []
+    const edges = graph.data?.edges ?? []
+    const degree = new Map<string, number>()
+    edges.forEach(e => { degree.set(e.data.source, (degree.get(e.data.source) ?? 0) + 1); degree.set(e.data.target, (degree.get(e.data.target) ?? 0) + 1) })
+    return {
+      animationDuration: 1200, tooltip: { backgroundColor: 'rgba(4,10,28,.92)', borderColor: '#22d3ee', textStyle: { color: '#cfeaff' } },
+      series: [{ type: 'graph', layout: 'force', roam: true, draggable: true, force: { repulsion: 640, edgeLength: [120, 230], gravity: 0.06 }, emphasis: { focus: 'adjacency', lineStyle: { width: 3 } },
+        label: { show: true, position: 'right', color: '#e6f6ff', fontSize: 13 }, lineStyle: { color: 'rgba(34,211,238,.5)', width: 1.6, curveness: 0.18 }, edgeSymbol: ['none', 'arrow'], edgeSymbolSize: 6,
+        data: nodes.map((n, i) => ({ id: n.data.id, name: n.data.label, symbolSize: 30 + Math.min(34, (degree.get(n.data.id) ?? 0) * 4.5), itemStyle: { color: NEON[i % NEON.length], shadowBlur: 16, shadowColor: NEON[i % NEON.length] } })),
+        links: edges.map(e => ({ source: e.data.source, target: e.data.target, value: e.data.label ?? '' })) }],
+    }
+  }, [graph.data])
+
+  const barOption = useMemo(() => {
+    const top = [...(data?.ontologies ?? [])].filter(o => o.objects > 0).sort((a, b) => a.objects - b.objects).slice(-7)
+    return {
+      grid: { left: 6, right: 40, top: 4, bottom: 4, containLabel: true }, tooltip: { trigger: 'axis', axisPointer: { type: 'none' }, backgroundColor: 'rgba(4,10,28,.92)', borderColor: '#22d3ee', textStyle: { color: '#cfeaff' } },
+      xAxis: { type: 'value', show: false }, yAxis: { type: 'category', data: top.map(o => (o.name.length > 12 ? `${o.name.slice(0, 11)}…` : o.name)), axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: '#9bc6e8', fontSize: 11 } },
+      series: [{ type: 'bar', data: top.map((o, i) => ({ value: o.objects, itemStyle: { color: { type: 'linear', x: 0, y: 0, x2: 1, y2: 0, colorStops: [{ offset: 0, color: 'rgba(34,211,238,.15)' }, { offset: 1, color: NEON[i % NEON.length] }] }, borderRadius: [0, 6, 6, 0] } })),
+        barWidth: 12, label: { show: true, position: 'right', color: '#cfeaff', fontSize: 11 }, animationDuration: 1400 }],
+    }
+  }, [data])
+
+  const gaugeOption = useMemo(() => ({
+    series: [{ type: 'gauge', startAngle: 215, endAngle: -35, min: 0, max: 100, radius: '92%', progress: { show: true, width: 12, itemStyle: { color: '#34d399', shadowBlur: 14, shadowColor: '#34d399' } },
+      axisLine: { lineStyle: { width: 12, color: [[1, 'rgba(148,163,184,.18)']] } }, axisTick: { show: false }, splitLine: { show: false }, axisLabel: { show: false }, pointer: { show: false },
+      detail: { valueAnimation: true, formatter: '{value}%', color: '#a7f3d0', fontSize: 30, offsetCenter: [0, '8%'] }, title: { color: '#9bc6e8', fontSize: 12, offsetCenter: [0, '58%'] },
+      data: [{ value: data?.health.average ?? 0, name: data?.health.average == null ? '还没有检查记录' : `最近 ${data.health.runs} 次检查的平均通过率` }] }],
+  }), [data])
+
+  const totals = data?.totals
+  const stages = [
+    { label: '数据源', value: totals?.imports ?? 0, icon: Database }, { label: '对象类型', value: totals?.types ?? 0, icon: Layers }, { label: '对象', value: totals?.objects ?? 0, icon: Boxes },
+    { label: '关系类型', value: totals?.link_types ?? 0, icon: Network }, { label: '血缘作业', value: totals?.lineage_jobs ?? 0, icon: GitBranch }, { label: '分析运行', value: totals?.runs ?? 0, icon: Activity },
+  ]
+
+  return <div className="bs-root bs-grid fixed inset-0 z-[100] flex flex-col overflow-auto" data-testid="home-screen">
+    <div className="bs-scan pointer-events-none absolute inset-x-0 top-0 h-24" aria-hidden="true" />
+    <header className="relative z-10 flex items-center justify-between gap-6 px-6 pt-5">
+      <div className="flex items-center gap-4">
+        <img src="/pku-seal.png" alt="" className="h-11 w-11 rounded-full ring-2 ring-cyan-300/40" />
         <div>
-          <p className="wb-eyebrow">工作区总览</p>
-          <h1 className="wb-page-title mt-2">本体构筑工作台</h1>
-          <p className="wb-page-subtitle">选择入口，直接查看本体或开始动态数据演示。</p>
+          <h1 className="bs-glow bg-gradient-to-r from-cyan-200 via-sky-100 to-violet-300 bg-clip-text text-[30px] font-semibold leading-none tracking-[.12em] text-transparent">本体图谱平台</h1>
+          <p className="mt-1.5 text-[11px] tracking-[.32em] text-cyan-200/60">ONTOLOGY GRAPH PLATFORM · 数据 → 本体 → 分析 → 决策</p>
         </div>
-        <button type="button" onClick={() => navigate('/data')} className="wb-button-primary"><ArrowRight size={16} />开始构建</button>
-      </header>
+      </div>
+      <div className="flex items-center gap-5">
+        <div className="text-right"><p className="bs-glow text-2xl font-light tabular-nums text-cyan-200">{now.toLocaleTimeString('zh-CN', { hour12: false })}</p>
+          <p className="text-[11px] tracking-[.2em] text-cyan-200/60">{now.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' })}</p></div>
+        <nav aria-label="快速入口" className="flex gap-2">
+          {[['数据源', '/sources'], ['本体建模', '/ontologies'], ['数据分析', '/analysis/pipeline']].map(([label, path]) => <button key={path} type="button" onClick={() => navigate(path)}
+            className="rounded-lg border border-cyan-300/30 bg-cyan-400/10 px-3.5 py-2 text-sm text-cyan-100 transition hover:bg-cyan-400/25">{label}</button>)}
+          <button type="button" onClick={() => navigate(current ? `/ontologies/${current.id}?tab=overview` : '/ontologies')} className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-cyan-400 to-violet-400 px-4 py-2 text-sm font-medium text-slate-900 shadow-[0_0_18px_rgba(34,211,238,.45)] transition hover:brightness-110">进入工作台<ArrowRight size={15} /></button>
+        </nav>
+      </div>
+    </header>
 
-      <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3" aria-label="数据分类">
-        {dataTypes.map(({ title, subtitle, detail, icon: IconComponent, tone, path, countKey }) => {
-          const colors = toneClasses(tone)
-          return <button key={title} type="button" onClick={() => navigate(path)} className={`group wb-surface flex min-h-[130px] items-start gap-4 p-5 text-left transition hover:-translate-y-0.5 hover:shadow-[0_10px_30px_rgba(15,23,42,.07)] ${colors.border}`}>
-            <span className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ${colors.icon}`}><IconComponent size={21} strokeWidth={1.7} /></span>
-            <span className="min-w-0 flex-1"><span className="block text-base font-semibold tracking-tight">{title}</span><span className="mt-1 block text-xs text-slate-500">{subtitle}</span><span className="mt-3 block truncate text-[11px] text-slate-400">{detail}</span><span className="mt-2 block text-[11px] font-medium text-slate-500">{countKey ? `可用 ${classCounts?.[countKey] ?? 0} 个` : `已登记 ${classCounts?.[tone === 'blue' ? 'regular' : tone === 'teal' ? 'temporal' : 'multimodal'] ?? 0} 个`}</span></span>
-            <ArrowRight size={16} className="mt-1 shrink-0 text-slate-300 transition group-hover:translate-x-0.5 group-hover:text-slate-700" />
-          </button>
-        })}
-      </section>
+    <main className="relative z-10 grid min-h-0 flex-1 grid-cols-[300px_minmax(520px,1fr)_340px] grid-rows-[1fr_auto] gap-4 p-6">
+      <div className="flex min-h-0 flex-col gap-4">
+        <div className="grid grid-cols-2 gap-3">
+          <Kpi label="本体" value={totals?.ontologies ?? 0} icon={Network} accent="#22d3ee" /><Kpi label="对象类型" value={totals?.types ?? 0} icon={Layers} accent="#a78bfa" />
+          <Kpi label="对象" value={totals?.objects ?? 0} icon={Boxes} accent="#fbbf24" /><Kpi label="关系类型" value={totals?.link_types ?? 0} icon={GitBranch} accent="#34d399" />
+        </div>
+        <Panel title="各本体的对象数" className="flex-1"><Chart option={barOption} className="h-full min-h-[220px] w-full" label="各本体的对象数" /></Panel>
+      </div>
 
-      <section className="grid grid-cols-[1.15fr_.85fr] gap-5">
-        <div className="wb-surface p-5">
-          <div className="flex items-start justify-between"><div><p className="wb-eyebrow">案例入口</p><h2 className="mt-1 text-base font-semibold">可直接打开的案例</h2></div><button type="button" onClick={() => navigate('/data')} className="text-xs text-slate-500 hover:text-slate-900">查看全部 <ArrowRight size={13} className="ml-1 inline" /></button></div>
-          <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2">
-            {cases.map(({ name, tag, detail, path, icon: IconComponent, tone }) => <button key={name} type="button" onClick={() => navigate(path)} className="group rounded-xl border border-slate-200 p-4 text-left transition hover:border-slate-400 hover:bg-slate-50"><div className="flex items-center justify-between"><span className={`flex h-8 w-8 items-center justify-center rounded-lg ${tone}`}><IconComponent size={16} strokeWidth={1.8} /></span><ArrowRight size={14} className="text-slate-300 transition group-hover:translate-x-0.5 group-hover:text-slate-700" /></div><p className="mt-4 text-sm font-semibold">{name}</p><p className="mt-1 text-[11px] text-slate-400">{tag}</p><p className="mt-3 text-xs leading-5 text-slate-500">{detail}</p></button>)}
+      <Panel title={current ? `本体图谱 · ${current.name}` : '本体图谱'} className="min-h-[420px]">
+        <div className="flex h-full flex-col">
+          <div className="mb-2 flex flex-wrap items-center gap-2" role="tablist" aria-label="切换本体">
+            {featured.map(o => <button key={o.id} type="button" role="tab" aria-selected={o.id === current?.id} onClick={() => setPinned(o.id)}
+              className={`rounded-full border px-3 py-1 text-xs transition ${o.id === current?.id ? 'border-cyan-300 bg-cyan-400/20 text-cyan-50' : 'border-cyan-300/20 text-cyan-200/70 hover:bg-cyan-400/10'}`}>{o.name.length > 14 ? `${o.name.slice(0, 13)}…` : o.name}</button>)}
+            {current && <span className="ml-auto text-xs text-cyan-200/60">{current.types} 个类型 · {current.objects.toLocaleString('zh-CN')} 个对象 · {current.link_types} 种关系</span>}
           </div>
+          <div className="min-h-0 flex-1">{current ? <Chart option={graphOption} className="h-full min-h-[340px] w-full" label="本体类型关系图" />
+            : <p className="flex h-full items-center justify-center text-sm text-cyan-200/60">还没有带对象的本体：到“数据源”导入一份数据。</p>}</div>
         </div>
+      </Panel>
 
-        <div className="wb-surface p-5">
-          <div className="flex items-start justify-between"><div><p className="wb-eyebrow">可视化能力</p><h2 className="mt-1 text-base font-semibold">构建后可以查看</h2></div><Network size={17} className="text-slate-300" /></div>
-          <div className="mt-4 divide-y divide-slate-100">
-            {viewTypes.map(({ title, detail, icon: IconComponent, path }) => <button key={title} type="button" onClick={() => navigate(path)} className="group flex w-full items-center gap-3 py-2.5 text-left"><span className="flex h-7 w-7 items-center justify-center rounded-md bg-slate-100 text-slate-600"><IconComponent size={14} strokeWidth={1.8} /></span><span className="min-w-0 flex-1"><span className="block text-xs font-medium text-slate-700">{title}</span><span className="mt-0.5 block text-[11px] text-slate-400">{detail}</span></span><ArrowRight size={13} className="text-slate-300 transition group-hover:translate-x-0.5 group-hover:text-slate-700" /></button>)}
-          </div>
-        </div>
-      </section>
+      <div className="flex min-h-0 flex-col gap-4">
+        <Panel title="数据健康"><Chart option={gaugeOption} className="h-[190px] w-full" label="数据健康通过率" /></Panel>
+        <Panel title="最近的分析" className="flex-1">
+          <ul className="space-y-2.5 overflow-auto" data-testid="recent-runs">
+            {(data?.runs ?? []).slice(0, 7).map(run => { const Icon = KIND_ICON[run.kind] ?? Activity
+              return <li key={run.id} className="flex items-start gap-2.5 text-xs"><Icon size={14} className="mt-0.5 shrink-0 text-cyan-300" />
+                <span className="min-w-0 flex-1"><span className="block truncate text-cyan-50" title={run.title}>{run.title}</span><span className="text-cyan-200/60">{KIND_LABEL[run.kind]} · {runLine(run)}</span></span>
+                <span className="shrink-0 text-cyan-200/40">{ago(run.created_at)}</span></li> })}
+            {data && data.runs.length === 0 && <li className="text-xs text-cyan-200/60">还没有分析记录。</li>}
+          </ul>
+        </Panel>
+      </div>
 
-      <section className="grid grid-cols-[1.15fr_.85fr] gap-5">
-        <div className="wb-surface p-5">
-          <div className="flex items-center justify-between"><div><p className="wb-eyebrow">最近本体</p><h2 className="mt-1 text-base font-semibold">最近更新</h2></div><button type="button" onClick={() => navigate('/ontologies')} className="text-xs text-slate-500 hover:text-slate-900">进入本体库 <ArrowRight size={13} className="ml-1 inline" /></button></div>
-          {updated.length === 0 ? <div className="mt-5 flex items-center gap-3 rounded-lg border border-dashed border-slate-200 bg-slate-50 px-4 py-5 text-sm text-slate-500"><Database size={17} className="text-slate-400" />当前没有已保存的本体。</div> : <div className="mt-4 divide-y divide-slate-100">{updated.slice(0, 5).map(item => <button key={item.id} type="button" onClick={() => navigate(`/ontologies/${item.id}`)} className="flex w-full items-center gap-3 py-3 text-left hover:bg-slate-50"><span className="flex-1 truncate text-sm font-medium">{item.name}</span><span className="text-xs text-slate-400">{item.domain || '通用'}</span><StatusBadge status={item.status} /><ArrowRight size={13} className="text-slate-300" /></button>)}</div>}
-        </div>
-        <div className="wb-surface p-5"><div className="flex items-center justify-between"><div><p className="wb-eyebrow">运行状态</p><h2 className="mt-1 text-base font-semibold">当前任务</h2></div><span className="inline-flex items-center gap-1.5 text-xs text-emerald-700"><span className="h-2 w-2 rounded-full bg-emerald-500" />服务在线</span></div><div className="mt-5 grid grid-cols-3 gap-3"><div className="rounded-lg bg-slate-50 p-3"><p className="text-[11px] text-slate-500">数据集</p><p className="mt-2 text-lg font-semibold">{data.dataset_count ?? 0}</p></div><div className="rounded-lg bg-slate-50 p-3"><p className="text-[11px] text-slate-500">任务</p><p className="mt-2 text-lg font-semibold">{data.task_count ?? 0}</p></div><div className="rounded-lg bg-slate-50 p-3"><p className="text-[11px] text-slate-500">待审查</p><p className="mt-2 text-lg font-semibold">{data.review_count ?? 0}</p></div></div><button type="button" onClick={() => navigate('/models')} className="mt-4 flex w-full items-center justify-between rounded-lg border border-slate-200 px-3 py-2.5 text-xs text-slate-600 hover:border-slate-400 hover:text-slate-900">查看模型与审查 <ArrowRight size={13} /></button></div>
+      <section className="bs-panel col-span-3 px-6 py-4" aria-label="数据流向">
+        <ol className="flex items-center gap-3">
+          {stages.map((stage, i) => <Fragment key={stage.label}>
+            <li className="flex w-24 shrink-0 flex-col items-center gap-1 text-center" data-testid={`stage-${stage.label}`}>
+              <span className="flex h-11 w-11 items-center justify-center rounded-full border border-cyan-300/40 bg-cyan-400/10 text-cyan-200 shadow-[0_0_14px_rgba(34,211,238,.25)]"><stage.icon size={18} /></span>
+              <span className="text-sm font-medium tabular-nums text-cyan-50">{stage.value.toLocaleString('zh-CN')}</span><span className="text-[11px] tracking-[.15em] text-cyan-200/60">{stage.label}</span></li>
+            {i < stages.length - 1 && <li role="presentation" className="h-3 min-w-6 flex-1"><svg className="h-3 w-full" viewBox="0 0 100 4" preserveAspectRatio="none" aria-hidden="true"><line x1="0" y1="2" x2="100" y2="2" stroke="#22d3ee" strokeWidth="1.6" className="bs-flow" /></svg></li>}
+          </Fragment>)}
+        </ol>
       </section>
-    </div>
-  )
+    </main>
+  </div>
 }

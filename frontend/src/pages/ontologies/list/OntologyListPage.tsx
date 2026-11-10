@@ -120,7 +120,9 @@ export default function OntologyListPage() {
                 <td className="px-4 py-3">
                   {o.build_mode === 'pipeline_mapping'
                     ? <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-blue-50 border border-blue-200 text-blue-700">数据管道</span>
-                    : <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-amber-50 border border-amber-200 text-amber-700">简易 LLM</span>
+                    : o.build_mode === 'data_import'
+                      ? <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-emerald-50 border border-emerald-200 text-emerald-700">数据导入</span>
+                      : <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-amber-50 border border-amber-200 text-amber-700">简易 LLM</span>
                   }
                 </td>
                 <td className="px-4 py-3 text-gray-500 font-mono text-xs">{o.entity_count ?? 0}</td>

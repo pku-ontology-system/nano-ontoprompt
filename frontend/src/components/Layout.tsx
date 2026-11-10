@@ -20,6 +20,9 @@ import {
 
 const LOCAL_SINGLE_USER = import.meta.env.VITE_AUTH_MODE === 'local_single_user'
 
+/** Pages that pick their own ontology (or make a new one): the "pick a current ontology" nudge is no use there. */
+const worksWithoutCurrentOntology = (pathname: string) => pathname === '/sources' || pathname === '/ontologies' || pathname === '/overview' || pathname.startsWith('/analysis')
+
 export default function Layout({ children }: { children: React.ReactNode }) {
   const logout = useAuthStore(s => s.logout)
   const navigate = useNavigate()
@@ -61,7 +64,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         <div className={`flex h-[60px] shrink-0 items-center border-b border-white/10 ${collapsed ? 'justify-center px-3' : 'justify-between px-5'}`}>
           <Link to="/overview" className="flex min-w-0 items-center gap-3" aria-label="返回首页">
             <span className="pku-brand-mark" aria-hidden="true"><img src="/pku-seal.png" alt="" /></span>
-            {!collapsed && <span className="truncate text-[15px] font-semibold tracking-[.02em]">本体构筑工作台</span>}
+            {!collapsed && <span className="truncate text-[15px] font-semibold tracking-[.02em]">本体图谱平台</span>}
           </Link>
         </div>
 
@@ -109,7 +112,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             {items.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
           </select>
           {current && <span className="hidden truncate text-xs text-slate-400 lg:inline">{current.entity_count} 个对象类型 · {current.relation_count} 个关系</span>}
-          {ontologies.data && !current && <span className="truncate text-xs text-amber-700">左侧多数功能都在某个本体里工作，请先选一个。</span>}
+          {ontologies.data && !current && !worksWithoutCurrentOntology(location.pathname) && <span className="truncate text-xs text-amber-700">左侧多数功能都在某个本体里工作，请先选一个。</span>}
           {ontologies.error && <span role="alert" className="truncate text-xs text-red-700">本体目录读取失败</span>}
           <Link to="/ontologies" className="ml-auto shrink-0 text-xs text-slate-500 hover:text-slate-900">管理本体库</Link>
         </header>
