@@ -78,9 +78,9 @@ function UploadPanel({ onStart, busy }: { onStart: (job: ImportJob) => void; bus
     {preview && <div className="mt-4 space-y-3" data-testid="upload-preview">
       <div className="grid gap-3 md:grid-cols-2">
         {preview.preview.tables.map(t => <div key={t.name} className="rounded-lg border border-slate-200 p-3 text-sm">
-          <p className="font-medium text-slate-900">{t.name} <span className="ml-1 text-xs font-normal text-slate-500">→ 对象类型 {t.type_name} · {num(t.rows)} 行 · {t.columns.length} 列</span></p>
-          <p className="mt-1 text-xs text-slate-500">{t.kind === 'asset' ? '文件资产' : t.primary_key.length ? `主键 ${t.primary_key.join(' + ')}` : '没有找到唯一的键，按行号编号'}</p>
-          <p className="mt-1 truncate font-mono text-[11px] text-slate-500" title={t.columns.map(c => `${c.name}:${c.type}`).join(', ')}>{t.columns.slice(0, 8).map(c => c.name).join(', ')}{t.columns.length > 8 ? ' …' : ''}</p>
+          <p className="font-medium text-slate-900">{t.label || t.name} <span className="ml-1 text-xs font-normal text-slate-500">→ 对象类型 {t.type_name} · {num(t.rows)} 行 · {t.columns.length} 列</span></p>
+          <p className="mt-1 text-xs text-slate-500">{t.kind === 'asset' ? '文件资产' : t.primary_key.length ? `主键 ${t.primary_key.map(k => t.columns.find(c => c.name === k)?.label || k).join(' + ')}` : '没有找到唯一的键，按行号编号'}</p>
+          <p className="mt-1 truncate text-[11px] text-slate-500" title={t.columns.map(c => `${c.label || c.name}（${c.name}）:${c.type}`).join('，')}>{t.columns.slice(0, 8).map(c => c.label || c.name).join('，')}{t.columns.length > 8 ? ' …' : ''}</p>
         </div>)}
       </div>
       {Object.keys(preview.preview.assets).length > 0 && <p className="text-sm text-slate-700">文件资产：{Object.entries(preview.preview.assets).map(([k, v]) => `${MEDIA_LABEL[k] ?? k} ${v} 个`).join('，')}</p>}

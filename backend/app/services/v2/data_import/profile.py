@@ -20,6 +20,7 @@ from app.services.v2.data_import.model import Bundle, Link, Table, snake
 ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 ISO_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}")
 MIN_COVERAGE = 0.95
+KEY_LABEL = r"(编号|编码|代码|序号|标识|主键)$|(^|[\s_\-])(id|key|code|no|number)$"
 MIN_DISTINCT = 2
 
 
@@ -103,6 +104,9 @@ def infer_primary_key(table: Table) -> list[str]:
                 return [column]
     for column in usable:
         if re.search(r"(^|_)(id|key|code|no|number)$", str(column).lower()) or str(column).lower().endswith(("key", "id")):
+            return [column]
+    for column in usable:  # the header as it was written: "客户编号" has no Latin letters to go by, but it says what it is
+        if re.search(KEY_LABEL, str(table.column_labels.get(column, "")).strip().lower()):
             return [column]
     return []
 

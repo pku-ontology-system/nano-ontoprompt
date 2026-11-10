@@ -1,6 +1,7 @@
 """What an import is made of: sources, tables (read or derived), links between them, and an optional replay of an event table."""
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass, field
 
@@ -88,8 +89,16 @@ class Bundle:
 
 
 def snake(text: str) -> str:
-    text = re.sub(r"[^0-9A-Za-z]+", "_", str(text).strip()).strip("_").lower()
-    return text if text and not text[0].isdigit() else f"t_{text}"
+    """An identifier (the property or table id) for a header or file name. Latin letters and digits are kept; a name that also has letters of another script
+    (a Chinese header, say) gets six hex digits of its own hash after them, so it is the same on every import of the same file and different from its neighbours
+    ("订单 ID" and "客户 ID" are not both just "id"). The original text stays as the label."""
+    raw = str(text).strip()
+    plain = re.sub(r"[^0-9A-Za-z]+", "_", raw).strip("_").lower()
+    if any(ch.isalpha() and not ch.isascii() for ch in raw):
+        return f"{plain or 'x'}_{hashlib.sha1(raw.encode('utf-8')).hexdigest()[:6]}"
+    if not plain:
+        return "x"
+    return plain if not plain[0].isdigit() else f"t_{plain}"
 
 
 def pascal(text: str) -> str:

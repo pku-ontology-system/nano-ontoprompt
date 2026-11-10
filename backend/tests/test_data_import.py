@@ -14,7 +14,7 @@ from app.models.entity_instance import EntityInstance
 from app.models.ontology import OntologyProject
 from app.services.v2.analysis import lineage, ontology_lineage, ontology_metadata
 from app.services.v2.data_import import catalog, duck, install, profile, runner, schema, uploads
-from app.services.v2.data_import.model import Bundle, Derived, Link, Source, Table
+from app.services.v2.data_import.model import Bundle, Derived, Link, Source, Table, snake
 
 
 class Recorder:
@@ -221,3 +221,24 @@ def test_media_files_of_any_kind_become_asset_objects():
     assert any(t.kind == "entity" and t.name == "people" for t in bundle.tables)
     preview = uploads.preview(bundle)
     assert preview["tables"] and preview["assets"].get("image") == 1 and preview["assets"].get("audio") == 1
+
+
+def test_chinese_files_and_headers_keep_their_names_and_get_stable_unique_identifiers(db, admin_user, graph):
+    customers = "客户编号,姓名,城市\n1,张三,北京\n2,李四,上海\n3,王五,北京\n".encode("gb18030")
+    orders = "订单编号,客户编号,金额\n10,1,10.5\n11,1,20\n12,2,7.25\n13,3,99\n".encode("gb18030")
+    files = [("客户.csv", customers), ("订单.csv", orders)]
+    bundle = uploads.build("u2", "客户与订单", "客户与订单（测试）", files, None)
+    again = uploads.build("u2", "客户与订单", "客户与订单（测试）", files, None)
+    assert [t.name for t in bundle.tables] == [t.name for t in again.tables], "the same files give the same identifiers, which a later step of an import relies on"
+    names = [t.name for t in bundle.tables] + [c for t in bundle.tables for c in t.frame.columns]
+    assert all(n.isascii() for n in names) and len({t.name for t in bundle.tables}) == 2
+    assert len(set(bundle.tables[0].frame.columns)) == 3, "three Chinese headers are three different identifiers"
+    assert snake("订单 ID") != snake("客户 ID") and snake("订单 ID").startswith("id_")
+    profile.finalize(bundle)
+    customer = next(t for t in bundle.tables if t.label == "客户")
+    assert customer.column_labels[customer.primary_key[0]] == "客户编号", "a key is found by what its header says, not only by Latin letters"
+    assert any(l.source_table != customer.name and l.target_table == customer.name for l in bundle.links), "the same header in two files links them"
+    result = runner.run(db, admin_user, lambda: bundle, replace=False)
+    assert result["objects"] == 7 and result["link_instances"] == 4
+    entities = ontology_metadata.type_entities(db, result["ontology_id"])
+    assert {e.name_cn for e in entities.values()} == {"客户", "订单"}, "the types are shown by the file names as written"
