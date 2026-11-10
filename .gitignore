@@ -80,7 +80,7 @@ docs/plans/*
 !docs/plans/PROJECT4_PLAN_READING_GUIDE_2026_10_24.md
 !docs/guides/
 docs/guides/*
-# （当前无共享的 guides；新增时在此放行）
+!docs/guides/ANALYSIS_USER_GUIDE.md
 !docs/research/
 docs/research/*
 !docs/research/README.md
