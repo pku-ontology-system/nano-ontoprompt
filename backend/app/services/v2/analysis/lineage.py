@@ -110,6 +110,14 @@ def _node_id(kind: str, namespace: str, name: str) -> str:
     return f"{kind}:{namespace}:{name}"
 
 
+def _custom(facets: dict, name: str) -> dict | None:
+    """A facet's own fields, without the producer and schema bookkeeping."""
+    body = facets.get(name)
+    if not isinstance(body, dict):
+        return None
+    return {k: v for k, v in body.items() if not k.startswith("_")} or None
+
+
 def _quality(facets: dict) -> dict | None:
     assertions = (facets.get("dataQualityAssertions") or {}).get("assertions")
     metrics = facets.get("dataQualityMetrics")
@@ -131,9 +139,11 @@ def build_graph(events: list[LineageEvent]) -> dict:
     for event in sorted(events, key=lambda e: (e.event_time, e.created_at or e.event_time)):
         payload = event.payload or {}
         key = (event.job_namespace, event.job_name)
-        job = jobs.setdefault(key, {"runs": {}, "inputs": [], "outputs": [], "io_final": False, "facets": {}})
+        job = jobs.setdefault(key, {"runs": {}, "inputs": [], "outputs": [], "io_final": False, "facets": {}, "run_facets": {}})
         run = job["runs"].setdefault(event.run_id, {"run_id": event.run_id, "started": None, "ended": None, "state": "RUNNING", "facets": {}})
         run["facets"].update((payload.get("run") or {}).get("facets") or {})
+        if event.event_type in FINAL:
+            job["run_facets"] = {k: _custom(run["facets"], k) for k in run["facets"] if _custom(run["facets"], k)}
         job["facets"].update((payload.get("job") or {}).get("facets") or {})
         if event.event_type == "START":
             run["started"] = event.event_time
@@ -163,6 +173,8 @@ def build_graph(events: list[LineageEvent]) -> dict:
             "id": _node_id("job", namespace, name), "kind": "job", "namespace": namespace, "name": name, "label": name, "status": state, "run_count": len(runs),
             "last_run_at": (latest["ended"] or latest["started"]).isoformat() if latest and (latest["ended"] or latest["started"]) else None, "last_duration_seconds": duration,
             "sql": (job["facets"].get("sql") or {}).get("query"), "description": (job["facets"].get("documentation") or {}).get("description"),
+            "layer": (_custom(job["facets"], "workbenchLayer") or {}).get("layer"), "ref": _custom(job["facets"], "workbenchRef"),
+            "run_facets": job["run_facets"] or None,
             "runs": [{"run_id": r["run_id"], "state": r["state"], "started_at": r["started"].isoformat() if r["started"] else None,
                       "ended_at": r["ended"].isoformat() if r["ended"] else None} for r in reversed(runs[-10:])],
         })
@@ -179,12 +191,21 @@ def build_graph(events: list[LineageEvent]) -> dict:
             "description": (facets.get("documentation") or {}).get("description"), "fields": [{"name": f.get("name"), "type": f.get("type"), "description": f.get("description")}
                                                                                            for f in (facets.get("schema") or {}).get("fields", []) if isinstance(f, dict)],
             "source": (facets.get("dataSource") or {}).get("name"), "updated_at": ds["updated"].isoformat() if ds["updated"] else None, "quality": _quality(facets),
+            "layer": (_custom(facets, "workbenchLayer") or {}).get("layer"), "ref": _custom(facets, "workbenchRef"),
             "column_lineage": {col: [f"{i.get('name')}.{i.get('field')}" for i in (spec.get("inputFields") or [])]
                                for col, spec in ((facets.get("columnLineage") or {}).get("fields") or {}).items()} or None,
         })
     nodes.sort(key=lambda n: (n["kind"], n["namespace"], n["name"]))
     unique_edges = {(e["source"], e["target"]): e for e in edges}
-    return {"nodes": nodes, "edges": sorted(unique_edges.values(), key=lambda e: (e["source"], e["target"])),
+    column_edges = []
+    for (namespace, name), ds in datasets.items():
+        for column, spec in ((ds["facets"].get("columnLineage") or {}).get("fields") or {}).items():
+            for item in spec.get("inputFields") or []:
+                column_edges.append({"from": {"dataset": _node_id("dataset", item.get("namespace"), item.get("name")), "field": item.get("field")},
+                                     "to": {"dataset": _node_id("dataset", namespace, name), "field": column},
+                                     "transformation": spec.get("transformationDescription")})
+    column_edges.sort(key=lambda e: (e["from"]["dataset"], e["from"]["field"] or "", e["to"]["dataset"], e["to"]["field"]))
+    return {"nodes": nodes, "edges": sorted(unique_edges.values(), key=lambda e: (e["source"], e["target"])), "column_edges": column_edges,
             "namespaces": sorted({n["namespace"] for n in nodes})}
 
 
@@ -225,6 +246,7 @@ def subgraph(graph: dict, node_id: str, *, depth: int = 3, direction: str = "bot
     if direction in ("both", "upstream"):
         keep |= set(_walk(node_id, up, depth))
     return {"nodes": [n for n in graph["nodes"] if n["id"] in keep], "edges": [e for e in graph["edges"] if e["source"] in keep and e["target"] in keep],
+            "column_edges": [e for e in graph.get("column_edges", []) if e["from"]["dataset"] in keep and e["to"]["dataset"] in keep],
             "namespaces": graph["namespaces"], "focus": node_id}
 
 
@@ -244,13 +266,58 @@ def impact(graph: dict, node_id: str) -> dict:
             "upstream_count": len(upstream)}
 
 
-def graph_from_db(db: Session, *, namespace: str | None = None) -> dict:
+def column_impact(graph: dict, dataset_id: str, field: str) -> dict:
+    """What a change to one column of one dataset reaches: the columns derived from it, the jobs that derive them, nearest first.
+
+    Column lineage is only as complete as the producers made it. A column that no job lists as an input has no downstream here, which says
+    nothing about the table as a whole (`impact` follows that)."""
+    index = {n["id"]: n for n in graph["nodes"]}
+    if dataset_id not in index or index[dataset_id]["kind"] != "dataset":
+        raise LineageError(f"unknown dataset '{dataset_id}'")
+    forward: dict[tuple[str, str], list[dict]] = {}
+    for edge in graph.get("column_edges", []):
+        forward.setdefault((edge["from"]["dataset"], edge["from"]["field"]), []).append(edge)
+    down, up = _neighbours(graph)
+    seen: dict[tuple[str, str], int] = {(dataset_id, field): 0}
+    via: dict[tuple[str, str], dict] = {}
+    queue = deque([(dataset_id, field)])
+    while queue:
+        key = queue.popleft()
+        for edge in forward.get(key, []):
+            target = (edge["to"]["dataset"], edge["to"]["field"])
+            if target not in seen:
+                seen[target] = seen[key] + 1
+                via[target] = {"from": key, "transformation": edge.get("transformation")}
+                queue.append(target)
+    columns, jobs = [], {}
+    for (ds, column), distance in sorted(seen.items(), key=lambda kv: (kv[1], kv[0])):
+        if distance == 0:
+            continue
+        node = index.get(ds, {})
+        origin = via[(ds, column)]
+        columns.append({"dataset": ds, "label": node.get("label"), "namespace": node.get("namespace"), "layer": node.get("layer"), "ref": node.get("ref"), "field": column,
+                        "distance": distance, "derived_from": {"dataset": origin["from"][0], "field": origin["from"][1]}, "transformation": origin["transformation"]})
+        for job_id in set(down.get(origin["from"][0], [])) & set(up.get(ds, [])):
+            job = index.get(job_id, {})
+            jobs.setdefault(job_id, {"id": job_id, "label": job.get("label"), "layer": job.get("layer"), "ref": job.get("ref"), "distance": distance, "description": job.get("description")})
+    return {"node": dataset_id, "field": field, "columns": columns, "jobs": sorted(jobs.values(), key=lambda j: (j["distance"], j["id"])),
+            "has_column_lineage": bool(graph.get("column_edges")), "layers": sorted({c["layer"] for c in columns if c["layer"]})}
+
+
+def graph_from_db(db: Session, *, namespace: str | None = None, source: str | None = None, exclude_source_prefix: str | None = None) -> dict:
     query = db.query(LineageEvent)
+    if source:
+        query = query.filter(LineageEvent.source == source)
+    if exclude_source_prefix:
+        query = query.filter(~LineageEvent.source.startswith(exclude_source_prefix))
     if namespace:
         query = query.filter(LineageEvent.job_namespace == namespace)
     graph = build_graph(query.all())
     if namespace:
-        graph["namespaces"] = sorted({n for (n,) in db.query(LineageEvent.job_namespace).distinct().all()})
+        names = db.query(LineageEvent.job_namespace).distinct()
+        if exclude_source_prefix:
+            names = names.filter(~LineageEvent.source.startswith(exclude_source_prefix))
+        graph["namespaces"] = sorted({n for (n,) in names.all()})
     graph["event_count"] = query.count()
     return graph
 

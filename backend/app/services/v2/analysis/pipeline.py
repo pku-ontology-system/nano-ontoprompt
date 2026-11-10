@@ -13,12 +13,10 @@ from typing import Any
 import pandas as pd
 from sqlalchemy.orm import Session
 
-from app.services.v2.analysis import demos, health, lineage, resolution
+from app.services.v2.analysis import demos, health, lineage, openlineage, resolution
 
 NAMESPACE = "workbench"
 PRODUCER = "urn:workbench:analysis-pipeline"
-FACET_URL = "https://openlineage.io/spec/facets/1-0-0/{}.json"
-WORKBENCH_FACET_URL = "urn:workbench:facet:{}"
 
 
 def _slug(dataset_id: str) -> str:
@@ -28,7 +26,7 @@ def _slug(dataset_id: str) -> str:
 
 
 def _facet(schema: str, body: dict[str, Any], *, custom: bool = False) -> dict[str, Any]:
-    return {"_producer": PRODUCER, "_schemaURL": (WORKBENCH_FACET_URL if custom else FACET_URL).format(schema), **body}
+    return openlineage.facet(schema, body, custom=custom, producer=PRODUCER)
 
 
 def _sql_type(dtype: Any) -> str:
@@ -43,23 +41,11 @@ def _sql_type(dtype: Any) -> str:
     return "VARCHAR"
 
 
-def _stamp(moment: datetime) -> str:
-    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+def _event(kind: str, job: str, run_id: str, when: datetime, **kwargs: Any) -> dict[str, Any]:
+    return openlineage.event(kind, NAMESPACE, job, run_id, when, producer=PRODUCER, **kwargs)
 
 
-def _event(kind: str, job: str, run_id: str, when: datetime, *, inputs: list | None = None, outputs: list | None = None,
-           run_facets: dict | None = None, job_facets: dict | None = None) -> dict[str, Any]:
-    return {"eventType": kind, "eventTime": _stamp(when), "run": {"runId": run_id, "facets": run_facets or {}},
-            "job": {"namespace": NAMESPACE, "name": job, "facets": job_facets or {}}, "inputs": inputs or [], "outputs": outputs or [], "producer": PRODUCER}
-
-
-def _assertions(report: dict) -> list[dict]:
-    out = []
-    for result in report["results"]:
-        kwargs = result["kwargs"]
-        column = kwargs.get("column") or (", ".join(kwargs["column_list"]) if kwargs.get("column_list") else None)
-        out.append({"assertion": result["expectation_type"], "success": bool(result["success"]), "column": column})
-    return out
+_assertions = openlineage.assertions
 
 
 def _column_metrics(frame: pd.DataFrame) -> dict[str, Any]:

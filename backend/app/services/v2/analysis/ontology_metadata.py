@@ -49,7 +49,8 @@ def candidate_evidence(db: Session, ontology_id: str) -> dict[str, dict]:
         if name and name not in out:
             evidence = item.evidence or {}
             out[name] = {"source_table": evidence.get("source_table"), "primary_key": list(evidence.get("primary_key") or []), "columns": evidence.get("columns") or [],
-                         "set_id": candidate_set.id, "set_title": candidate_set.title, "generator": candidate_set.generator or {}, "item_id": item.id}
+                         "set_id": candidate_set.id, "set_title": candidate_set.title, "generator": candidate_set.generator or {}, "item_id": item.id,
+                         "created_at": candidate_set.published_at or candidate_set.created_at}
     return out
 
 

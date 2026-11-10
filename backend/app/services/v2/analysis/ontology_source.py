@@ -79,7 +79,10 @@ def load_objects(db: Any, user: Any, graph_service: Any, ontology_id: str, objec
     objects, info = list(first.objects), {"object_type": object_type, "snapshot": False, "truncated": False}
     if first.page.has_more:
         view = module.create_data_view(ontology_id, QueryDataViewCreate(source_ontology_id=ontology_id, source_manifest_digest=f"analysis:{object_type}", retention_seconds=3600), db, user, graph_service)
-        context = {"ontology_id": ontology_id, "consistency": "snapshot", "data_view_id": view.view_id}
+        view_id, status = (view["view_id"], view.get("status")) if isinstance(view, dict) else (view.view_id, getattr(view, "status", None))
+        if status not in (None, "ready"):
+            raise OntologySourceError(f"the snapshot of {object_type} is {status}, so more than one page of objects cannot be read yet")
+        context = {"ontology_id": ontology_id, "consistency": "snapshot", "data_view_id": view_id}
         objects, token = [], None
         while True:
             read = {"page_size": PAGE, **({"page_token": token} if token else {})}
@@ -91,7 +94,7 @@ def load_objects(db: Any, user: Any, graph_service: Any, ontology_id: str, objec
                 info["truncated"] = True
                 break
             token = page.page.next_page_token
-        info.update(snapshot=True, data_view_id=view.view_id)
+        info.update(snapshot=True, data_view_id=view_id)
     return objects[:limit], info
 
 
