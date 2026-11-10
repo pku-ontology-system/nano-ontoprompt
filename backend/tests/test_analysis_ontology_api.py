@@ -213,3 +213,20 @@ def test_lineage_of_an_ontology_is_written_from_what_the_platform_recorded(clien
     general = client.get(f"{BASE}/lineage/graph", headers=auth_headers).json()
     assert general["nodes"] == [] and general["namespaces"] == [], "the general lineage views do not serve an ontology's private lineage"
     assert client.get(f"{BASE}/lineage/impact", params={"node": source}, headers=auth_headers).status_code == 404
+
+
+def test_one_type_goes_through_all_three_and_its_lineage_is_rewritten(client, auth_headers, ontology, db, admin_user, objects):
+    oid, url = ontology["id"], f"{BASE}/ontologies/{ontology['id']}"
+    publish_person_build(db, admin_user, oid)
+    run = client.post(f"{url}/pipeline/run", headers=auth_headers, json={"object_type": "Person"}).json()
+    assert run["kind"] == "pipeline" and run["dataset_id"] == f"ontology:{oid}:Person"
+    steps = {s["key"]: s for s in run["result"]["steps"]}
+    assert steps["ingest"]["summary"] == {"rows": len(objects), "columns": 7} and steps["validate"]["summary"]["evaluated_expectations"] > 5
+    assert steps["resolve"]["summary"]["records"] == len(objects) and steps["resolve"]["summary"]["f1"] > 0.5
+    ns = run["result"]["lineage"]["namespace"]
+    assert steps["validate"]["node"] == f"job:{ns}:validate.Person" and run["result"]["lineage"]["focus"] == f"dataset:{ns}:Person"
+    graph = client.get(f"{url}/lineage/graph", params={"node": run["result"]["lineage"]["focus"], "depth": 1}, headers=auth_headers).json()
+    assert {"validate.Person", "resolve.Person", "rule.not_london"} <= {n["name"] for n in graph["nodes"]}, "the two runs hang off the type"
+    runs = {r["kind"]: r for r in client.get(f"{BASE}/runs?dataset_id=ontology:{oid}:Person", headers=auth_headers).json()["runs"]}
+    assert set(runs) == {"health", "resolution", "pipeline"} and run["result"]["runs"] == {"health": runs["health"]["id"], "resolution": runs["resolution"]["id"]}
+    assert client.post(f"{url}/pipeline/run", headers=auth_headers, json={"object_type": "Nope"}).status_code == 404

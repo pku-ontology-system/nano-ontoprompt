@@ -35,9 +35,10 @@ def _references(db: Any, user: Any, graph: Any, ontology_id: str, object_type: s
     return out
 
 
-def suite_for(db: Any, user: Any, graph: Any, ontology_id: str, object_type: str, *, baseline: bool = False) -> tuple[dict, pd.DataFrame, dict]:
-    """(suite, the objects as a table, how they were read). The baseline, when asked for, is added after the ontology's own expectations."""
-    frame, description, info = ontology_source.load_frame(db, user, graph, ontology_id, object_type)
+def suite_for(db: Any, user: Any, graph: Any, ontology_id: str, object_type: str, *, baseline: bool = False, loaded: tuple | None = None) -> tuple[dict, pd.DataFrame, dict]:
+    """(suite, the objects as a table, how they were read). The baseline, when asked for, is added after the ontology's own expectations.
+    `loaded` is a read already made ((frame, description, info)), so one run judges and groups the same objects."""
+    frame, description, info = loaded or ontology_source.load_frame(db, user, graph, ontology_id, object_type)
     entity = ontology_metadata.type_entities(db, ontology_id).get(object_type)
     evidence = ontology_metadata.candidate_evidence(db, ontology_id).get(object_type, {})
     columns = [p["api_name"] for p in description["properties"]]

@@ -168,19 +168,24 @@ def ontology_suite(ontology_id: str, object_type: str, baseline: bool = False, d
     return {"suite": suite, "read": info, "expectation_types": sorted(health.EXPECTATIONS)}
 
 
-@router.post("/ontologies/{ontology_id}/health/run")
-def run_ontology_health(ontology_id: str, body: OntologyHealthInput, db: Session = Depends(get_db), user: User = Depends(require_editor), graph=Depends(get_falkordb)):
-    try:
-        with Busy():
-            suite, frame, info = ontology_analysis.suite_for(db, user, graph, ontology_id, body.object_type, baseline=body.baseline)
-            suite = body.suite or suite
-            report = ontology_analysis.run_health(frame, suite, dataset=ontology_analysis.dataset_id(ontology_id, body.object_type))
-    except KNOWN as error:
-        raise translate(error) from error
+def execute_ontology_health(db: Session, user: User, graph: Any, ontology_id: str, body: OntologyHealthInput, loaded: tuple | None = None) -> tuple[AnalysisRun, dict]:
+    suite, frame, info = ontology_analysis.suite_for(db, user, graph, ontology_id, body.object_type, baseline=body.baseline, loaded=loaded)
+    suite = body.suite or suite
+    report = ontology_analysis.run_health(frame, suite, dataset=ontology_analysis.dataset_id(ontology_id, body.object_type))
     report["source"] = {"kind": "ontology", "ontology_id": ontology_id, "object_type": body.object_type, "read": info}
     summary = {**report["statistics"], "object_count": report["meta"]["object_count"]}
     params = {"ontology_id": ontology_id, "object_type": body.object_type, "custom_suite": body.suite is not None, "baseline": body.baseline}
     row = store(db, user, "health", ontology_analysis.dataset_id(ontology_id, body.object_type), f"{body.object_type} · 数据健康（本体）", params, summary, report)
+    return row, {"frame": frame, "info": info}
+
+
+@router.post("/ontologies/{ontology_id}/health/run")
+def run_ontology_health(ontology_id: str, body: OntologyHealthInput, db: Session = Depends(get_db), user: User = Depends(require_editor), graph=Depends(get_falkordb)):
+    try:
+        with Busy():
+            row, _ = execute_ontology_health(db, user, graph, ontology_id, body)
+    except KNOWN as error:
+        raise translate(error) from error
     return run_payload(row)
 
 
@@ -230,20 +235,23 @@ def ontology_resolution_preset(ontology_id: str, object_type: str, ground_truth:
         raise translate(error) from error
 
 
+def execute_ontology_resolution(db: Session, user: User, graph: Any, ontology_id: str, body: OntologyResolutionInput, loaded: tuple | None = None) -> AnalysisRun:
+    frame, description, info = loaded or ontology_source.load_frame(db, user, graph, ontology_id, body.object_type)
+    drafted = None if body.settings else ontology_resolution.suggest(frame, description, ground_truth=body.ground_truth)
+    result = ontology_resolution.run(frame, body.settings or drafted["settings"])
+    result["source"] = {"kind": "ontology", "ontology_id": ontology_id, "object_type": body.object_type, "read": info, "notes": drafted["notes"] if drafted else []}
+    summary = {**result["summary"], **{k: result["evaluation"][k] for k in ("precision", "recall", "f1")}} if result["evaluation"] else dict(result["summary"])
+    params = {"ontology_id": ontology_id, "object_type": body.object_type, "custom_settings": body.settings is not None}
+    return store(db, user, "resolution", ontology_analysis.dataset_id(ontology_id, body.object_type), f"{body.object_type} · 实体消歧（本体）", params, summary, result)
+
+
 @router.post("/ontologies/{ontology_id}/resolution/run")
 def run_ontology_resolution(ontology_id: str, body: OntologyResolutionInput, db: Session = Depends(get_db), user: User = Depends(require_editor), graph=Depends(get_falkordb)):
     try:
         with Busy():
-            frame, description, info = ontology_source.load_frame(db, user, graph, ontology_id, body.object_type)
-            drafted = None if body.settings else ontology_resolution.suggest(frame, description, ground_truth=body.ground_truth)
-            settings = body.settings or drafted["settings"]
-            result = ontology_resolution.run(frame, settings)
+            row = execute_ontology_resolution(db, user, graph, ontology_id, body)
     except KNOWN as error:
         raise translate(error) from error
-    result["source"] = {"kind": "ontology", "ontology_id": ontology_id, "object_type": body.object_type, "read": info, "notes": drafted["notes"] if drafted else []}
-    summary = {**result["summary"], **{k: result["evaluation"][k] for k in ("precision", "recall", "f1")}} if result["evaluation"] else dict(result["summary"])
-    params = {"ontology_id": ontology_id, "object_type": body.object_type, "custom_settings": body.settings is not None}
-    row = store(db, user, "resolution", ontology_analysis.dataset_id(ontology_id, body.object_type), f"{body.object_type} · 实体消歧（本体）", params, summary, result)
     return run_payload(row)
 
 
@@ -341,6 +349,40 @@ def ontology_lineage_impact(ontology_id: str, node: str, field: str | None = Non
 
 
 # ---- all three on one dataset ----------------------------------------------------------------------------------------
+
+class OntologyPipelineInput(BaseModel):
+    object_type: str = Field(min_length=1, max_length=120)
+
+
+@router.post("/ontologies/{ontology_id}/pipeline/run")
+def run_ontology_pipeline(ontology_id: str, body: OntologyPipelineInput, db: Session = Depends(get_db), user: User = Depends(require_editor), graph=Depends(get_falkordb)):
+    """One object type through all three: its objects are checked against what the ontology promises, grouped by entity resolution, and the lineage
+    of the ontology is rewritten so the two runs hang off the type they were made on."""
+    scope(db, ontology_id, user)
+    try:
+        with Busy():
+            frame, description, info = ontology_source.load_frame(db, user, graph, ontology_id, body.object_type)
+            health_row, _ = execute_ontology_health(db, user, graph, ontology_id, OntologyHealthInput(object_type=body.object_type), loaded=(frame, description, info))
+            resolution_row = execute_ontology_resolution(db, user, graph, ontology_id, OntologyResolutionInput(object_type=body.object_type), loaded=(frame, description, info))
+            written = ontology_lineage.generate(db, user, ontology_id)
+    except KNOWN as error:
+        db.rollback()
+        raise translate(error) from error
+    ns = written["namespace"]
+    report, result = health_row.result, resolution_row.result
+    evaluation = {k: result["evaluation"][k] for k in ("precision", "recall", "f1")} if result["evaluation"] else {}
+    steps = [{"key": "ingest", "title": "读取对象", "node": f"dataset:{ns}:{body.object_type}", "summary": {"rows": int(len(frame)), "columns": len(description["properties"])}},
+             {"key": "validate", "title": "数据健康检查", "node": f"job:{ns}:validate.{body.object_type}", "summary": {**report["statistics"], "success": report["success"], "suite": report["meta"].get("suite_name")}},
+             {"key": "resolve", "title": "实体消歧", "node": f"job:{ns}:resolve.{body.object_type}",
+              "summary": {**{k: result["summary"][k] for k in ("records", "candidate_pairs", "entities_found")}, **evaluation}}]
+    outcome = {"dataset_id": ontology_analysis.dataset_id(ontology_id, body.object_type), "title": f"{body.object_type}（本体）", "sha256": None,
+               "source": {"kind": "ontology", "ontology_id": ontology_id, "object_type": body.object_type, "read": info}, "steps": steps, "health": report, "resolution": result,
+               "runs": {"health": health_row.id, "resolution": resolution_row.id},
+               "lineage": {"namespace": ns, "focus": f"dataset:{ns}:{body.object_type}", "events": written["events"], "ontology_id": ontology_id}}
+    row = store(db, user, "pipeline", outcome["dataset_id"], f"{body.object_type} · 流水线（本体）", {"ontology_id": ontology_id, "object_type": body.object_type},
+                {s["key"]: s["summary"] for s in steps}, outcome)
+    return run_payload(row)
+
 
 @router.post("/pipeline/run")
 def run_pipeline(body: PipelineRunInput, db: Session = Depends(get_db), user: User = Depends(require_editor)):
