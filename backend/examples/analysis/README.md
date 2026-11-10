@@ -24,3 +24,7 @@
 - 出租车样例：23 条期望里 8 条不通过，每条的“不符合的行数”都固定在测试里（`backend/tests/test_analysis_demos.py`）。
 
 这些数字是这套重写在这些数据上跑出来的，不是 Splink 或 Great Expectations 官方的结果；没有拿原项目对拍过。
+
+## 在平台本体上用同一份数据
+
+`backend/scripts/seed_person_master_demo.py` 把 `fake_1000.csv` 装成一个本体“人员主数据（Splink 演示）”：表结构按 Auto Ontology 的交换格式写出，经候选审阅发布成 `Person` 类型，1000 条记录装成 `Person` 对象，类型定义里加了一条邮箱格式约束（平台还没有属性约束的编辑界面）。数据健康、实体消歧、数据血缘的“本体里的对象”模式可以直接在上面跑。

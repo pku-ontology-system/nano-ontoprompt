@@ -1,7 +1,8 @@
 import type { ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 import { formatApiError } from '@/api/client'
 import type { DemoDataset } from '@/api/analysis'
-import { cell, num, size } from './format'
+import { cell, num, shortObjectId, size } from './format'
 
 export function Stat({ label, value, hint, tone = 'plain' }: { label: string; value: ReactNode; hint?: ReactNode; tone?: 'plain' | 'good' | 'bad' | 'warn' }) {
   const color = { plain: 'text-slate-900', good: 'text-emerald-700', bad: 'text-red-700', warn: 'text-amber-700' }[tone]
@@ -70,10 +71,15 @@ export function Section({ title, hint, children, testId }: { title: string; hint
   </section>
 }
 
-export function RecordTable({ rows, columns }: { rows: Record<string, unknown>[]; columns?: string[] }) {
+/** Rows of records. A column named __object_id holds platform object ids: with `objectLink` they open in the object explorer. */
+export function RecordTable({ rows, columns, objectLink }: { rows: Record<string, unknown>[]; columns?: string[]; objectLink?: (id: string) => string }) {
   const cols = columns ?? Object.keys(rows[0] ?? {})
+  const show = (column: string, value: unknown) => {
+    if (column !== '__object_id' || typeof value !== 'string') return cell(value)
+    return objectLink ? <Link className="underline" to={objectLink(value)} title={value}>{shortObjectId(value)}</Link> : <span title={value}>{shortObjectId(value)}</span>
+  }
   return <div className="overflow-x-auto"><table className="w-full text-left text-xs">
-    <thead><tr className="text-slate-500">{cols.map(c => <th key={c} className="whitespace-nowrap px-2 py-1 font-medium">{c}</th>)}</tr></thead>
-    <tbody>{rows.map((row, i) => <tr key={i} className="border-t border-slate-100">{cols.map(c => <td key={c} className="whitespace-nowrap px-2 py-1 text-slate-800">{cell(row[c])}</td>)}</tr>)}</tbody>
+    <thead><tr className="text-slate-500">{cols.map(c => <th key={c} className="whitespace-nowrap px-2 py-1 font-medium">{c === '__object_id' ? '对象' : c}</th>)}</tr></thead>
+    <tbody>{rows.map((row, i) => <tr key={i} className="border-t border-slate-100">{cols.map(c => <td key={c} className="whitespace-nowrap px-2 py-1 text-slate-800">{show(c, row[c])}</td>)}</tr>)}</tbody>
   </table></div>
 }

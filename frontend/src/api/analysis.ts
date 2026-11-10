@@ -24,7 +24,7 @@ export interface DemoDataset {
 export interface Preview { columns: string[]; rows: unknown[][]; total: number }
 
 // ---- data health ----------------------------------------------------------------------------------------
-export interface Expectation { expectation_type: string; kwargs: Record<string, unknown>; meta?: { notes?: string } }
+export interface Expectation { expectation_type: string; kwargs: Record<string, unknown>; meta?: { notes?: string; source?: string } }
 export interface Suite { name: string; expectations: Expectation[] }
 export interface ExpectationResult extends Expectation {
   label: string
@@ -36,6 +36,7 @@ export interface ExpectationResult extends Expectation {
     missing_count?: number
     partial_unexpected_list?: unknown[]
     partial_unexpected_counts?: { value: unknown; count: number }[]
+    partial_unexpected_object_ids?: string[]
     observed_value?: unknown
   }
   exception_info: { raised_exception: boolean; exception_message?: string }
@@ -44,7 +45,8 @@ export interface HealthReport {
   success: boolean
   statistics: { evaluated_expectations: number; successful_expectations: number; unsuccessful_expectations: number; errored_expectations: number; success_percent: number }
   results: ExpectationResult[]
-  meta: { suite_name: string; dataset_id: string; row_count: number; column_count: number; run_time_ms: number }
+  meta: { suite_name: string; dataset_id: string; row_count: number; column_count: number; run_time_ms: number; object_count?: number }
+  source?: OntologySourceInfo
 }
 
 // ---- entity resolution -----------------------------------------------------------------------------------
@@ -91,6 +93,7 @@ export interface ResolutionResult {
   histogram: { bin_start: number[]; bin_width: number; match?: number[]; non_match?: number[]; all?: number[] }
   clusters: { cluster_id: number; size: number; records: Row[]; true_entities_inside?: number }[]
   examples: { borderline: PairExample[]; false_positives: PairExample[]; false_negatives: PairExample[]; confident: PairExample[] }
+  source?: OntologySourceInfo & { notes: string[] }
 }
 
 // ---- lineage -------------------------------------------------------------------------------------------
@@ -113,15 +116,19 @@ export interface LineageNode {
   updated_at?: string | null
   quality?: { assertions?: QualityAssertion[]; passed?: number; failed?: number; metrics?: Record<string, unknown> } | null
   column_lineage?: Record<string, string[]> | null
+  layer?: string | null
+  ref?: Record<string, string> | null
+  run_facets?: Record<string, Record<string, unknown>> | null
 }
 export interface LineageEdge { source: string; target: string }
-export interface LineageGraph { nodes: LineageNode[]; edges: LineageEdge[]; namespaces: string[]; event_count?: number; focus?: string }
+export interface LineageGraph { nodes: LineageNode[]; edges: LineageEdge[]; namespaces: string[]; event_count?: number; focus?: string; layers?: Record<string, string> }
 export interface Impact {
   node: string
   downstream: { id: string; kind: 'job' | 'dataset'; label: string; namespace: string; distance: number; status: string | null; quality_failed: number }[]
   downstream_jobs: number
   downstream_datasets: number
   upstream_count: number
+  column?: ColumnImpact
 }
 
 // ---- runs and the pipeline ---------------------------------------------------------------------------------
@@ -139,12 +146,45 @@ export interface PipelineStep { key: 'ingest' | 'validate' | 'resolve'; title: s
 export interface PipelineResult {
   dataset_id: string
   title: string
-  sha256: string
+  sha256: string | null
+  source?: OntologySourceInfo
+  runs?: { health: string; resolution: string }
   steps: PipelineStep[]
   health: HealthReport
   resolution: ResolutionResult
-  lineage: { namespace: string; focus: string; events: number; datasets: Record<string, string> }
+  lineage: { namespace: string; focus: string; events: number; datasets?: Record<string, string>; ontology_id?: string }
 }
+
+// ---- the platform's own ontologies ---------------------------------------------------------------------------
+export interface OntologyProperty { api_name: string; data_type: string; nullable: boolean; is_array: boolean }
+export interface OntologyType { api_name: string; properties: OntologyProperty[]; object_count: number | null; object_count_capped: boolean }
+export interface OntologyRead { object_type: string; snapshot: boolean; truncated: boolean; row_count: number; data_view_id?: string; counts?: { ontology: number; baseline: number }; source_table?: string | null; built_by?: string | null }
+export interface OntologySourceInfo { kind: 'ontology'; ontology_id: string; object_type: string; read: OntologyRead }
+export interface OntologySuite { suite: Suite; read: OntologyRead; expectation_types: string[] }
+export interface ResolutionPreset { settings: Record<string, unknown>; notes: string[]; skipped: { column: string; reason: string }[]; truth_candidates: string[]; estimated_pairs: number; read: OntologyRead }
+export interface DuplicatePair {
+  a: string
+  b: string
+  score: number
+  verdict: 'likely' | 'possible' | 'unlikely'
+  name_similarity: number
+  property_overlap: { score: number; jaccard: number; containment: number; shared: { a: string; b: string }[]; only_a: string[]; only_b: string[] }
+  shared_tables: string[]
+  reasons: string[]
+  objects: { a: number | null; b: number | null }
+  origin: { a: string; b: string }
+  suggestion: string
+}
+export interface DuplicateReport { ontology_id: string; types_compared: number; minimum: number; weights: Record<string, number>; pairs: DuplicatePair[]; candidate_set?: string; candidate_pairs?: DuplicatePair[] }
+export interface ColumnImpact {
+  node: string
+  field: string
+  columns: { dataset: string; label: string; namespace: string; layer: string | null; ref: Record<string, string> | null; field: string; distance: number; derived_from: { dataset: string; field: string }; transformation: string | null }[]
+  jobs: { id: string; label: string; layer: string | null; ref: Record<string, string> | null; distance: number; description: string | null }[]
+  layers: string[]
+  has_column_lineage: boolean
+}
+export interface OntologyLineageWritten { namespace: string; jobs: Record<string, number>; types: number; events: number; replaced: number }
 
 export const analysisApi = {
   demos: () => apiClientV2.get<{ datasets: DemoDataset[] }>('/analysis/demos').then(r => r.datasets),
@@ -160,4 +200,17 @@ export const analysisApi = {
   runPipeline: (datasetId: string) => apiClientV2.post<AnalysisRun<PipelineResult>>('/analysis/pipeline/run', { dataset_id: datasetId }),
   runs: (params: { kind?: string; dataset_id?: string; limit?: number } = {}) => apiClientV2.get<{ runs: Omit<AnalysisRun, 'result'>[] }>('/analysis/runs', { params }).then(r => r.runs),
   run: <T,>(id: string) => apiClientV2.get<AnalysisRun<T>>(`/analysis/runs/${id}`),
+
+  // the same three, on the objects of a platform ontology
+  ontologyTypes: (oid: string) => apiClientV2.get<{ types: OntologyType[] }>(`/analysis/ontologies/${oid}/object-types`).then(r => r.types),
+  ontologySuite: (oid: string, type: string, baseline = false) => apiClientV2.get<OntologySuite>(`/analysis/ontologies/${oid}/health/suites/${type}`, { params: baseline ? { baseline: true } : {} }),
+  runOntologyHealth: (oid: string, type: string, suite?: Suite, baseline = false) => apiClientV2.post<AnalysisRun<HealthReport>>(`/analysis/ontologies/${oid}/health/run`, { object_type: type, suite, baseline }),
+  ontologyPreset: (oid: string, type: string, groundTruth?: string) => apiClientV2.get<ResolutionPreset>(`/analysis/ontologies/${oid}/resolution/presets/${type}`, { params: groundTruth === undefined ? {} : { ground_truth: groundTruth } }),
+  runOntologyResolution: (oid: string, type: string, settings?: Record<string, unknown>, groundTruth?: string) =>
+    apiClientV2.post<AnalysisRun<ResolutionResult>>(`/analysis/ontologies/${oid}/resolution/run`, { object_type: type, settings, ground_truth: groundTruth }),
+  duplicateTypes: (oid: string, params: { candidate_set?: string; minimum?: number } = {}) => apiClientV2.get<DuplicateReport>(`/analysis/ontologies/${oid}/duplicate-types`, { params }),
+  generateOntologyLineage: (oid: string) => apiClientV2.post<OntologyLineageWritten>(`/analysis/ontologies/${oid}/lineage/generate`, {}),
+  ontologyLineageGraph: (oid: string, params: { node?: string; depth?: number; direction?: string } = {}) => apiClientV2.get<LineageGraph>(`/analysis/ontologies/${oid}/lineage/graph`, { params }),
+  ontologyImpact: (oid: string, node: string, field?: string) => apiClientV2.get<Impact>(`/analysis/ontologies/${oid}/lineage/impact`, { params: { node, field } }),
+  runOntologyPipeline: (oid: string, type: string) => apiClientV2.post<AnalysisRun<PipelineResult>>(`/analysis/ontologies/${oid}/pipeline/run`, { object_type: type }),
 }
