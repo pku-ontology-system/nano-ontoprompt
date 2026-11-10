@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { BUNDLES } from './importFixtures';
 
 const ONT = 'nav-ont';
 const rule = { id: 'rule-1', api_name: 'vibration_drift', display_name: '振动漂移', description: '', status: 'active', current_version: 1, owner_id: 'test-user',
@@ -34,6 +35,8 @@ async function mount(page: Page, path = `/ontologies/${ONT}`, { hidden = false }
     if (p.endsWith('/object-query/load')) return json({ objects: [], completeness: 'complete', status: 'empty', page: { returned: 0, has_more: false } });
     if (p.endsWith('/object-sets/resources')) return json({ resources: [] });
     if (p === '/api/v1/ontologies') return json({ data: { items: [{ id: ONT, name: '设备运维', domain: 'manufacturing', entity_count: 4, relation_count: 3 }], total: 1 } });
+    if (p === '/api/v2/ontology-imports/bundles') return json({ bundles: BUNDLES });
+    if (p === '/api/v2/analysis/overview') return json({ ontologies: [], runs: [], runs_by_kind: {}, health: { average: null, runs: 0 }, lineage_jobs: 0, totals: { ontologies: 0, types: 0, objects: 0, link_types: 0, imports: 0, runs: 0, lineage_jobs: 0 } });
     return json({ data: [], items: [] });
   });
   await page.goto(path);
@@ -75,13 +78,13 @@ test('entries kept out of the sidebar for now stay reachable: ?nav=all shows the
   await expect(nav.getByRole('link', { name: '对象浏览器', exact: true })).toHaveCount(0);
 });
 
-test('data is added from inside the ontology; wizards open pre-targeted', async ({ page }) => {
+test('data is added from inside the ontology: the same data sources page, with no scenario baked in', async ({ page }) => {
   await mount(page, `/ontologies/${ONT}?tab=sources`);
   const sources = page.getByRole('region', { name: '数据源' });
-  await expect(sources.getByText('适合当前本体')).toHaveCount(1);
+  await expect(sources.getByTestId('bundles').getByRole('listitem').filter({ has: page.getByRole('heading') })).toHaveCount(BUNDLES.length);
+  await expect(sources.getByText('适合当前本体')).toHaveCount(0);
+  await expect(sources.getByText('把文件拖到这里，或点击选择')).toBeVisible();
   await page.screenshot({ path: 'test-results/nav-sources.png', fullPage: true });
-  await sources.getByRole('button', { name: /时序数据/ }).click();
-  await expect(page).toHaveURL(new RegExp(`/data/temporal/build\\?ontology_id=${ONT}`));
 });
 
 test('alert center lists, filters and acknowledges; rules page manages schedule and evaluation', async ({ page }) => {
@@ -112,7 +115,7 @@ test('old tab links still work; scenario studies and Workshop apps open for the 
 });
 
 test('without a current ontology, ontology features ask to pick one first', async ({ page }) => {
-  await mount(page, '/overview');
+  await mount(page, '/ontologies');  // the home screen covers the sidebar; the library page does not
   const main = page.getByRole('navigation', { name: '主导航' });
   for (const link of ['首页', '本体库', '数据源', '对象浏览器', '关系图', '情景研究', 'Workshop 应用', '告警中心', '智能体决策', '模型与审查', '设置']) await expect(main.getByRole('link', { name: link, exact: true })).toBeVisible();
   await expect(main.getByText('供应商推演演示')).toHaveCount(0);

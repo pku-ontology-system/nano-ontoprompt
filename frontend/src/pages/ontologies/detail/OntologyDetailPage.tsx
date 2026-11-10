@@ -158,7 +158,7 @@ export default function OntologyDetailPage() {
       {activeTab === "manufacturing" && <ManufacturingDataTab key={id} ontologyId={id!} />}
       {activeTab === "logic-assets" && <LogicAssetsTab key={id} ontologyId={id!} />}
       {activeTab === "overview" && <Suspense fallback={<div role="status" className="py-12 text-center text-sm text-slate-500">正在加载总览</div>}><OverviewTab ontologyId={id!} onOpen={(tab, extra) => select(tab as Tab, extra)} /></Suspense>}
-      {activeTab === "sources" && <Suspense fallback={<div role="status" className="py-12 text-center text-sm text-slate-500">正在加载数据源</div>}><SourcesTab ontologyId={id!} dataClass={ontology.data_class} onOpen={(tab) => select(tab as Tab)} /></Suspense>}
+      {activeTab === "sources" && <Suspense fallback={<div role="status" className="py-12 text-center text-sm text-slate-500">正在加载数据源</div>}><SourcesTab /></Suspense>}
       {activeTab === "alerts" && <Suspense fallback={<div role="status" className="py-12 text-center text-sm text-slate-500">正在加载告警中心</div>}><AlertsTab ontologyId={id!} onOpenRules={() => select("rules")} /></Suspense>}
       {activeTab === "rules" && <Suspense fallback={<div role="status" className="py-12 text-center text-sm text-slate-500">正在加载运行规则</div>}><RulesTab ontologyId={id!} onOpenAlerts={() => select("alerts")} /></Suspense>}
       </div>

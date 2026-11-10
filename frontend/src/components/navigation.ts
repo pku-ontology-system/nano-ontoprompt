@@ -31,7 +31,7 @@ export const NAV_GROUPS: NavGroup[] = [
     { key: 'library', label: '本体库', icon: Library, global: '/ontologies', hint: '新建、导入和管理本体' },
   ] },
   { label: '数据接入', entries: [
-    { key: 'sources', label: '数据源', icon: Database, tab: 'sources', hint: '把数据导入当前本体' },
+    { key: 'sources', label: '数据源', icon: Database, global: '/sources', hint: '导入任何数据建成本体，或一键载入演示数据集' },
   ] },
   { label: '本体建模', entries: [
     { key: 'overview', label: '本体总览', icon: LayoutGrid, tab: 'overview' },

@@ -32,6 +32,7 @@ const QueryLibraryPage = React.lazy(() => import("@/pages/queries/QueryLibraryPa
 const WorkshopAppPage = React.lazy(() => import("@/pages/workshop/WorkshopAppPage"));
 const WorkshopEditor = React.lazy(() => import("@/pages/workshop/WorkshopEditor"));
 const DecisionLabPage = React.lazy(() => import("@/pages/decision-lab/DecisionLabPage"));
+const DataSourcesPage = React.lazy(() => import("@/pages/sources/DataSourcesPage"));
 const AnalysisHealthPage = React.lazy(() => import("@/pages/analysis/HealthPage"));
 const AnalysisResolutionPage = React.lazy(() => import("@/pages/analysis/ResolutionPage"));
 const AnalysisLineagePage = React.lazy(() => import("@/pages/analysis/LineagePage"));
@@ -289,6 +290,7 @@ export default function App() {
               path="/decision-lab"
               element={<ProtectedRoute><DecisionLabPage /></ProtectedRoute>}
             />
+            <Route path="/sources" element={<ProtectedRoute><DataSourcesPage /></ProtectedRoute>} />
             <Route path="/analysis" element={<Navigate to="/analysis/pipeline" replace />} />
             <Route path="/analysis/health" element={<ProtectedRoute><AnalysisHealthPage /></ProtectedRoute>} />
             <Route path="/analysis/resolution" element={<ProtectedRoute><AnalysisResolutionPage /></ProtectedRoute>} />
