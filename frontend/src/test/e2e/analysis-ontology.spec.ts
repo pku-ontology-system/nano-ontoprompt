@@ -53,6 +53,9 @@ const PIPELINE = { id: 'run-p', kind: 'pipeline', dataset_id: `ontology:${OID}:P
   steps: [{ key: 'ingest', title: '读取对象', node: PERSON, summary: { rows: 1000, columns: 7 } }, { key: 'validate', title: '数据健康检查', node: `job:${ns}:validate.Person`, summary: {} }, { key: 'resolve', title: '实体消歧', node: `job:${ns}:resolve.Person`, summary: {} }],
   health: healthRun(1000).result, resolution: RESOLUTION, lineage: { namespace: ns, focus: PERSON, events: 6, ontology_id: OID } } };
 
+const OVERVIEW = { ontologies: [{ id: OID, name: '人员主数据', domain: '科技', status: 'created', build_mode: 'data_import', created_at: null, types: 2, objects: 200, link_types: 0, imported: { tables: 2, sources: 1, kind: 'relational', replay: null } }],
+  runs: [], runs_by_kind: {}, health: { average: null, runs: 0 }, lineage_jobs: 0, totals: { ontologies: 1, types: 2, objects: 200, link_types: 0, imports: 1, runs: 0, lineage_jobs: 0 } };
+
 async function mount(page: Page, path: string) {
   const calls: string[] = [];
   const bodies: Record<string, unknown> = {};
@@ -68,7 +71,8 @@ async function mount(page: Page, path: string) {
     const json = (body: unknown) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
     calls.push(`${route.request().method()} ${p}${url.search}`);
     if (route.request().method() === 'POST') bodies[p] = route.request().postDataJSON();
-    if (p === '/api/v1/ontologies') return json({ data: { items: [{ id: OID, name: '人员主数据', domain: '科技', version: '1', status: 'published', entity_count: 1, relation_count: 0 }], total: 1 } });
+    if (p === '/api/v1/ontologies') return json({ data: { items: [], total: 0 } });
+    if (p === '/api/v2/analysis/overview') return json(OVERVIEW);
     if (p === '/api/v2/analysis/demos') return json({ datasets: [] });
     if (p === `${ROOT}/object-types`) return json({ ontology_id: OID, types: TYPES });
     if (p === `${ROOT}/health/suites/Person`) return json({ suite: SUITE, read: READ, expectation_types: [] });
@@ -87,15 +91,18 @@ async function mount(page: Page, path: string) {
   return { calls, bodies };
 }
 
-test('the source switch: the demo data by default, the objects of an ontology on request, and back', async ({ page }) => {
+test('the source switch: the objects of an ontology by default, the sample files of the open-source projects on request, and back', async ({ page }) => {
   await mount(page, '/analysis/health');
-  await expect(page.getByTestId('source-demo')).toHaveAttribute('aria-selected', 'true');
-  await page.getByTestId('source-ontology').click();
-  await expect(page).toHaveURL(/source=ontology/);
+  await expect(page.getByTestId('source-ontology')).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByTestId(`ontology-${OID}`)).toHaveAttribute('aria-checked', 'true');
   await expect(page.getByTestId('type-Person')).toHaveAttribute('aria-checked', 'true'); // the first type that has objects
   await expect(page.getByTestId('type-Gadget')).toContainText('没有对象');
   await page.getByTestId('source-demo').click();
-  await expect(page).not.toHaveURL(/ontology=|source=/);
+  await expect(page).toHaveURL(/source=demo/);
+  await expect(page.getByTestId('source-demo')).toHaveAttribute('aria-selected', 'true');
+  await page.getByTestId('source-ontology').click();
+  await expect(page).not.toHaveURL(/source=/);
+  await expect(page.getByTestId('type-Person')).toHaveAttribute('aria-checked', 'true');
 });
 
 test('data health on an ontology: the suite comes from the type and a failure opens the objects that broke it', async ({ page }) => {
@@ -150,7 +157,7 @@ test('lineage of an ontology: generate it, read the layers, and ask what a colum
   await expect(page.getByTestId('lineage-generated')).toContainText('已写入 6 条事件');
   expect(bodies[`${ROOT}/lineage/generate`]).toEqual({});
   await expect(page.getByTestId('lineage-graph')).toBeVisible();
-  await expect(page.getByRole('list', { name: '图例' })).toContainText('Auto Ontology 生成');
+  await expect(page.getByRole('list', { name: '图例' })).toContainText('建模');
   await page.getByTestId('lineage-node-Person').click();
   await expect(page.getByTestId('lineage-detail').getByRole('link', { name: '检查这个类型的数据健康' })).toHaveAttribute('href', `/analysis/health?source=ontology&ontology=${OID}&type=Person`);
   await page.getByTestId('field-impact-email').click();
@@ -173,4 +180,21 @@ test('pipeline on an ontology: one type through the three, linked to its objects
   await expect(page.getByTestId('pipeline-step-2').getByRole('link', { name: /打开不合格的对象/ })).toHaveAttribute('href', `/analysis/health?source=ontology&ontology=${OID}&type=Person`);
   await expect(page.getByTestId('pipeline-story')).toContainText('按本体推出的 2 条期望检查');
   await expect(page.getByTestId('lineage-detail')).toContainText('Person');
+});
+
+test('pipeline on an ontology: a type with nothing that tells individuals apart skips resolution, says why, and still draws the lineage', async ({ page }) => {
+  await mount(page, `/analysis/pipeline?source=ontology&ontology=${OID}&type=Person`);
+  const reason = '这个对象类型没有能区分个体的属性（名称、编号、邮箱、电话、地址这一类）：剩下的只有日期、金额和分类，所以实体消歧不适用';
+  const result = PIPELINE.result;
+  await page.route(`**${ROOT}/pipeline/run`, route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ...PIPELINE, result: {
+    ...result, resolution: null, runs: { health: 'run-h', resolution: null },
+    steps: result.steps.map(step => step.key === 'resolve' ? { ...step, summary: { skipped: true, reason } } : step) } }) }));
+  await page.getByRole('button', { name: '运行流水线' }).click();
+  await expect(page.getByTestId('pipeline-step-2')).toContainText('1 / 2 条期望通过');
+  await expect(page.getByTestId('pipeline-resolve-skipped')).toContainText('已跳过');
+  await expect(page.getByTestId('pipeline-resolve-skipped')).toContainText('没有能区分个体的属性');
+  await expect(page.getByTestId('pipeline-step-3').getByRole('link')).toHaveCount(0);
+  await expect(page.getByTestId('pipeline-story')).toContainText('实体消歧这一步跳过了');
+  await expect(page.getByTestId('pipeline-story')).toContainText('数据健康和血缘照常运行');
+  await expect(page.getByTestId('pipeline-lineage')).toBeVisible();
 });

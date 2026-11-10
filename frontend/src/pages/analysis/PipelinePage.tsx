@@ -22,14 +22,15 @@ function Story({ result }: { result: PipelineResult }) {
   const missing = result.health.results.filter(r => r.expectation_type === 'expect_column_values_to_not_be_null' && !r.success)
   const duplicates = result.health.results.find(r => r.expectation_type === 'expect_compound_columns_to_be_unique')
   const failed = result.health.results.filter(r => !r.success)
-  const ev = result.resolution.evaluation
-  const s = result.resolution.summary
+  const ev = result.resolution?.evaluation
+  const s = result.resolution?.summary
   if (result.source) {
     return <Section title="三步是怎么连起来的" testId="pipeline-story">
       <ol className="space-y-2 text-sm text-slate-700">
         <li><b>数据健康先对照本体：</b>{result.source.object_type} 的 {num(result.health.meta.object_count ?? result.health.meta.row_count)} 个对象按本体推出的 {result.health.statistics.evaluated_expectations} 条期望检查，
           {failed.length === 0 ? '全部通过' : `${failed.length} 条没通过：${failed.slice(0, 3).map(r => r.label + (r.kwargs.column ? `（${String(r.kwargs.column)}）` : '')).join('、')}${failed.length > 3 ? ' 等' : ''}`}；不合格的对象在“数据健康”页可以直接点开。</li>
-        <li><b>实体消歧再看对象之间：</b>{num(s.records)} 个对象归并成 {num(s.entities_found)} 个实体{ev ? `（真实 ${num(ev.true_entities)} 个），精确率 ${pct(ev.precision)}，召回率 ${pct(ev.recall)}` : ''}；一个实体里的对象，说明本体里同一个东西被记了不止一次。</li>
+        {s ? <li><b>实体消歧再看对象之间：</b>{num(s.records)} 个对象归并成 {num(s.entities_found)} 个实体{ev ? `（真实 ${num(ev.true_entities)} 个），精确率 ${pct(ev.precision)}，召回率 ${pct(ev.recall)}` : ''}；一个实体里的对象，说明本体里同一个东西被记了不止一次。</li>
+          : <li><b>实体消歧这一步跳过了：</b>{String(result.steps[2]?.summary.reason ?? '这个类型没有能区分个体的属性')}。数据健康和血缘照常运行；想看消歧，换一个有名称、编号这类属性的类型。</li>}
         <li><b>血缘把本体的来龙去脉连起来：</b>来源表怎样经 Auto Ontology 变成对象类型、哪些规则读了它的哪些属性、这两次分析挂在哪个类型上，都在下面的图里。点类型旁的字段，可以问“这一列改了会影响什么”。</li>
       </ol>
     </Section>
@@ -38,7 +39,7 @@ function Story({ result }: { result: PipelineResult }) {
     <ol className="space-y-2 text-sm text-slate-700">
       <li><b>数据健康先发现问题：</b>{missing.length > 0 ? `${missing.map(r => String(r.kwargs.column)).join('、')} 有缺失值` : '没有缺失值'}
         {duplicates && !duplicates.success ? `；${num(duplicates.result.unexpected_count)} 条记录和别的记录“名字+姓氏+生日”完全一样` : ''}——同一个人被记成了好几条，这正是需要消歧的原因。</li>
-      <li><b>实体消歧接着解决：</b>把 {num(s.records)} 条记录归并成 {num(s.entities_found)} 个实体{ev ? `（真实 ${num(ev.true_entities)} 个），精确率 ${pct(ev.precision)}，召回率 ${pct(ev.recall)}` : ''}；每一对为什么被连起来，都能按字段解释。</li>
+      <li><b>实体消歧接着解决：</b>把 {num(s?.records)} 条记录归并成 {num(s?.entities_found)} 个实体{ev ? `（真实 ${num(ev.true_entities)} 个），精确率 ${pct(ev.precision)}，召回率 ${pct(ev.recall)}` : ''}；每一对为什么被连起来，都能按字段解释。</li>
       <li><b>血缘把前两步记下来：</b>每一步都是一个 OpenLineage 作业，读入的表、检查报告、候选记录对、消歧后的实体都是数据集；检查结果挂在被检查的原始表上，消歧结果的“实体编号”列追溯到参与比较的原始列。下面的血缘图就是这份记录，点 fake_1000.raw 能看到哪些检查没过，还能问“它改了会影响谁”。</li>
     </ol>
   </Section>
@@ -68,7 +69,7 @@ export default function PipelinePage() {
   const impact = useQuery({ queryKey: ['analysis', 'impact', 'pipeline', scope, selected, asking?.field ?? null],
     queryFn: () => ontologyMode ? analysisApi.ontologyImpact(choice.ontologyId, selected!, asking?.field ?? undefined) : analysisApi.lineageImpact(selected!, 'workbench'), enabled: !!selected && !!asking })
   const failed = result?.health.results.filter(r => !r.success) ?? []
-  const ev = result?.resolution.evaluation
+  const ev = result?.resolution?.evaluation
   const ready = ontologyMode ? !!choice.objectType && (choice.selected?.object_count ?? 1) > 0 : !!dataset?.available
   const fieldImpact = ontologyMode ? { field: asking?.field ?? null, result: impact.data?.column, onAsk: (field: string) => setAsk({ node: selected!, field }) } : undefined
   const typeLinks = result?.source ? `?source=ontology&ontology=${encodeURIComponent(result.source.ontology_id)}&type=${encodeURIComponent(result.source.object_type)}` : ''
@@ -97,9 +98,10 @@ export default function PipelinePage() {
           <Link to={`/analysis/health${typeLinks}`} className="mt-2 inline-block text-xs underline">到“数据健康”页{ontologyMode ? '打开不合格的对象' : '自己改期望'}</Link></>}
       </Step>
       <Step index={3} title="实体消歧" project="Splink 的做法" done={!!result}>
-        {result && <><p>{num(result.resolution.summary.records)} {ontologyMode ? '个对象' : '条记录'} → <b>{num(result.resolution.summary.entities_found)}</b> 个实体</p>
+        {result && (result.resolution ? <><p>{num(result.resolution.summary.records)} {ontologyMode ? '个对象' : '条记录'} → <b>{num(result.resolution.summary.entities_found)}</b> 个实体</p>
           {ev && <p className="mt-1 text-xs text-slate-600">精确率 {pct(ev.precision)} · 召回率 {pct(ev.recall)} · F1 {ev.f1.toFixed(3)}</p>}
-          <Link to={`/analysis/resolution${typeLinks}`} className="mt-2 inline-block text-xs underline">到“实体消歧”页看逐对解释</Link></>}
+          <Link to={`/analysis/resolution${typeLinks}`} className="mt-2 inline-block text-xs underline">到“实体消歧”页看逐对解释</Link></>
+          : <p data-testid="pipeline-resolve-skipped" className="text-xs text-slate-600">已跳过：{String(result.steps[2]?.summary.reason ?? '这个类型没有能区分个体的属性')}</p>)}
       </Step>
     </ol>
 

@@ -61,7 +61,7 @@ async function mount(page: Page, path: string) {
     if (p === '/api/v2/analysis/pipeline/run') { ran = true; return json(PIPELINE_RUN); }
     return json({});
   });
-  await page.goto(path);
+  await page.goto(`${path}?source=demo`);  // the pages open on the objects of an ontology; these tests are about the open-source sample files
   return calls;
 }
 

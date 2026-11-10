@@ -15,8 +15,11 @@ export const objectHref = (ontologyId: string, objectType: string, objectId: str
 export const shortObjectId = (id: string) => id.split(':').pop() || id
 
 export const LAYER_STYLE: Record<string, { label: string; fill: string; stroke: string }> = {
-  source: { label: '数据源表', fill: '#f1f5f9', stroke: '#64748b' },
-  build: { label: 'Auto Ontology 生成', fill: '#ede9fe', stroke: '#7c3aed' },
+  source: { label: '数据源', fill: '#f1f5f9', stroke: '#475569' },
+  load: { label: '读取', fill: '#e0f2fe', stroke: '#0284c7' },
+  table: { label: '数据表', fill: '#f8fafc', stroke: '#94a3b8' },
+  transform: { label: '计算（SQL）', fill: '#fef9c3', stroke: '#ca8a04' },
+  build: { label: '建模', fill: '#ede9fe', stroke: '#7c3aed' },
   object: { label: '对象类型', fill: '#dbeafe', stroke: '#2563eb' },
   rule: { label: '规则', fill: '#fef3c7', stroke: '#d97706' },
   alert: { label: '告警', fill: '#fee2e2', stroke: '#dc2626' },
@@ -28,7 +31,8 @@ const enc = encodeURIComponent
 
 /** A node of an ontology's lineage knows where it lives in the platform; this is the page that shows it. */
 export function refLink(ref: Record<string, string> | null | undefined): { to: string; label: string } | null {
-  if (!ref?.ontology_id && ref?.kind !== 'source_table') return null
+  if (ref?.kind === 'source_file') return ref.url ? { to: ref.url, label: '打开数据来源' } : null
+  if (!ref?.ontology_id) return null
   const oid = enc(ref!.ontology_id ?? '')
   switch (ref!.kind) {
     case 'object_type': return { to: `/analysis/health?source=ontology&ontology=${oid}&type=${enc(ref!.api_name)}`, label: '检查这个类型的数据健康' }

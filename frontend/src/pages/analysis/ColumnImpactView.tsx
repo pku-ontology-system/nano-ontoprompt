@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom'
 import type { ColumnImpact } from '@/api/analysis'
 import { LAYER_STYLE, refLink } from './format'
 
-const ORDER = ['object', 'rule', 'alert', 'decision', 'analysis']
+const ORDER = ['table', 'transform', 'object', 'rule', 'alert', 'decision', 'analysis']
 
 function Chip({ layer }: { layer: string | null }) {
   const style = layer ? LAYER_STYLE[layer] : undefined
@@ -14,7 +14,7 @@ export function ColumnImpactView({ impact, dataset }: { impact: ColumnImpact; da
   const rules = impact.jobs.filter(j => j.layer === 'rule')
   const datasetsOf = (layer: string) => new Set(impact.columns.filter(c => c.layer === layer).map(c => c.dataset)).size
   const summary = [rules.length && `${rules.length} 条规则`, datasetsOf('alert') && `${datasetsOf('alert')} 组告警`, datasetsOf('decision') && `${datasetsOf('decision')} 组处置单`,
-    datasetsOf('object') && `${datasetsOf('object')} 个对象类型`, datasetsOf('analysis') && `${datasetsOf('analysis')} 个分析结果`].filter(Boolean)
+    datasetsOf('table') && `${datasetsOf('table')} 张数据表`, datasetsOf('object') && `${datasetsOf('object')} 个对象类型`, datasetsOf('analysis') && `${datasetsOf('analysis')} 个分析结果`].filter(Boolean)
   return <section data-testid="column-impact" className="mt-3 rounded-lg border border-slate-200 bg-slate-50/70 p-3">
     <p className="text-sm text-slate-900">改 <code className="rounded bg-white px-1.5 py-0.5 ring-1 ring-slate-200">{dataset}.{impact.field}</code>{impact.columns.length === 0 ? ' 不会影响别的列。' : <> 会影响 <b>{impact.columns.length}</b> 个下游列、<b>{impact.jobs.length}</b> 个作业{summary.length > 0 && <>：{summary.join('、')}</>}。</>}</p>
     {impact.columns.length === 0 && <p className="mt-1 text-xs text-slate-500">列血缘只记录了生产者写明的输入列：这一列没有被任何下游引用，或者引用它的作业没有写明。</p>}

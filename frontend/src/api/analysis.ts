@@ -148,10 +148,11 @@ export interface PipelineResult {
   title: string
   sha256: string | null
   source?: OntologySourceInfo
-  runs?: { health: string; resolution: string }
+  runs?: { health: string; resolution: string | null }
   steps: PipelineStep[]
   health: HealthReport
-  resolution: ResolutionResult
+  /** null when the objects carry nothing that tells individuals apart: the step is skipped, steps[2].summary.reason says why */
+  resolution: ResolutionResult | null
   lineage: { namespace: string; focus: string; events: number; datasets?: Record<string, string>; ontology_id?: string }
 }
 
@@ -186,6 +187,18 @@ export interface ColumnImpact {
 }
 export interface OntologyLineageWritten { namespace: string; jobs: Record<string, number>; types: number; events: number; replaced: number }
 
+// ---- the platform at a glance -----------------------------------------------------------------------------------
+export interface OverviewOntology { id: string; name: string; domain: string; status: string; build_mode: string; created_at: string | null; types: number; objects: number; link_types: number;
+  imported: { tables: number; sources: number; kind: string | null; replay: { total: number; cursor: number } | null } | null }
+export interface PlatformOverview {
+  ontologies: OverviewOntology[]
+  runs: Omit<AnalysisRun, 'result'>[]
+  runs_by_kind: Record<string, number>
+  health: { average: number | null; runs: number }
+  lineage_jobs: number
+  totals: { ontologies: number; types: number; objects: number; link_types: number; imports: number; runs: number; lineage_jobs: number }
+}
+
 export const analysisApi = {
   demos: () => apiClientV2.get<{ datasets: DemoDataset[] }>('/analysis/demos').then(r => r.datasets),
   preview: (id: string, limit = 12) => apiClientV2.get<Preview>(`/analysis/demos/${id}/preview`, { params: { limit } }),
@@ -200,6 +213,8 @@ export const analysisApi = {
   runPipeline: (datasetId: string) => apiClientV2.post<AnalysisRun<PipelineResult>>('/analysis/pipeline/run', { dataset_id: datasetId }),
   runs: (params: { kind?: string; dataset_id?: string; limit?: number } = {}) => apiClientV2.get<{ runs: Omit<AnalysisRun, 'result'>[] }>('/analysis/runs', { params }).then(r => r.runs),
   run: <T,>(id: string) => apiClientV2.get<AnalysisRun<T>>(`/analysis/runs/${id}`),
+
+  overview: () => apiClientV2.get<PlatformOverview>('/analysis/overview'),
 
   // the same three, on the objects of a platform ontology
   ontologyTypes: (oid: string) => apiClientV2.get<{ types: OntologyType[] }>(`/analysis/ontologies/${oid}/object-types`).then(r => r.types),

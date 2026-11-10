@@ -12,10 +12,10 @@ export function LineageGraph({ nodes, edges, selected, focus, onSelect }: { node
   const { positions, width, height } = useMemo(() => layoutLineage(nodes, edges), [nodes, edges])
   const lit = useMemo(() => (selected ? closure(selected, edges) : null), [selected, edges])
   const [box, boxWidth] = useElementWidth()
-  const [zoom, setZoom] = useState<number | null>(null) // null: fit the width of the box (not below 50%)
-  const fit = boxWidth ? Math.min(1, Math.max(0.5, (boxWidth - 4) / width)) : 1
+  const [zoom, setZoom] = useState<number | null>(null) // null: fit the width of the box (not below 35%: a lineage of eleven layers is wide)
+  const fit = boxWidth ? Math.min(1, Math.max(0.35, (boxWidth - 4) / width)) : 1
   const scale = zoom ?? fit
-  const step = (factor: number) => setZoom(Math.min(1.6, Math.max(0.4, scale * factor)))
+  const step = (factor: number) => setZoom(Math.min(1.6, Math.max(0.3, scale * factor)))
   // bring a clicked node to the middle of the box; only the box scrolls, never the page
   const centre = (el: Element, x: number) => {
     const holder = el.closest('[data-graph-scroll]')
