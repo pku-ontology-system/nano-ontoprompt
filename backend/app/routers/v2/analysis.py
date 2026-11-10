@@ -11,7 +11,8 @@ from sqlalchemy.orm import Session
 from app.deps import get_current_user, get_db, require_editor
 from app.models.user import User
 from app.models.v2.analysis import AnalysisRun
-from app.services.v2.analysis import demos, health, lineage, pipeline, resolution
+from app.routers.v2.object_query import get_falkordb
+from app.services.v2.analysis import demos, health, lineage, ontology_analysis, ontology_duplicates, ontology_source, pipeline, resolution
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -27,6 +28,8 @@ def fail(status: int, code: str, message: str) -> HTTPException:
 def translate(error: Exception) -> HTTPException:
     if isinstance(error, demos.DemoError):
         return fail(404 if str(error).startswith("unknown") else 409, "demo_unavailable", str(error))
+    if isinstance(error, ontology_source.OntologySourceError):
+        return fail(404, "object_type_not_found", str(error))
     if isinstance(error, health.ExpectationError):
         return fail(422, "invalid_suite", str(error))
     if isinstance(error, resolution.ResolutionError):
@@ -34,7 +37,7 @@ def translate(error: Exception) -> HTTPException:
     return fail(422, "invalid_lineage_event", str(error))
 
 
-KNOWN = (demos.DemoError, health.ExpectationError, resolution.ResolutionError, lineage.LineageError)
+KNOWN = (demos.DemoError, ontology_source.OntologySourceError, health.ExpectationError, resolution.ResolutionError, lineage.LineageError)
 
 
 class HealthRunInput(BaseModel):
@@ -49,6 +52,12 @@ class ResolutionRunInput(BaseModel):
 
 class PipelineRunInput(BaseModel):
     dataset_id: str = Field(default="splink-fake-1000", min_length=1, max_length=80)
+
+
+class OntologyHealthInput(BaseModel):
+    object_type: str = Field(min_length=1, max_length=120)
+    suite: dict[str, Any] | None = None
+    baseline: bool = False
 
 
 class SeedInput(BaseModel):
@@ -120,6 +129,53 @@ def run_health(body: HealthRunInput, db: Session = Depends(get_db), user: User =
     title = f"{demos.entry(body.dataset_id)['title']} · 数据健康"
     row = store(db, user, "health", body.dataset_id, title, {"suite_name": suite.get("name"), "custom_suite": body.suite is not None}, report["statistics"], report)
     return run_payload(row)
+
+
+# ---- the platform's own ontologies -------------------------------------------------------------------------------------
+
+@router.get("/ontologies/{ontology_id}/object-types")
+def ontology_object_types(ontology_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user), graph=Depends(get_falkordb)):
+    """The object types of one ontology that the caller may see, with their properties and how many objects each has."""
+    types = ontology_source.object_types(db, user, ontology_id)
+    counts = ontology_source.object_counts(db, user, graph, ontology_id, [t["api_name"] for t in types])
+    return {"ontology_id": ontology_id, "types": [{**t, "object_count": (counts.get(t["api_name"]) or {}).get("count"), "object_count_capped": (counts.get(t["api_name"]) or {}).get("capped", False)}
+                                                  for t in types]}
+
+
+@router.get("/ontologies/{ontology_id}/health/suites/{object_type}")
+def ontology_suite(ontology_id: str, object_type: str, baseline: bool = False, db: Session = Depends(get_db), user: User = Depends(get_current_user), graph=Depends(get_falkordb)):
+    """The suite the ontology implies for one object type (plus, with baseline=true, what the current data suggests)."""
+    try:
+        suite, _, info = ontology_analysis.suite_for(db, user, graph, ontology_id, object_type, baseline=baseline)
+    except KNOWN as error:
+        raise translate(error) from error
+    return {"suite": suite, "read": info, "expectation_types": sorted(health.EXPECTATIONS)}
+
+
+@router.post("/ontologies/{ontology_id}/health/run")
+def run_ontology_health(ontology_id: str, body: OntologyHealthInput, db: Session = Depends(get_db), user: User = Depends(require_editor), graph=Depends(get_falkordb)):
+    try:
+        with Busy():
+            suite, frame, info = ontology_analysis.suite_for(db, user, graph, ontology_id, body.object_type, baseline=body.baseline)
+            suite = body.suite or suite
+            report = ontology_analysis.run_health(frame, suite, dataset=ontology_analysis.dataset_id(ontology_id, body.object_type))
+    except KNOWN as error:
+        raise translate(error) from error
+    report["source"] = {"kind": "ontology", "ontology_id": ontology_id, "object_type": body.object_type, "read": info}
+    summary = {**report["statistics"], "object_count": report["meta"]["object_count"]}
+    params = {"ontology_id": ontology_id, "object_type": body.object_type, "custom_suite": body.suite is not None, "baseline": body.baseline}
+    row = store(db, user, "health", ontology_analysis.dataset_id(ontology_id, body.object_type), f"{body.object_type} · 数据健康（本体）", params, summary, report)
+    return run_payload(row)
+
+
+@router.get("/ontologies/{ontology_id}/duplicate-types")
+def ontology_duplicate_types(ontology_id: str, candidate_set: str | None = None, minimum: float = Query(ontology_duplicates.POSSIBLE, ge=0.2, le=1.0),
+                             db: Session = Depends(get_db), user: User = Depends(get_current_user), graph=Depends(get_falkordb)):
+    """Object types that look like one thing described twice; with candidate_set, also the candidates that repeat an existing type."""
+    try:
+        return ontology_duplicates.analyse(db, user, graph, ontology_id, candidate_set=candidate_set, minimum=minimum)
+    except KNOWN as error:
+        raise translate(error) from error
 
 
 # ---- entity resolution -----------------------------------------------------------------------------------------------

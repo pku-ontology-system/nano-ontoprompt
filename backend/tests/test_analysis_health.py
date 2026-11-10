@@ -144,3 +144,17 @@ def test_compound_uniqueness_copes_with_missing_values():
     assert result["exception_info"]["raised_exception"] is False
     assert result["success"] is False and result["result"]["unexpected_count"] == 2  # the two ann/lee/1990 rows; rows with a missing part are not judged
     assert health.validate(frame, {"expectations": [{"expectation_type": "expect_compound_columns_to_be_unique", "kwargs": {"column_list": ["first", "last", "dob"]}}]})["statistics"]["errored_expectations"] == 0
+
+
+def test_json_schema_check_judges_every_value_by_type_and_bounds():
+    frame = pd.DataFrame({"count": [1, 2.0, None, 3.5, True, "7"], "name": ["a", "bb", None, "ccc", 4, "dddd"], "status": ["open", "closed", "open", "lost", None, "open"]})
+    ints = one(frame, "expect_column_values_to_match_json_schema", column="count", json_schema={"type": "integer"})
+    assert ints["result"]["partial_unexpected_list"] == [3.5, True, "7"] and ints["success"] is False
+    assert one(frame, "expect_column_values_to_match_json_schema", column="count", json_schema={"type": "number", "minimum": 0, "maximum": 3})["result"]["unexpected_count"] == 3  # 3.5 is too large, True and "7" are not numbers
+    strings = one(frame, "expect_column_values_to_match_json_schema", column="name", json_schema={"type": "string", "maxLength": 3})
+    assert strings["result"]["partial_unexpected_list"] == [4, "dddd"]
+    assert one(frame, "expect_column_values_to_match_json_schema", column="status", json_schema={"enum": ["open", "closed"]})["result"]["partial_unexpected_list"] == ["lost"]
+    assert one(frame, "expect_column_values_to_match_json_schema", column="status", json_schema={"type": "string", "pattern": "^o"})["result"]["unexpected_count"] == 2
+    assert one(frame, "expect_column_values_to_match_json_schema", column="count", json_schema={"type": "integer"}, mostly=0.4)["success"] is True
+    for bad in ({"type": "bigint"}, {"format": "date"}, {"pattern": "a" * 400}):
+        assert one(frame, "expect_column_values_to_match_json_schema", column="count", json_schema=bad)["exception_info"]["raised_exception"] is True

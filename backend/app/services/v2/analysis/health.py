@@ -255,6 +255,65 @@ def expect_compound_columns_to_be_unique(df, column_list, mostly=None):
     return _map_result(shown.where(complete), duplicated & complete, _mostly(mostly))
 
 
+def _is_missing(value: Any) -> bool:
+    if isinstance(value, (list, tuple, dict)):
+        return False
+    return bool(pd.isna(value))
+
+
+def _json_type_ok(value: Any, wanted: str) -> bool:
+    if wanted == "integer":
+        return (isinstance(value, (int, np.integer)) and not isinstance(value, (bool, np.bool_))) or (isinstance(value, (float, np.floating)) and float(value).is_integer())
+    if wanted == "number":
+        return isinstance(value, (int, float, np.integer, np.floating)) and not isinstance(value, (bool, np.bool_))
+    if wanted == "string":
+        return isinstance(value, str)
+    if wanted == "boolean":
+        return isinstance(value, (bool, np.bool_))
+    if wanted == "array":
+        return isinstance(value, (list, tuple))
+    if wanted == "object":
+        return isinstance(value, dict)
+    raise ExpectationError(f"unsupported JSON type '{wanted}'; use integer, number, string, boolean, array or object")
+
+
+def _violates_schema(value: Any, schema: dict, pattern: re.Pattern | None) -> bool:
+    kinds = schema.get("type")
+    if kinds is not None and not any(_json_type_ok(value, k) for k in ([kinds] if isinstance(kinds, str) else kinds)):
+        return True
+    if "enum" in schema and value not in schema["enum"]:
+        return True
+    if isinstance(value, (int, float, np.integer, np.floating)) and not isinstance(value, (bool, np.bool_)):
+        if "minimum" in schema and value < schema["minimum"]:
+            return True
+        if "maximum" in schema and value > schema["maximum"]:
+            return True
+    if isinstance(value, str):
+        if "minLength" in schema and len(value) < schema["minLength"]:
+            return True
+        if "maxLength" in schema and len(value) > schema["maxLength"]:
+            return True
+        if pattern is not None and pattern.search(value) is None:
+            return True
+    return False
+
+
+def expect_column_values_to_match_json_schema(df, column, json_schema, mostly=None):
+    """Every value must satisfy a small JSON-schema subset: type, enum, minimum, maximum, minLength, maxLength, pattern."""
+    series = _column(df, column)
+    if not isinstance(json_schema, dict):
+        raise ExpectationError("json_schema must be an object")
+    unsupported = set(json_schema) - {"type", "enum", "minimum", "maximum", "minLength", "maxLength", "pattern", "description"}
+    if unsupported:
+        raise ExpectationError(f"unsupported json_schema keyword(s) {sorted(unsupported)}")
+    pattern = _pattern(json_schema["pattern"]) if "pattern" in json_schema else None
+    if "type" in json_schema:
+        for kind in ([json_schema["type"]] if isinstance(json_schema["type"], str) else json_schema["type"]):
+            _json_type_ok(None, kind)  # reject an unknown type name before looking at any value
+    bad = series.map(lambda v: False if _is_missing(v) else _violates_schema(v, json_schema, pattern))
+    return _map_result(series, bad, _mostly(mostly))
+
+
 _TYPE_CHECKS: dict[str, Callable[[pd.Series], bool]] = {
     "int": pd.api.types.is_integer_dtype, "integer": pd.api.types.is_integer_dtype, "int64": pd.api.types.is_integer_dtype,
     "float": pd.api.types.is_float_dtype, "float64": pd.api.types.is_float_dtype,
@@ -329,7 +388,7 @@ LABELS = {  # short Chinese names for the report; the type names themselves stay
     "expect_column_values_to_not_be_null": "不为空", "expect_column_values_to_be_null": "必须为空", "expect_column_values_to_be_unique": "取值唯一",
     "expect_column_values_to_be_between": "取值在范围内", "expect_column_values_to_be_in_set": "取值在给定集合内", "expect_column_values_to_not_be_in_set": "取值不在给定集合内",
     "expect_column_values_to_match_regex": "符合正则", "expect_column_values_to_not_match_regex": "不符合正则", "expect_column_value_lengths_to_be_between": "长度在范围内",
-    "expect_column_values_to_be_dateutil_parseable": "可解析为日期", "expect_column_values_to_match_strftime_format": "符合日期格式",
+    "expect_column_values_to_be_dateutil_parseable": "可解析为日期", "expect_column_values_to_match_json_schema": "符合类型约束", "expect_column_values_to_match_strftime_format": "符合日期格式",
     "expect_column_pair_values_a_to_be_greater_than_b": "A 列大于 B 列", "expect_compound_columns_to_be_unique": "组合列唯一", "expect_column_values_to_be_of_type": "字段类型",
     "expect_column_mean_to_be_between": "均值在范围内", "expect_column_median_to_be_between": "中位数在范围内", "expect_column_min_to_be_between": "最小值在范围内",
     "expect_column_max_to_be_between": "最大值在范围内", "expect_column_sum_to_be_between": "合计在范围内", "expect_column_stdev_to_be_between": "标准差在范围内",
