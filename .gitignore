@@ -70,6 +70,9 @@ docs/adr/*
 !docs/adr/0023-analysis-on-platform-ontologies.md
 !docs/adr/0024-generic-data-import.md
 !docs/adr/0025-future-data-platform-duckdb-dagster.md
+!docs/prd/
+docs/prd/*
+!docs/prd/本体生成模块PRD_v0.2_JieZhang.docx
 !docs/plans/
 docs/plans/*
 !docs/plans/PALANTIR_ONTOLOGY_PLATFORM_GAP_AUDIT_2026_10_18.md
