@@ -16,7 +16,7 @@
 
 旧分支用于找代码，不是新平台开发起点。新main与旧系统是独立历史；**不要把旧分支整包合入main，也不要使用allow-unrelated-histories强行合并。** 模块负责人从新main开分支，只带入评估后的模块源码、必要配置、迁移和相关测试。保留来源分支及提交编号，第三方许可证/署名不遗漏。
 
-之前克隆过仓库的同学，不要在本地旧main上直接git pull新main。最简单方式是另找空目录重新clone团队仓库，旧工作目录保持不动。若用worktree，先fetch并在新工作目录从origin/main创建任务分支。禁止reset --hard或git clean清掉未提交成果。
+已有仓库默认继续使用，无需重新克隆。先检查并保留本地未提交修改，确认团队远程地址，再fetch更新远程信息；本地若仍有指向旧系统的main，可改为不冲突的历史名称，然后从新的origin/main创建任务分支。不要在本地旧main上直接git pull或合并新main。若旧任务仍在进行，可保留原工作目录，另开worktree从origin/main开发新任务。禁止reset --hard或git clean清掉未提交成果。
 
 ## 开发 提交 审核 合并
 
