@@ -1,8 +1,9 @@
+let activeBrowser;
 const {chromium,expect}=require('@playwright/test');
 const fs=require('fs'),path=require('path'),assert=require('node:assert/strict');
 const OUT=path.resolve(__dirname,'../.cache/evidence');fs.mkdirSync(OUT,{recursive:true});
 const BASE=process.env.DEMO_URL||'http://127.0.0.1:4317';const KEY='decision-navigation-v1';
-(async()=>{const browser=await chromium.launch({headless:true});const ctx=await browser.newContext({viewport:{width:1440,height:900}});const p=await ctx.newPage();const errors=[],failures=[],checks=[];p.setDefaultTimeout(5000);p.on('pageerror',e=>errors.push(e.message));p.on('console',m=>{if(m.type()==='error')errors.push(m.text());});
+(async()=>{const browser=activeBrowser=await chromium.launch({headless:true});const ctx=await browser.newContext({viewport:{width:1440,height:900}});const p=await ctx.newPage();const errors=[],failures=[],checks=[];p.setDefaultTimeout(5000);p.on('pageerror',e=>errors.push(e.message));p.on('console',m=>{if(m.type()==='error')errors.push(m.text());});
 const go=async route=>{await p.goto(BASE+'/#'+route);await p.locator('main').waitFor();await expect(p.locator('main')).toHaveAttribute('data-route',new URL(BASE+'/#'+route).hash.slice(1));};
 const state=()=>p.evaluate(k=>JSON.parse(localStorage.getItem(k)),KEY);
 const fresh=async()=>{await p.goto(BASE);await p.evaluate(k=>localStorage.removeItem(k),KEY);await p.reload();await p.locator('main').waitFor();};
@@ -41,4 +42,4 @@ await test('全部18工具入口均可直达并保持身份',async()=>{for(const
 await test('确定种子的乱序操作100步',async()=>{p.on('dialog',d=>d.accept());let seed=1813;const random=()=>{seed=(seed*1664525+1013904223)>>>0;return seed/2**32;};for(let i=0;i<100;i++){if(i%5===0)await go(screens[Math.floor(random()*screens.length)][1]);const options=p.locator('main button:not([disabled]),.global button:not([disabled])');const count=await options.count();if(count){const target=options.nth(Math.floor(random()*count));await target.click({timeout:1500}).catch(()=>{});if(await p.getByRole('dialog').count())await p.keyboard.press('Escape');if(await p.locator('.scrim').count())await p.locator('.scrim').first().click({position:{x:2,y:2}}).catch(()=>{});}if(i%9===0)await p.reload();await expect(p.locator('#root')).not.toBeEmpty();assert(!(await p.evaluate(()=>document.documentElement.scrollWidth>innerWidth)));}});
 await test('控制台无未解释错误',async()=>assert.deepEqual(errors,[]));
 const result={at:new Date().toISOString(),base:BASE,checks,failures,errors,total:checks.length,passed:checks.filter(x=>x.status==='PASS').length,limits:'验证本地导航与目录，不验证专业后台业务或生产权限。'};fs.writeFileSync(path.join(OUT,'browser-results.json'),JSON.stringify(result,null,2));await ctx.close();await browser.close();console.log(JSON.stringify({total:result.total,passed:result.passed,failures:failures.length,errors:errors.length}));if(failures.length)process.exitCode=1;
-})().catch(e=>{console.error(e);process.exitCode=1});
+})().catch(async e=>{console.error(e);await activeBrowser?.close().catch(()=>{});process.exitCode=1});
