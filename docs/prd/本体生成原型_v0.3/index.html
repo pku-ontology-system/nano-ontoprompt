@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>本体生成原型</title>
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<div class="frame">
+<div id="app">
+  <aside class="side">
+    <div class="brand"><span class="logo"><svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="5" r="2.6"/><circle cx="5" cy="17" r="2.6"/><circle cx="19" cy="17" r="2.6"/><path d="M12 7.6 6.3 14.8M12 7.6l5.7 7.2M7.6 17h8.8" fill="none" stroke-width="1.6"/></svg></span><div><b>本体图谱平台</b><small>Ontology Studio</small></div></div>
+    <div class="nav-h">本体生成</div>
+    <nav class="nav">
+      <a href="#sources" data-k="sources"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7" ry="2.8"/><path d="M5 6v6c0 1.5 3.1 2.8 7 2.8s7-1.3 7-2.8V6M5 12v6c0 1.5 3.1 2.8 7 2.8s7-1.3 7-2.8v-6"/></svg>数据源</a>
+      <a href="#ontology" data-k="ontology"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="4.5" cy="6" r="2"/><circle cx="19.5" cy="6" r="2"/><circle cx="12" cy="20.5" r="2"/><path d="M6.2 7.2 9.6 10.4M17.8 7.2l-3.4 3.2M12 15v3.5"/></svg>本体总览</a>
+      <a href="#workshop" data-k="workshop"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="5" rx="1.5"/><rect x="13" y="10" width="8" height="11" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/></svg>应用搭建<span class="nav-new">新</span></a>
+    </nav>
+    <div class="side-f">
+      <button id="reset" class="side-btn">重置演示数据</button>
+      <small>原型 v0.3 · 2026-11-24<br>演示数据为虚构，传感器通道参考 NASA C-MAPSS</small>
+    </div>
+  </aside>
+  <main class="main">
+    <header class="top"><div class="crumb" id="crumb"></div><div class="top-r"><span class="who">Jie Zhang</span></div></header>
+    <div id="view"></div>
+  </main>
+</div>
+</div>
+<div class="phone-note">这是桌面端原型，在手机上请横向滑动查看，或用电脑打开。</div>
+<div id="modal" hidden></div>
+<div id="toasts"></div>
+<script src="vendor/cytoscape.min.js"></script>
+<script src="vendor/echarts.min.js"></script>
+<script src="js/data.js"></script>
+<script src="js/app.js"></script>
+<script src="js/page-sources.js"></script>
+<script src="js/page-ontology.js"></script>
+<script src="js/ws-modules.js"></script>
+<script src="js/page-workshop.js"></script>
+</body>
+</html>

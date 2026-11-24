@@ -45,7 +45,7 @@
 | [NVIDIA Auto Ontology 能否接入](unofficial/NVIDIA_AUTO_ONTOLOGY_2026_11_02.md) | 官方文档 + 本项目推断 + 本机试验 | 关系型来源的语义层/本体候选生成器；可转成编辑器草稿建议接入，不替代运行时本体；默认云端模型会出站，本地小模型质量不足 | 数据接入、本体建模、MCP |
 | [Palantir 功能 ↔ 做过类似功能的开源项目](unofficial/PALANTIR_FEATURES_AND_OSS_ANALOGS_2026_11_09.md) | 第三方开源项目（GitHub 元数据当天核实）+ 本项目推断 | 可直接抄、又有自带演示数据的：血缘（Marquez/OpenLineage）、实体消歧（Splink）、数据健康（Great Expectations）；流程挖掘的 PM4Py 是 AGPL，代码不能抄 | 血缘、对象归并、数据质量、流程挖掘 |
 | [开源项目：本体构建完成后的分析（30 个）](unofficial/OSS_ONTOLOGY_ANALYSIS_SURVEY_2026_11_09.md) | 第三方开源项目自述 + 部分联网核实 + 本项目推断 | 多数项目前提是 RDF/OWL + JVM，我们是属性图，宜借鉴方法、自己实现；先做本体体检、告警富集分析、图结构分析（配套两份 CSV） | 质量审查、告警、关系图、血缘、文档导出 |
-| [本体生成：开源项目调研（7 个，源码实测）](unofficial/ONTOLOGY_GENERATION_OSS_RESEARCH_2026_11_16.md) | 第三方开源项目源码（只读未运行）+ 本项目推断 | Semantica 的并发只是进程内线程池；并发参考 Graphiti 的单图有序提交和 PostgreSQL SKIP LOCKED 任务表；动态本体分数据层（双时间线）和结构层（门控演化）；配套 PRD 见 [docs/prd](../prd/本体生成模块PRD_v0.2_JieZhang.docx) | 数据中台接入、普通/时序/动态本体、五种视图、高并发 |
+| [本体生成：开源项目调研（7 个，源码实测）](unofficial/ONTOLOGY_GENERATION_OSS_RESEARCH_2026_11_16.md) | 第三方开源项目源码（只读未运行）+ 本项目推断 | Semantica 的并发只是进程内线程池；并发参考 Graphiti 的单图有序提交和 PostgreSQL SKIP LOCKED 任务表；动态本体分数据层（双时间线）和结构层（门控演化）；配套 PRD 见 [v0.2](../prd/本体生成模块PRD_v0.2_JieZhang.docx)，原型见 [本体生成原型_v0.3](../prd/本体生成原型_v0.3/README.md) | 数据中台接入、普通/时序/动态本体、五种视图、高并发 |
 | [开源项目与公开数据集](unofficial/OPEN_SOURCE_AND_BENCHMARKS_FROM_ARCHIVED_PLANS.md) | 第三方 | 历史计划里评估过的开源项目和数据集（frePPLe、LUBM 等） | 测试数据、基准 |
 | [Palantir 平台深度解析：数据 OS 到 AI-OS](unofficial/Palantir平台深度解析-数据OS到AI-OS.md) | 第三方分析 | Foundry 到 AIP 的能力演进 | 总体定位 |
 | [Palantir 本体论建模平台深度解析](unofficial/Palantir本体论建模平台深度解析.md) | 第三方分析 | 五层架构、供应链数据流、指标告警驱动决策 | 本体建模、告警 |
