@@ -1,0 +1,98 @@
+[
+  {
+    "id": "N01",
+    "route": "/home"
+  },
+  {
+    "id": "N02",
+    "route": "/search"
+  },
+  {
+    "id": "N02Q",
+    "route": "/search?q=本体"
+  },
+  {
+    "id": "N02R",
+    "route": "/search?q=本体&full=1"
+  },
+  {
+    "id": "N03",
+    "route": "/notifications"
+  },
+  {
+    "id": "N03U",
+    "route": "/updates"
+  },
+  {
+    "id": "N04",
+    "route": "/recent"
+  },
+  {
+    "id": "N05",
+    "route": "/files"
+  },
+  {
+    "id": "N05P",
+    "route": "/files?project=运营分析项目"
+  },
+  {
+    "id": "N06",
+    "route": "/portal"
+  },
+  {
+    "id": "N07",
+    "route": "/tool/t00?resource=dataset-curated"
+  },
+  {
+    "id": "N08",
+    "route": "/tool/t10?resource=ontology-domain"
+  },
+  {
+    "id": "N09",
+    "route": "/tool/t20?resource=analysis-main"
+  },
+  {
+    "id": "N10",
+    "route": "/tool/t22?resource=scenario-a"
+  },
+  {
+    "id": "N11",
+    "route": "/tool/t30?resource=agent-main"
+  },
+  {
+    "id": "N12",
+    "route": "/workbench?view=全部"
+  },
+  {
+    "id": "N13",
+    "route": "/tool/t42?resource=scenario-a"
+  },
+  {
+    "id": "N14",
+    "route": "/admin"
+  },
+  {
+    "id": "N14S",
+    "route": "/settings"
+  },
+  {
+    "id": "N15",
+    "route": "/templates"
+  },
+  {
+    "id": "N15D",
+    "route": "/templates?id=overview"
+  },
+  {
+    "id": "N14A",
+    "route": "/home"
+  },
+  {
+    "id": "N03P",
+    "route": "/home"
+  },
+  {
+    "id": "N09C",
+    "route": "/tool/t20?resource=analysis-main"
+  }
+]

@@ -1,0 +1,128 @@
+[
+  {
+    "id": "t00",
+    "name": "数据连接",
+    "category": "数据集成与治理",
+    "screen": "N07",
+    "integration": "navigation-only"
+  },
+  {
+    "id": "t01",
+    "name": "数据管道",
+    "category": "数据集成与治理",
+    "screen": "N07",
+    "integration": "navigation-only"
+  },
+  {
+    "id": "t02",
+    "name": "数据质量与血缘",
+    "category": "数据集成与治理",
+    "screen": "N07",
+    "integration": "navigation-only"
+  },
+  {
+    "id": "t10",
+    "name": "本体生成与管理",
+    "category": "本体与语义",
+    "screen": "N08",
+    "integration": "navigation-only"
+  },
+  {
+    "id": "t11",
+    "name": "术语与指标",
+    "category": "本体与语义",
+    "screen": "N08",
+    "integration": "navigation-only"
+  },
+  {
+    "id": "t12",
+    "name": "规则 函数与动作",
+    "category": "本体与语义",
+    "screen": "N08",
+    "integration": "navigation-only"
+  },
+  {
+    "id": "t20",
+    "name": "对象探索",
+    "category": "分析与推演",
+    "screen": "N09",
+    "integration": "navigation-only"
+  },
+  {
+    "id": "t21",
+    "name": "分析与时间序列",
+    "category": "分析与推演",
+    "screen": "N09",
+    "integration": "navigation-only"
+  },
+  {
+    "id": "t22",
+    "name": "情景推演",
+    "category": "分析与推演",
+    "screen": "N10",
+    "integration": "navigation-only"
+  },
+  {
+    "id": "t30",
+    "name": "智能体开发",
+    "category": "AI",
+    "screen": "N11",
+    "integration": "navigation-only"
+  },
+  {
+    "id": "t31",
+    "name": "AI逻辑与评估",
+    "category": "AI",
+    "screen": "N11",
+    "integration": "navigation-only"
+  },
+  {
+    "id": "t32",
+    "name": "模型与工具管理",
+    "category": "AI",
+    "screen": "N11",
+    "integration": "navigation-only"
+  },
+  {
+    "id": "t40",
+    "name": "应用搭建工作台",
+    "category": "应用开发",
+    "screen": "N12",
+    "integration": "navigation-only"
+  },
+  {
+    "id": "t41",
+    "name": "自动化",
+    "category": "应用开发",
+    "screen": "N13",
+    "integration": "navigation-only"
+  },
+  {
+    "id": "t42",
+    "name": "审批",
+    "category": "应用开发",
+    "screen": "N13",
+    "integration": "navigation-only"
+  },
+  {
+    "id": "t50",
+    "name": "模板与实施包",
+    "category": "实施与交付",
+    "screen": "N15",
+    "integration": "navigation-only"
+  },
+  {
+    "id": "t60",
+    "name": "平台管理",
+    "category": "平台管理",
+    "screen": "N14",
+    "integration": "navigation-only"
+  },
+  {
+    "id": "t61",
+    "name": "运行与审计",
+    "category": "平台管理",
+    "screen": "N14",
+    "integration": "navigation-only"
+  }
+]

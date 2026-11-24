@@ -1,0 +1,41 @@
+name: Platform UI CI
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, 'codex/platform-release-*']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: platform-ui-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  platform-ui:
+    name: platform-ui
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/platform-web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: apps/platform-web/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+      - run: npm run test:registry
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:ci
+      - name: Save navigation results and failure screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: navigation-results
+          path: apps/platform-web/.cache/evidence/
+          if-no-files-found: ignore
+          retention-days: 7

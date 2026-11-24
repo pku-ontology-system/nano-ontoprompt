@@ -1,0 +1,38 @@
+{
+  "name": "platform-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 4317 --strictPort",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 4317 --strictPort",
+    "test": "node tests/browser.cjs",
+    "lint": "eslint src vite.config.ts --max-warnings=0",
+    "typecheck": "tsc --noEmit",
+    "test:hardening": "node tests/hardening.cjs",
+    "test:registry": "node tests/registry.cjs",
+    "test:ci": "node tests/ci.cjs",
+    "test:demo": "node tests/demo.cjs"
+  },
+  "dependencies": {
+    "react": "19.2.6",
+    "react-dom": "19.2.6",
+    "lucide-react": "1.16.0"
+  },
+  "devDependencies": {
+    "typescript": "6.0.3",
+    "vite": "8.0.13",
+    "@vitejs/plugin-react": "6.0.2",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@playwright/test": "1.60.0",
+    "eslint": "10.4.0",
+    "@eslint/js": "10.0.1",
+    "typescript-eslint": "8.59.3",
+    "globals": "17.6.0"
+  },
+  "engines": {
+    "node": ">=24 <25"
+  }
+}
