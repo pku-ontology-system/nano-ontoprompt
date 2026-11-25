@@ -28,9 +28,12 @@ npm run test:ci
 
 - [团队与AI协作规则及旧版本位置](CONTRIBUTING.md)
 - [模块接入说明](docs/platform/MODULE_INTEGRATION.md)
+- [平台仓库整理计划 v0.4](docs/platform/平台仓库整理执行计划_简版审核稿_v0.4.docx)
 - [演示计划](docs/platform/DEMO.md)
 - [批准的导航设计正文](docs/platform/design/NAVIGATION_FULL_v0.2.md)
 
 现阶段公共导航、搜索、收藏、最近使用、通知与账户交互使用浏览器本地数据。真实后台、登录与服务端权限尚待模块接入，不可用于生产业务数据。此说明不作为产品页面标签。
 
 轻量CI只检查UI依赖、代码、构建与核心导航，不部署网站，也不调用旧后台或生产数据。
+
+协作方式：保留PR和必需CI，不强制人工批准；大的功能接入如方便建议请一位成员审核，AI会主动提醒。不自动部署。
